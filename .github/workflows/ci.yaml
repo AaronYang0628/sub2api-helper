@@ -1,0 +1,84 @@
+name: Test and build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: helper
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: helper
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: helper/requirements.txt
+      - name: Validate all version references
+        run: python scripts/version.py --check
+      - name: Lint workflow definitions
+        run: |
+          docker run --rm --user 0 -v "$GITHUB_WORKSPACE/helper:/repo:ro" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color .github/workflows/*.yaml
+      - name: Read fixed upstream release metadata
+        id: release
+        run: |
+          python - <<'PY'
+          import json,os,pathlib,re
+          path=pathlib.Path('docs/upstream-release.json')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+            output.write('exists='+str(path.exists()).lower()+'\n')
+            if path.exists():
+              data=json.loads(path.read_text())
+              for name,value,pattern in [('tag',data['tag'],r'v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'),('sha',data['target_sha'],r'[0-9a-f]{40}'),('previous',data['previous_baseline']['reviewed_commit'],r'[0-9a-f]{40}')]:
+                assert isinstance(value,str) and re.fullmatch(pattern,value)
+                output.write(name+'='+value+'\n')
+          PY
+      - name: Checkout the pinned upstream release, never main
+        if: steps.release.outputs.exists == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: Wei-Shaw/sub2api
+          ref: ${{ steps.release.outputs.sha }}
+          path: upstream
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Fetch the exact tag and previous tree
+        if: steps.release.outputs.exists == 'true'
+        working-directory: upstream
+        env:
+          UPSTREAM_TAG: ${{ steps.release.outputs.tag }}
+          PREVIOUS_SHA: ${{ steps.release.outputs.previous }}
+        run: |
+          git fetch --depth=1 --no-tags origin "$PREVIOUS_SHA"
+          git fetch --depth=1 origin "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node --check helper/static/app.js && node --check helper/static/feature.js && node --check helper/static/icons.js
+      - run: npm --prefix ui ci && npm --prefix ui run build
+      - name: Require the tested generated UI to be committed
+        run: git diff --exit-code -- helper/static/style.css
+      - run: docker build -t sub2api-helper:test .
+      - run: python tests/container_smoke.py sub2api-helper:test
+      - name: Verify compatibility approval and source fingerprints
+        if: steps.release.outputs.exists == 'true'
+        run: |
+          python - <<'PY'
+          import json,os,pathlib
+          data=json.loads(pathlib.Path('docs/upstream-release.json').read_text())
+          pathlib.Path(os.environ['RUNNER_TEMP'],'release-proof.json').write_text(json.dumps({'id':data['release_id'],'tag_name':data['tag'],'html_url':data['release_url'],'draft':False,'prerelease':False,'published_at':data['published_at']}))
+          PY
+          python scripts/sync_upstream_release.py check \
+            --release-json "$RUNNER_TEMP/release-proof.json" --source ../upstream

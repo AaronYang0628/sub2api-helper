@@ -1,0 +1,174 @@
+/* Layout adapters for the static helper DOM. Component values are expanded from
+ * the unmodified upstream styles and theme, rather than a separate palette. */
+@layer base {
+  [hidden] { display: none !important; }
+  body.embedded, body.feature-body { @apply min-h-0 bg-transparent; }
+  h1 { @apply text-2xl font-semibold text-gray-900 dark:text-white; }
+  h2 { @apply text-lg font-semibold text-gray-900 dark:text-white; }
+  h3 { @apply text-base font-semibold text-gray-900 dark:text-white; }
+  button, a, input, select, textarea { @apply outline-offset-2; }
+  button { @apply cursor-pointer; }
+  input[type='checkbox'] { @apply accent-primary-600; }
+}
+
+@layer components {
+  .embed-shell, .feature-shell { @apply w-full min-w-0 p-4 sm:p-6; }
+  .embed-shell main, .feature-main { @apply min-w-0 p-0; }
+  .connection-card { @apply mb-4 rounded-xl border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-800; }
+  .connection-form { @apply flex flex-wrap items-end gap-3; }
+  .connection-field { @apply grid min-w-0 flex-1 gap-1.5; }
+  .connection-field > span { @apply text-sm font-medium text-gray-700 dark:text-gray-300; }
+  .connection-field input { @apply input; }
+  .connection-field input[readonly] { @apply text-gray-500 dark:text-dark-400; }
+  .connection-form > .button { @apply shrink-0; }
+  .connection-form > .pill { @apply mb-2.5; }
+  .connection-feedback { @apply mt-2 min-h-4 break-words text-xs text-gray-500 dark:text-dark-400; }
+  .connection-feedback.connected { @apply text-emerald-600 dark:text-emerald-400; }
+  .connection-feedback.error { @apply text-red-500; }
+  .connection-feedback.warning { @apply text-amber-600 dark:text-amber-400; }
+  .tabs-nav { @apply tabs mb-6 overflow-x-auto; }
+  .nav-item { @apply tab flex shrink-0 items-center gap-2 whitespace-nowrap; }
+  .nav-item.active { @apply tab-active; }
+  .nav-icon { @apply h-4 w-4 shrink-0; }
+  .page-head { @apply mb-6 flex items-start justify-between gap-4; }
+  .page-head p { @apply mt-1 text-sm text-gray-500 dark:text-dark-400; }
+  .page-head > .button { @apply shrink-0; }
+  .button { @apply btn btn-secondary whitespace-nowrap; }
+  .button.primary { @apply btn-primary border-0; }
+  .button.danger { @apply btn-danger border-0; }
+  .button.ghost { @apply btn-ghost border-0 bg-transparent shadow-none; }
+  .button.small { @apply btn-sm; }
+  .button.link { @apply btn-ghost border-0 bg-transparent px-2 py-1 text-primary-600 shadow-none dark:text-primary-400; }
+  .button.link.danger { @apply bg-transparent bg-none text-red-500 shadow-none dark:text-red-400; }
+  .button > svg { @apply h-4 w-4 shrink-0; }
+  .button-group { @apply flex flex-wrap items-center gap-2; }
+  .card { @apply mb-6 overflow-hidden; }
+  .card-header { @apply flex items-center justify-between gap-4; }
+  .card-header p { @apply mt-1 text-xs text-gray-500 dark:text-dark-400; }
+  .stats-grid { @apply mb-6 grid grid-cols-2 gap-4 xl:grid-cols-4; }
+  .stat-card { @apply min-w-0; }
+  .stat-content { @apply min-w-0 flex-1; }
+  .stat-content .stat-value { @apply mt-1; }
+  .stat-caption { @apply mt-1 text-xs text-gray-400 dark:text-dark-400; }
+  .stat-icon { @apply shrink-0; }
+  .stat-icon > svg { @apply h-6 w-6; }
+  .overview-grid { @apply grid gap-6 lg:grid-cols-2; }
+  .overview-grid > .card { @apply mb-0; }
+  .muted, .caption { @apply text-gray-500 dark:text-dark-400; }
+  .caption { @apply text-xs; }
+  .notice { @apply mb-6 flex items-start gap-3 rounded-xl border border-primary-100 bg-primary-50 p-4 text-sm text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-300; }
+  .notice.warning { @apply border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300; }
+  .notice.error { @apply border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300; }
+  .notice.success { @apply border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300; }
+  .notice-icon { @apply h-5 w-5 shrink-0; }
+  .detail-row { @apply flex justify-between gap-4 border-b border-gray-100 py-3 text-sm dark:border-dark-700; }
+  .detail-row:first-child { @apply pt-0; }
+  .detail-row:last-child { @apply border-0 pb-0; }
+  .detail-row .value { @apply max-w-[70%] break-words text-right text-gray-700 dark:text-gray-300; }
+  .quick-actions { @apply grid gap-3; }
+  .quick-action { @apply flex items-center gap-4 rounded-xl border border-gray-200 p-4 text-gray-700 transition-colors hover:bg-gray-50 dark:border-dark-700 dark:text-gray-300 dark:hover:bg-dark-800; }
+  .quick-action .big-icon { @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-400; }
+  .quick-action .big-icon > svg { @apply h-5 w-5; }
+  .quick-action strong { @apply block text-sm font-medium; }
+  .quick-action small { @apply text-xs text-gray-500 dark:text-dark-400; }
+  .quick-action .arrow { @apply ml-auto h-4 w-4 shrink-0 text-gray-400; }
+  .table-wrap { @apply w-full overflow-x-auto; }
+  .table { @apply whitespace-nowrap; }
+  .table th { @apply text-xs uppercase tracking-wider; }
+  .table td .name { @apply font-medium text-gray-900 dark:text-gray-100; }
+  .secondary { @apply mt-0.5 block text-xs text-gray-500 dark:text-dark-400; }
+  .wrap { @apply min-w-[180px] max-w-md whitespace-normal break-words; }
+  .pill { @apply badge badge-gray; }
+  .pill.green { @apply badge-success; }
+  .pill.red { @apply badge-danger; }
+  .pill.blue { @apply badge-primary; }
+  .pill.amber { @apply badge-warning; }
+  .toolbar { @apply flex flex-wrap items-center gap-3 border-b border-gray-100 px-6 py-4 dark:border-dark-700; }
+  .toolbar input { @apply input; }
+  .toolbar .search { @apply min-w-0 flex-1; }
+  .toolbar .count { @apply ml-auto text-xs text-gray-500 dark:text-dark-400; }
+  .empty { @apply flex flex-col items-center p-12 text-center; }
+  .empty-icon { @apply mb-4 h-12 w-12 text-gray-400 dark:text-dark-500; }
+  .empty strong { @apply text-lg font-medium text-gray-900 dark:text-gray-100; }
+  .empty p { @apply mt-2 text-sm text-gray-500 dark:text-dark-400; }
+  .switch { @apply inline-flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-300; }
+  .switch input { @apply relative m-0 inline-flex h-6 w-11 shrink-0 cursor-pointer appearance-none rounded-full border-2 border-transparent bg-gray-200 transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:bg-dark-600 dark:focus:ring-offset-dark-800; }
+  .switch input:after { content: ''; @apply pointer-events-none absolute left-0 top-0 inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out; }
+  .switch input:checked { @apply bg-primary-600; }
+  .switch input:checked:after { @apply translate-x-5; }
+  .switch input:disabled { @apply cursor-not-allowed opacity-50; }
+  .field { @apply mb-4 grid gap-1.5 text-sm text-gray-700 dark:text-gray-300; }
+  .field > span { @apply font-medium; }
+  .field input:not([type='checkbox']), .field select, .field textarea { @apply input; }
+  .field small { @apply text-xs font-normal text-gray-500 dark:text-dark-400; }
+  .field-row { @apply grid gap-4 sm:grid-cols-2; }
+  textarea { @apply resize-y; }
+  .checklist { @apply flex flex-wrap gap-2; }
+  .check-chip { @apply flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs dark:border-dark-600 dark:bg-dark-800; }
+  .check-chip input, .account-picker input { @apply h-4 w-4 shrink-0; }
+  .account-picker { @apply grid max-h-48 gap-2 overflow-y-auto rounded-xl border border-gray-200 p-3 dark:border-dark-600; }
+  .account-picker label { @apply flex items-center gap-2 text-sm font-normal; }
+  .editor-dialog { @apply w-[calc(100%-2rem)] max-w-2xl overflow-hidden rounded-2xl border border-gray-200 bg-white p-0 text-gray-900 shadow-2xl dark:border-dark-700 dark:bg-dark-800 dark:text-gray-100; max-height: 90vh; }
+  .editor-dialog::backdrop { @apply bg-black/50 backdrop-blur-sm; }
+  .dialog-header { @apply flex items-center justify-between gap-4 border-b border-gray-200 px-6 py-4 dark:border-dark-700; }
+  .dialog-body { @apply overflow-y-auto px-6 py-4; max-height: calc(90vh - 150px); }
+  .dialog-footer { @apply flex justify-end gap-2 border-t border-gray-200 px-6 py-4 dark:border-dark-700; }
+  .form-error { @apply mt-3 whitespace-pre-wrap break-words text-sm text-red-500; }
+  .module-grid { @apply grid gap-6 lg:grid-cols-3; }
+  .module-card { @apply mb-0 flex flex-col p-6; }
+  .module-icon { @apply mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-primary-100 text-primary-600 dark:bg-primary-900/30 dark:text-primary-400; }
+  .module-icon > svg { @apply h-6 w-6; }
+  .module-card p { @apply mb-6 mt-2 text-sm text-gray-500 dark:text-dark-400; }
+  .module-bottom { @apply mt-auto flex items-center justify-between gap-2 border-t border-gray-100 pt-4 dark:border-dark-700; }
+  .module-url { @apply mt-3 break-all text-xs text-gray-400 dark:text-dark-400; }
+  /* Position and surface come unchanged from upstream .toast (top/right only). */
+  .toast-row { @apply flex items-start gap-3; }
+  .toast-row > svg { @apply mt-0.5 h-5 w-5 shrink-0 text-emerald-500; }
+  .toast-error .toast-row > svg { @apply text-red-500; }
+  .toast-message { @apply min-w-0 flex-1 break-words text-sm leading-relaxed text-gray-900 dark:text-white; }
+  .toast-close { @apply -m-1 shrink-0 rounded p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-dark-700 dark:hover:text-gray-300; }
+  .toast-close > svg { @apply h-4 w-4; }
+  .loading { @apply p-12 text-center text-sm text-gray-500 dark:text-dark-400; }
+  .spinner { @apply mr-2 inline-block h-5 w-5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent align-middle; }
+  .benchmark-form { @apply grid gap-4 sm:grid-cols-2; }
+  .benchmark-form .wide { @apply sm:col-span-2; }
+  .score { @apply text-3xl font-bold text-primary-600 dark:text-primary-400; }
+  .score small { @apply text-sm font-normal text-gray-500 dark:text-dark-400; }
+  .code { @apply whitespace-pre-wrap break-words font-mono text-xs; }
+  .tiny { @apply text-xs; }
+  .mt { @apply mt-6; }
+  .row-title { @apply flex items-center gap-2; }
+  .data-pre { @apply whitespace-pre-wrap break-words rounded-xl bg-gray-50 p-4 font-mono text-xs dark:bg-dark-900; }
+  .feature-login { @apply px-6 py-12 text-center; }
+  .feature-login p { @apply mt-3 text-sm text-gray-500 dark:text-dark-400; }
+  .connection-empty { @apply mt-6 p-8 text-center sm:p-12; }
+  .connection-empty-symbol { @apply mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-gray-400 dark:bg-dark-700; }
+  .connection-empty-symbol > svg { @apply h-6 w-6; }
+  .connection-empty p { @apply mx-auto mt-2 max-w-xl text-sm text-gray-500 dark:text-dark-400; }
+  .connection-empty-notes { @apply mt-6 flex flex-wrap justify-center gap-4 text-xs text-gray-500 dark:text-dark-400; }
+  .connection-empty-notes > span { @apply flex items-center gap-2; }
+  .connection-empty-notes svg { @apply h-4 w-4; }
+}
+
+@media (max-width: 640px) {
+  .toast { min-width: 0; max-width: calc(100vw - 2rem); }
+  .connection-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .connection-field { grid-column: 1 / -1; }
+  .connection-form > .pill { grid-column: 1 / -1; margin-bottom: 0; }
+  .connection-form > #disconnect { justify-self: end; }
+  .page-head { gap: .75rem; }
+  .page-head h1 { font-size: 1.25rem; line-height: 1.75rem; }
+  .page-head > .button { padding-left: .75rem; padding-right: .75rem; }
+  .stat-card { flex-direction: column; }
+  .toolbar .count { width: 100%; margin-left: 0; }
+  .detail-row .value { max-width: 65%; }
+}
+
+@layer components {
+  .reward-tiers { @apply mb-4 grid gap-3; }
+  .reward-tier { @apply grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3; }
+  .reward-tier .field { @apply mb-0; }
+  .automation-preview { @apply min-w-0; }
+  .editor-dialog:has(.automation-preview) { @apply max-w-5xl; }
+  .preview-title { @apply my-4 text-base font-semibold; }
+}

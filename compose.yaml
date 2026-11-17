@@ -1,0 +1,16 @@
+services:
+  helper:
+    image: sub2api-helper:0.2.22
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - helper-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  helper-data:

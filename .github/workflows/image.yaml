@@ -1,0 +1,165 @@
+name: Publish aligned release
+on:
+  workflow_run:
+    workflows: ['Test and build']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Exact default-branch SHA of the merged sync PR to retry'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: publish-aligned-release-${{ github.event.workflow_run.head_sha || inputs.commit }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+      pull-requests: read
+    steps:
+      - name: Checkout trusted default-branch release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: automation
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify merge, successful push CI and exact release provenance
+        id: guard
+        working-directory: automation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          REQUESTED_SHA: ${{ inputs.commit }}
+        run: |
+          TARGET_SHA="${TESTED_SHA:-${REQUESTED_SHA:-$(git rev-parse HEAD)}}"
+          python scripts/publish_release.py guard --skip-unrelated --repository "$REPOSITORY" \
+            --default-branch "$DEFAULT_BRANCH" --sha "$TARGET_SHA" \
+            --metadata-path "$RUNNER_TEMP/verified-release.json" --outputs "$GITHUB_OUTPUT"
+      - name: Checkout only the verified, tested commit
+        if: steps.guard.outputs.eligible == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.guard.outputs.sha }}
+          path: helper
+          persist-credentials: false
+      - name: Reserve the immutable tag as durable publication intent
+        if: steps.guard.outputs.eligible == 'true'
+        working-directory: automation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/publish_release.py reserve --metadata-path "$RUNNER_TEMP/verified-release.json"
+      - uses: docker/setup-qemu-action@v3
+        if: steps.guard.outputs.eligible == 'true'
+      - uses: docker/setup-buildx-action@v3
+        if: steps.guard.outputs.eligible == 'true'
+      - uses: docker/login-action@v3
+        if: steps.guard.outputs.eligible == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Validate any existing immutable version image
+        if: steps.guard.outputs.eligible == 'true'
+        id: existing
+        working-directory: automation
+        env:
+          IMAGE: ${{ steps.guard.outputs.image }}
+          TAG: ${{ steps.guard.outputs.tag }}
+          VERSION: ${{ steps.guard.outputs.version }}
+          SHA: ${{ steps.guard.outputs.sha }}
+        run: |
+          python scripts/publish_release.py inspect-image --image "$IMAGE:$TAG" \
+            --version "$VERSION" --sha "$SHA" --outputs "$GITHUB_OUTPUT"
+      - name: Validate the numeric version alias
+        if: steps.guard.outputs.eligible == 'true'
+        id: numeric
+        working-directory: automation
+        env:
+          IMAGE: ${{ steps.guard.outputs.image }}
+          VERSION: ${{ steps.guard.outputs.version }}
+          SHA: ${{ steps.guard.outputs.sha }}
+        run: |
+          python scripts/publish_release.py inspect-image --image "$IMAGE:$VERSION" \
+            --version "$VERSION" --sha "$SHA" --outputs "$GITHUB_OUTPUT"
+      - name: Reuse a verified index and recover a missing alias
+        if: steps.guard.outputs.eligible == 'true'
+        id: reuse
+        working-directory: automation
+        env:
+          IMAGE: ${{ steps.guard.outputs.image }}
+          TAG: ${{ steps.guard.outputs.tag }}
+          VERSION: ${{ steps.guard.outputs.version }}
+          SHA: ${{ steps.guard.outputs.sha }}
+          TAG_EXISTS: ${{ steps.existing.outputs.exists }}
+          NUMERIC_EXISTS: ${{ steps.numeric.outputs.exists }}
+          TAG_DIGEST: ${{ steps.existing.outputs.digest }}
+          NUMERIC_DIGEST: ${{ steps.numeric.outputs.digest }}
+        run: |
+          if [ "$TAG_EXISTS" = true ] && [ "$NUMERIC_EXISTS" = true ] && [ "$TAG_DIGEST" != "$NUMERIC_DIGEST" ]; then
+            echo 'Existing version aliases point to different manifests; refusing to overwrite either.' >&2
+            exit 1
+          fi
+          if [ "$TAG_EXISTS" = true ] || [ "$NUMERIC_EXISTS" = true ]; then
+            DIGEST="${TAG_DIGEST:-$NUMERIC_DIGEST}"
+            if [ "$TAG_EXISTS" != true ]; then docker buildx imagetools create --tag "$IMAGE:$TAG" "$IMAGE@$DIGEST"; fi
+            if [ "$NUMERIC_EXISTS" != true ]; then docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"; fi
+            : > "$RUNNER_TEMP/official-alias.out"
+            : > "$RUNNER_TEMP/numeric-alias.out"
+            python scripts/publish_release.py inspect-image --image "$IMAGE:$TAG" --version "$VERSION" --sha "$SHA" --outputs "$RUNNER_TEMP/official-alias.out"
+            python scripts/publish_release.py inspect-image --image "$IMAGE:$VERSION" --version "$VERSION" --sha "$SHA" --outputs "$RUNNER_TEMP/numeric-alias.out"
+            python - "$DIGEST" "$RUNNER_TEMP/official-alias.out" "$RUNNER_TEMP/numeric-alias.out" <<'PY'
+          import pathlib,sys
+          for path in sys.argv[2:]:
+            values=dict(line.split('=',1) for line in pathlib.Path(path).read_text().splitlines())
+            assert values.get('exists')=='true' and values.get('digest')==sys.argv[1], 'Registry alias did not retain the verified immutable digest'
+          PY
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and publish both architectures with the official version
+        if: steps.guard.outputs.eligible == 'true' && steps.reuse.outputs.exists != 'true'
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: helper
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.guard.outputs.image }}:${{ steps.guard.outputs.tag }}
+            ${{ steps.guard.outputs.image }}:${{ steps.guard.outputs.version }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.guard.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.guard.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          annotations: |
+            index:org.opencontainers.image.version=${{ steps.guard.outputs.version }}
+            index:org.opencontainers.image.revision=${{ steps.guard.outputs.sha }}
+      - name: Create the matching Git tag and GitHub Release in this run
+        if: steps.guard.outputs.eligible == 'true'
+        working-directory: automation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.reuse.outputs.digest || steps.build.outputs.digest }}
+        run: |
+          python scripts/publish_release.py finish --metadata-path "$RUNNER_TEMP/verified-release.json" \
+            --digest "$DIGEST"
