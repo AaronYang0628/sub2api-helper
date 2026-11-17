@@ -70,6 +70,8 @@ jobs:
       - run: npm --prefix ui ci && npm --prefix ui run build
       - name: Require the tested generated UI to be committed
         run: git diff --exit-code -- helper/static/style.css
+      - name: Build the GitHub Pages demo from the current UI
+        run: node site/build.mjs
       - run: docker build -t sub2api-helper:test .
       - run: python tests/container_smoke.py sub2api-helper:test
       - name: Verify compatibility approval and source fingerprints

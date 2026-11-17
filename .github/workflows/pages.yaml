@@ -1,0 +1,63 @@
+name: Deploy GitHub Pages demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'helper/static/**'
+      - 'helper/VERSION'
+      - '.github/workflows/pages.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages-demo
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build the static, fixture-only demo
+        run: node site/build.mjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+          retention-days: 7
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # First enable Pages in repository Settings > Pages > Source: GitHub Actions.
+      # GITHUB_TOKEN can deploy, but cannot grant itself initial site-admin access.
+      - uses: actions/configure-pages@v5
+      - name: Publish the demo
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Explain first-time Pages setup after a deployment failure
+        if: failure()
+        run: |
+          {
+            echo '## Pages deployment needs attention'
+            echo 'The build job retains the generated static-site artifact for review.'
+            echo 'For a new site, open Settings → Pages and select Source: GitHub Actions, then rerun this workflow.'
+            echo 'Settings: https://github.com/AaronYang0628/sub2api-helper/settings/pages'
+            echo 'If Pages is already enabled, inspect the failed deployment step for the specific cause.'
+          } >> "$GITHUB_STEP_SUMMARY"

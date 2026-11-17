@@ -1,0 +1,9 @@
+/* Demo-only layout; colors and controls come from the unchanged native UI CSS. */
+.demo-notice { align-items: center; flex-wrap: wrap; gap: 12px 24px; }
+.demo-description { flex: 1 1 360px; min-width: 0; }
+.demo-description strong { font-weight: 600; }
+.demo-description p { margin-top: 4px; font-size: 12px; line-height: 1.7; }
+.demo-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#disconnect { display: none !important; }
+#connection-key:disabled { cursor: default; }
+#connect:disabled { cursor: default; opacity: 1; }
