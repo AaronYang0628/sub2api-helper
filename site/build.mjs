@@ -10,6 +10,8 @@ const assets = join(target, 'assets');
 await rm(target, { recursive: true, force: true });
 await mkdir(assets, { recursive: true });
 let html = await readFile(join(root, 'helper/static/index.html'), 'utf8');
+// Normalize either source spelling before rewriting all assets for Pages.
+html = html.replaceAll('"/_helper/static/', '"/static/');
 const appSource = await readFile(join(root, 'helper/static/app.js'), 'utf8');
 if (!appSource.includes('let token = readSession();') || !html.includes('<div class="embed-shell">')) throw new Error('Helper UI structure changed; update the static demo adapter.');
 html = html.replace('<head>', '<head>\n  <link rel="icon" href="data:,">').replace('<title>sub2api Helper · 管理助手</title>', '<title>sub2api Helper · 交互演示</title>')

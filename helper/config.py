@@ -35,6 +35,7 @@ class Config:
     smtp_from_addr: str = ""
     smtp_tls: str = "starttls"
     native_ui: bool = False
+    legacy_routes: bool = False
 
     @classmethod
     def from_env(cls):
@@ -77,5 +78,6 @@ class Config:
             smtp_password=os.environ.get("SMTP_PASSWORD", ""),
             smtp_from_addr=smtp_from,
             smtp_tls=tls,
-            native_ui=os.environ.get("HELPER_NATIVE_UI", "true").lower() in {"true", "1", "yes"},
+            native_ui=os.environ.get("HELPER_NATIVE_UI", "false").strip().lower() in {"true", "1", "yes"},
+            legacy_routes=os.environ.get("HELPER_LEGACY_ROUTES", "false").strip().lower() in {"true", "1", "yes"},
         )

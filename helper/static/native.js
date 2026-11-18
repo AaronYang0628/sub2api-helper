@@ -75,9 +75,18 @@
     } finally { clearTimeout(timer); }
   }
   function clearConsoleSession() { try { sessionStorage.removeItem('helper_session'); } catch (_) { /* Storage may be unavailable. */ } }
+  function revokeNativeSession(credential) {
+    // Logout remains entirely upstream-owned. This separate request only
+    // invalidates Helper sessions associated with the previously observed JWT.
+    try {
+      void fetch(API + '/session/revoke', { method: 'POST', credentials: 'omit', redirect: 'error', keepalive: true,
+        headers: { Authorization: `Bearer ${credential}`, 'X-Admin-UI-Request': '1' } }).catch(() => {});
+    } catch (_) { /* Best effort: local cleanup must never depend on the network. */ }
+  }
   function checkIdentity() {
     const credential = token();
     if (state.observedToken !== credential) {
+      if (state.observedToken) revokeNativeSession(state.observedToken);
       clearConsoleSession(); closeDialog(); state.observedToken = credential; state.key = ''; state.phase = 'idle';
     }
     if (!currentKind()) { clearConsoleSession(); if (state.dialog) closeDialog(); }
@@ -295,7 +304,8 @@
   }
   window.addEventListener('popstate', () => { closeDialog(); checkIdentity(); scheduleScan(); });
   window.addEventListener('resize', scheduleScan);
-  window.addEventListener('storage', event => { if (event.key === 'auth_token') { closeDialog(); checkIdentity(); scheduleScan(); } });
+  window.addEventListener('storage', event => { if (event.key === 'auth_token' || event.key === null) { closeDialog(); checkIdentity(); scheduleScan(); } });
+  window.addEventListener('pagehide', checkIdentity);
   window.addEventListener('focus', scheduleScan);
   document.addEventListener('visibilitychange', scheduleScan);
   scheduleScan();

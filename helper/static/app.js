@@ -1,4 +1,5 @@
 'use strict';
+const ADMIN_API = '/_helper/api/admin';
 const launchParams = new URLSearchParams(location.search);
 const sourceHostHint = launchParams.get('src_host') || '';
 const requestedTheme = launchParams.get('theme');
@@ -54,7 +55,7 @@ function toast(message, error = false) {
   clearTimeout(toastTimer); toastTimer = setTimeout(dismiss, error ? 6500 : 3500);
 }
 async function api(path, method = 'GET', body) {
-  const response = await fetch(`/api${path}`, { method, headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  const response = await fetch(`${ADMIN_API}${path}`, { method, credentials: 'omit', redirect: 'error', headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
   let data; try { data = await response.json(); } catch (_) { data = null; }
   if (!response.ok) {
     if (response.status === 401) { token = ''; saveSession(''); setConnectionState(false); }
@@ -112,7 +113,7 @@ function disconnected() {
 async function initializeConnection() {
   const feedback = $('#connection-feedback');
   try {
-    const response = await fetch('/api/connection', { credentials: 'omit' });
+    const response = await fetch(`${ADMIN_API}/connection`, { credentials: 'omit', redirect: 'error' });
     const info = await response.json();
     if (!response.ok) throw new Error(typeof info.detail === 'string' ? info.detail : '连接信息加载失败');
     $('#connection-url').value = info.upstream_url || sourceHostHint;
@@ -128,7 +129,7 @@ $('#connection-form').addEventListener('submit', async event => {
   event.preventDefault(); const submit = $('#connect'); const feedback = $('#connection-feedback');
   submit.disabled = true; feedback.textContent = '正在验证管理员 Key…'; feedback.className = 'connection-feedback';
   try {
-    const response = await fetch('/api/connection', { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: $('#connection-url').value.trim(), admin_key: $('#connection-key').value.trim(), helper_url: location.origin }) });
+    const response = await fetch(`${ADMIN_API}/connection`, { method: 'POST', credentials: 'omit', redirect: 'error', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: $('#connection-url').value.trim(), admin_key: $('#connection-key').value.trim(), helper_url: location.origin }) });
     const data = await response.json();
     if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || `连接失败 (${response.status})`));
     if (!data.session) throw new Error('服务未返回有效会话，请重试。');
@@ -363,7 +364,7 @@ async function modulesPage() {
         if (!confirm(`确认${value ? '上线' : '下线'}「${title}」并同步上游菜单？`)) throw new Error('已取消操作');
         state.modules = await api('/modules', 'PUT', { ...state.modules, [key]: value }); toast('功能与自定义菜单已同步'); await render();
       }, state.modules[key] ? '已启用' : '启用')),
-      el('div', { class: 'module-url' }, `${state.status.public_url || 'HELPER_PUBLIC_URL'}/features/${key}`))))];
+      el('div', { class: 'module-url' }, `${(state.status.public_url || 'HELPER_PUBLIC_URL').replace(/\/+$/, '')}/_helper/features/${key}`))))];
 }
 function extractRows(data, keys) {
   if (Array.isArray(data)) return data;

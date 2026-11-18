@@ -15,7 +15,10 @@ import httpx
 from helper.app import create_app
 from helper.config import Config
 from helper.store import Store
-from test_app import FakeMailer, FakeUpstream
+try:
+    from tests.test_app import FakeMailer, FakeUpstream
+except ModuleNotFoundError:
+    from test_app import FakeMailer, FakeUpstream
 
 
 class AutomationUpstream(FakeUpstream):
@@ -77,22 +80,22 @@ class AutomationApiTests(unittest.TestCase):
         self.temp.cleanup()
 
     def create(self, value=None):
-        response = self.client.post("/api/automations", headers=self.auth, json=value or subscription())
+        response = self.client.post("/_helper/api/admin/automations", headers=self.auth, json=value or subscription())
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
     def update(self, item_id, value):
-        return self.client.put(f"/api/automations/{item_id}", headers=self.auth, json=value)
+        return self.client.put(f"/_helper/api/admin/automations/{item_id}", headers=self.auth, json=value)
 
     def test_automation_and_groups_routes_require_management_auth(self):
         saved = self.create()
         for method, path, value in [
-            ("GET", "/api/groups", None), ("GET", "/api/automations", None),
-            ("POST", "/api/automations", subscription()),
-            ("PUT", f"/api/automations/{saved['id']}", subscription()),
-            ("DELETE", f"/api/automations/{saved['id']}", None),
-            ("POST", f"/api/automations/{saved['id']}/preview", None),
-            ("POST", f"/api/automations/{saved['id']}/run", None),
+            ("GET", "/_helper/api/admin/groups", None), ("GET", "/_helper/api/admin/automations", None),
+            ("POST", "/_helper/api/admin/automations", subscription()),
+            ("PUT", f"/_helper/api/admin/automations/{saved['id']}", subscription()),
+            ("DELETE", f"/_helper/api/admin/automations/{saved['id']}", None),
+            ("POST", f"/_helper/api/admin/automations/{saved['id']}/preview", None),
+            ("POST", f"/_helper/api/admin/automations/{saved['id']}/run", None),
         ]:
             with self.subTest(method=method, path=path):
                 self.assertEqual(self.client.request(method, path, json=value).status_code, 401)
@@ -103,7 +106,7 @@ class AutomationApiTests(unittest.TestCase):
         self.worker.deactivate.assert_not_awaited()
 
     def test_groups_response_exposes_only_configuration_fields(self):
-        response = self.client.get("/api/groups", headers=self.auth)
+        response = self.client.get("/_helper/api/admin/groups", headers=self.auth)
         self.assertEqual(response.status_code, 200)
         group = response.json()[0]
         self.assertEqual(set(group), {"id", "name", "status", "subscription_type", "rate_multiplier", "daily_limit_usd", "weekly_limit_usd", "monthly_limit_usd"})
@@ -112,13 +115,13 @@ class AutomationApiTests(unittest.TestCase):
     def test_subscription_requires_an_active_subscription_group(self):
         for change in ({"group_id": None}, {"group_id": 0}, {"group_id": -1}, {"group_id": 999}):
             with self.subTest(change=change):
-                response = self.client.post("/api/automations", headers=self.auth, json=subscription(**change))
+                response = self.client.post("/_helper/api/admin/automations", headers=self.auth, json=subscription(**change))
                 self.assertEqual(response.status_code, 422, response.text)
         for group_change in ({"status": "disabled"}, {"subscription_type": "standard"}, {"status": None}):
             with self.subTest(group_change=group_change):
                 original = deepcopy(self.upstream.groups[0])
                 self.upstream.groups[0].update(group_change)
-                response = self.client.post("/api/automations", headers=self.auth, json=subscription())
+                response = self.client.post("/_helper/api/admin/automations", headers=self.auth, json=subscription())
                 self.assertEqual(response.status_code, 422, response.text)
                 self.upstream.groups[0] = original
         self.assertEqual(self.store.list("automations"), [])
@@ -133,7 +136,7 @@ class AutomationApiTests(unittest.TestCase):
         ]
         for change in invalid:
             with self.subTest(change=change):
-                response = self.client.post("/api/automations", headers=self.auth, json=subscription(**change))
+                response = self.client.post("/_helper/api/admin/automations", headers=self.auth, json=subscription(**change))
                 self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(self.store.list("automations"), [])
 
@@ -149,7 +152,7 @@ class AutomationApiTests(unittest.TestCase):
         ]
         for value in invalid:
             with self.subTest(value=value):
-                response = self.client.post("/api/automations", headers=self.auth, json=rewards(rewards=value))
+                response = self.client.post("/_helper/api/admin/automations", headers=self.auth, json=rewards(rewards=value))
                 self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(self.store.list("automations"), [])
 
@@ -164,7 +167,7 @@ class AutomationApiTests(unittest.TestCase):
         self.create(subscription(enabled=True))
         for scope in ("user_group", "global_group"):
             with self.subTest(scope=scope):
-                response = self.client.post("/api/automations", headers=self.auth, json=subscription(name="conflict", enabled=True, scope=scope))
+                response = self.client.post("/_helper/api/admin/automations", headers=self.auth, json=subscription(name="conflict", enabled=True, scope=scope))
                 self.assertEqual(response.status_code, 409, response.text)
         self.create(subscription(name="other group", enabled=True, group_id=4))
         draft = self.create(subscription(name="draft"))
@@ -176,7 +179,7 @@ class AutomationApiTests(unittest.TestCase):
         self.create(rewards(enabled=True))
         for mode in ("automatic", "approval"):
             with self.subTest(mode=mode):
-                response = self.client.post("/api/automations", headers=self.auth, json=rewards(enabled=True, mode=mode))
+                response = self.client.post("/_helper/api/admin/automations", headers=self.auth, json=rewards(enabled=True, mode=mode))
                 self.assertEqual(response.status_code, 409)
         self.create(rewards(name="next draft"))
 
@@ -221,7 +224,7 @@ class AutomationApiTests(unittest.TestCase):
                 self.assertTrue(response.json()["enabled"])
                 self.assertEqual(response.json()["enabled_at"], edited_at.isoformat())
                 self.assertEqual(self.store.get("automations", saved["id"])["enabled_at"], edited_at.isoformat())
-                deleted = self.client.delete(f"/api/automations/{saved['id']}", headers=self.auth)
+                deleted = self.client.delete(f"/_helper/api/admin/automations/{saved['id']}", headers=self.auth)
                 self.assertEqual(deleted.status_code, 200, deleted.text)
         self.worker.run.assert_not_awaited()
 
@@ -252,19 +255,19 @@ class AutomationApiTests(unittest.TestCase):
         saved = self.create()
         before = deepcopy(self.store.get("automations", saved["id"]))
         self.worker.preview.return_value = {"type": "subscription_multiplier", "actions": [{"user_id": 7, "multiplier": .5}], "skipped": []}
-        response = self.client.post(f"/api/automations/{saved['id']}/preview", headers=self.auth)
+        response = self.client.post(f"/_helper/api/admin/automations/{saved['id']}/preview", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["actions"][0]["user_id"], 7)
         self.worker.preview.assert_awaited_once_with(before)
         self.assertEqual(self.store.get("automations", saved["id"]), before)
-        response = self.client.post(f"/api/automations/{saved['id']}/run", headers=self.auth)
+        response = self.client.post(f"/_helper/api/admin/automations/{saved['id']}/run", headers=self.auth)
         self.assertEqual(response.status_code, 409)
         self.worker.run.assert_not_awaited()
         self.assertEqual(self.upstream.writes, [])
 
     def test_enabled_manual_run_is_explicit_and_audited(self):
         saved = self.create(rewards(enabled=True, mode="approval"))
-        response = self.client.post(f"/api/automations/{saved['id']}/run", headers=self.auth)
+        response = self.client.post(f"/_helper/api/admin/automations/{saved['id']}/run", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.worker.run.assert_awaited_once_with(self.store.get("automations", saved["id"]), manual=True)
         events = [item for item in self.store.audits() if item["action"] == "automation.manual_run"]
@@ -279,7 +282,7 @@ class AutomationApiTests(unittest.TestCase):
             return {"actions": [{"action": "restore_user_group_rate"}], "errors": []}
 
         self.worker.deactivate.side_effect = check_still_exists
-        response = self.client.delete(f"/api/automations/{saved['id']}", headers=self.auth)
+        response = self.client.delete(f"/_helper/api/admin/automations/{saved['id']}", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.worker.deactivate.assert_awaited_once()
         self.assertIsNone(self.store.get("automations", saved["id"]))
@@ -291,7 +294,7 @@ class AutomationApiTests(unittest.TestCase):
         for operation in ("delete", "edit", "disable"):
             with self.subTest(operation=operation):
                 if operation == "delete":
-                    response = self.client.delete(f"/api/automations/{saved['id']}", headers=self.auth)
+                    response = self.client.delete(f"/_helper/api/admin/automations/{saved['id']}", headers=self.auth)
                 else:
                     response = self.update(saved["id"], subscription(enabled=operation != "disable", multiplier=.25 if operation == "edit" else .5))
                 self.assertEqual(response.status_code, 409, response.text)
@@ -314,7 +317,7 @@ class AutomationApiTests(unittest.TestCase):
     def test_monthly_rule_deletion_keeps_durable_award_history(self):
         saved = self.create(rewards())
         self.store.ledger_set("monthly-award:test:2026-10:user:7", {"status": "done", "amount": "30"})
-        response = self.client.delete(f"/api/automations/{saved['id']}", headers=self.auth)
+        response = self.client.delete(f"/_helper/api/admin/automations/{saved['id']}", headers=self.auth)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.store.ledger_get("monthly-award:test:2026-10:user:7")["status"], "done")
         self.worker.deactivate.assert_not_awaited()
@@ -332,15 +335,15 @@ class AutomationApiTests(unittest.TestCase):
 
     def test_settlement_history_requires_admin_auth_and_rejects_ordinary_portal_session(self):
         self.settlement()
-        session = self.client.post("/api/portal/session", json={"token": "user-jwt"})
+        session = self.client.post("/_helper/api/portal/session", json={"token": "user-jwt"})
         self.assertEqual(session.status_code, 200, session.text)
         for headers in ({}, {"Authorization": "Bearer upstream-secret"},
                         {"X-Portal-Session": session.json()["session"]}):
             with self.subTest(headers=list(headers)):
-                response = self.client.get("/api/settlements", headers=headers)
+                response = self.client.get("/_helper/api/admin/settlements", headers=headers)
                 self.assertEqual(response.status_code, 401, response.text)
                 self.assertNotIn("30.25", response.text)
-        self.assertEqual(self.client.get("/api/settlements", headers=self.auth).status_code, 200)
+        self.assertEqual(self.client.get("/_helper/api/admin/settlements", headers=self.auth).status_code, 200)
 
     def test_settlement_history_is_sorted_instance_scoped_and_filters_internal_fields(self):
         self.settlement("2026-09")
@@ -349,7 +352,7 @@ class AutomationApiTests(unittest.TestCase):
         self.store.ledger_set("automation:monthly_rewards:another-instance:2026-12", {"month": "2026-12", "actions": []})
         self.store.ledger_set("automation:rate_ownership:unrelated", {"month": "2027-01", "actions": []})
         self.store.ledger_set("rule:1:user:7:usage:abc", {"status": "done"})
-        response = self.client.get("/api/settlements", headers=self.auth)
+        response = self.client.get("/_helper/api/admin/settlements", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         rows = response.json()
         self.assertEqual([row["month"] for row in rows], ["2026-11", "2026-10", "2026-09"])
@@ -366,10 +369,10 @@ class AutomationApiTests(unittest.TestCase):
                    "status": "needs_review", "reason": "Outcome uncertain; reconcile before any manual action",
                    "error": "UpstreamError", "attempted_at": "2026-11-01T00:00:00+08:00", "idempotency_key": "do-not-return"}
         self.settlement(rule_id=saved["id"], actions=[pending])
-        response = self.client.delete(f"/api/automations/{saved['id']}", headers=self.auth)
+        response = self.client.delete(f"/_helper/api/admin/automations/{saved['id']}", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIsNone(self.store.get("automations", saved["id"]))
-        response = self.client.get("/api/settlements", headers=self.auth)
+        response = self.client.get("/_helper/api/admin/settlements", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()[0]["rule_id"], saved["id"])
         action = response.json()[0]["actions"][0]
@@ -382,14 +385,14 @@ class AutomationApiTests(unittest.TestCase):
     def test_empty_settlement_history_ignores_other_ledger_kinds(self):
         self.store.ledger_set("automation:rate_ownership:unrelated", {"status": "active"})
         self.store.ledger_set("automation:monthly_rewards:another-instance:2026-10", {"month": "2026-10", "actions": []})
-        response = self.client.get("/api/settlements", headers=self.auth)
+        response = self.client.get("/_helper/api/admin/settlements", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), [])
 
     def test_missing_automation_does_not_call_the_worker(self):
         for method, path, value in [
-            ("PUT", "/api/automations/999", subscription()), ("DELETE", "/api/automations/999", None),
-            ("POST", "/api/automations/999/preview", None), ("POST", "/api/automations/999/run", None),
+            ("PUT", "/_helper/api/admin/automations/999", subscription()), ("DELETE", "/_helper/api/admin/automations/999", None),
+            ("POST", "/_helper/api/admin/automations/999/preview", None), ("POST", "/_helper/api/admin/automations/999/run", None),
         ]:
             with self.subTest(path=path):
                 response = self.client.request(method, path, headers=self.auth, json=value)
@@ -413,7 +416,7 @@ class AutomationApiSerializationTests(unittest.IsolatedAsyncioTestCase):
                 for suffix, method in (("preview", worker.preview), ("run", worker.run)):
                     with self.subTest(suffix=suffix):
                         await app.state.engine._tick_lock.acquire()
-                        request = asyncio.create_task(client.post(f"/api/automations/{saved['id']}/{suffix}", headers=auth))
+                        request = asyncio.create_task(client.post(f"/_helper/api/admin/automations/{saved['id']}/{suffix}", headers=auth))
                         try:
                             await asyncio.sleep(.02)
                             self.assertFalse(request.done(), "Financial preview/execution cannot race an in-flight scheduler change")

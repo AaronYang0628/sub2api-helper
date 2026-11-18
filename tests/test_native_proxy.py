@@ -12,7 +12,7 @@ from starlette.responses import StreamingResponse
 from starlette.websockets import WebSocket
 from websockets.asyncio.server import serve
 
-from helper.native_proxy import NativeProxy
+from helper.native_proxy import NativeProxy, is_document_request
 from helper.upstream import UpstreamError
 
 
@@ -329,6 +329,142 @@ class NativeProxyHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 502)
         self.assertNotIn(b"server-secret", await body(response))
         self.assertEqual(seen, [])
+
+    async def test_document_predicate_accepts_spa_navigation_across_native_routes(self):
+        for path in ("/", "/index.html", "/home", "/login", "/register", "/setup", "/auth/oidc/callback?code=opaque",
+                     "/auth/linuxdo/callback", "/dashboard", "/usage", "/admin", "/admin/users", "/admin/accounts",
+                     "/admin/ops", "/admin/groups", "/admin/settings", "/settings/mcp", "/legal/terms", "/custom/12"):
+            with self.subTest(path=path):
+                incoming = request(path, headers=[("Accept", "text/html,application/xhtml+xml;q=0.9"), ("Sec-Fetch-Dest", "document")])
+                self.assertTrue(is_document_request(incoming, incoming.scope["path"].lstrip("/")))
+        self.assertTrue(is_document_request(request("/login", headers=[("Accept", "application/xhtml+xml"), ("Sec-Fetch-Dest", "iframe")]), "login"))
+        self.assertTrue(is_document_request(request("/login", headers=[("Accept", "text/html")]), "login"))
+
+    async def test_document_predicate_excludes_all_audited_gateway_and_static_namespaces(self):
+        paths = ("/api", "/api/v1/user/profile", "/v1", "/v1/models", "/v1beta/models", "/backend-api/codex/responses",
+                 "/antigravity/models", "/responses", "/responses/compact", "/models", "/models/gpt", "/images", "/images/tasks/task",
+                 "/videos/request/content", "/tts", "/stt", "/custom-voices/voice/audio", "/realtime", "/chat/completions",
+                 "/messages/count_tokens", "/embeddings", "/alpha/search", "/web_search", "/x_search", "/contents/generations/tasks",
+                 "/v3/contents/generations/tasks", "/setup/api/config", "/.well-known/oauth-authorization-server", "/health", "/healthz",
+                 "/readyz", "/metrics", "/_helper/native.js", "/assets/index.js", "/assets/no-extension", "/static/a", "/logo.svg",
+                 "/favicon.ico", "/robots.txt", "/manifest.webmanifest", "/style.css/", "/nested/script.js", "/openapi.json")
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertFalse(is_document_request(request(path, headers=[("Accept", "text/html")]), path.lstrip("/")))
+
+    async def test_document_predicate_requires_real_html_accept_and_navigation_destination(self):
+        for accept in ("*/*", "application/json", "text/htmlx", "text/html;q=0", "text/html;q=bad", "text/html;q=nan", "text/html;q=2"):
+            self.assertFalse(is_document_request(request(headers=[("Accept", accept)]), ""), accept)
+        for accept in ("text/html", "text/html; q=0.5", "application/json,text/html;q=0.2", "application/xhtml+xml"):
+            self.assertTrue(is_document_request(request(headers=[("Accept", accept)]), ""), accept)
+        self.assertFalse(is_document_request(request(), ""))
+        for destination in ("empty", "script", "style", "image", "font", "worker", ""):
+            self.assertFalse(is_document_request(request(headers=[("Accept", "text/html"), ("Sec-Fetch-Dest", destination)]), ""))
+        for method in ("POST", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            self.assertFalse(is_document_request(request(method=method, headers=[("Accept", "text/html")]), ""))
+        self.assertFalse(is_document_request(request(headers=[("Accept", "text/html"), ("Upgrade", "websocket")]), ""))
+
+    async def test_document_guard_rejects_ambiguous_paths_and_never_dispatches_non_documents(self):
+        seen = []
+        proxy = self.proxy(lambda outgoing: seen.append(outgoing))
+        for path in ("/api/v1/admin/users", "/v1/responses", "/assets/index.js", "/a/../admin/users", "/admin//users", "/%252fapi/v1/users"):
+            incoming = request(path, headers=[("Accept", "text/html")])
+            response = await proxy.forward_document(incoming, incoming.scope["path"].lstrip("/"))
+            self.assertEqual(response.status_code, 404)
+            self.assertFalse(getattr(incoming.state, "helper_proxied", False))
+        response = await proxy.forward_document(request("/api/users", headers=[("Accept", "text/html")]), "admin/users")
+        self.assertEqual(response.status_code, 404)
+        response = await proxy.forward_document(request("/admin/users", "POST", headers=[("Accept", "text/html")]), "admin/users")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(seen, [])
+
+    async def test_document_injection_requires_real_spa_mount_and_asset_module(self):
+        shell = b'<html><head><script nonce="upstream-nonce" type="module" src="/assets/index-hash.js"></script></head><body><div id="app"></div></body></html>'
+        csp = "default-src 'self'; script-src 'nonce-upstream-nonce'"
+        observed = []
+
+        def handler(outgoing):
+            observed.append(outgoing)
+            return httpx.Response(200, stream=TrackedStream([shell]), headers=[("Content-Type", "text/html"), ("Content-Security-Policy", csp),
+                ("Set-Cookie", "one=1; HttpOnly"), ("Set-Cookie", "two=2; Secure"), ("ETag", '"original"')])
+
+        response = await self.proxy(handler).forward_document(request("/admin/ops", headers=[("Accept", "text/html"), ("Sec-Fetch-Dest", "document")]), "admin/ops")
+        result = await body(response)
+        self.assertIn(b'data-sub2api-helper-native="script" nonce="upstream-nonce"', result)
+        self.assertIn(b'data-sub2api-helper-native="style" nonce="upstream-nonce"', result)
+        self.assertEqual(response.headers["content-security-policy"], csp)
+        self.assertEqual(response.headers.getlist("set-cookie"), ["one=1; HttpOnly", "two=2; Secure"])
+        self.assertNotIn("etag", response.headers)
+        self.assertEqual(observed[0].url.path, "/admin/ops")
+        self.assertEqual(observed[0].headers["accept-encoding"], "identity")
+
+    async def test_document_does_not_inject_lookalikes_comments_scripts_or_unrelated_html(self):
+        asset = '<script type="module" src="/assets/index.js"></script>'
+        candidates = ("<h1>Maintenance</h1>", '<div id="app"></div>', asset,
+                      '<!-- <div id="app"></div>' + asset + ' -->',
+                      '<script>window.fake=\'<div id="app"></div><script type="module" src="/assets/index.js">\';</script>',
+                      '<template><div id="app"></div>' + asset + '</template>',
+                      '<textarea><div id="app"></div>' + asset + '</textarea>',
+                      '<div id="app"></div><script>window.__APP_CONFIG__={};</script>',
+                      '<div id="app"></div><script src="/assets/index.js"></script>',
+                      '<div id="app"></div><script type="module" src="https://external.example/assets/index.js"></script>',
+                      '<div id="app"></div><script type="module" src="/assets/../api/index.js"></script>',
+                      '<div id="app"></div><script type src="/assets/index.js"></script>',
+                      '<template/><div id="app"></div>' + asset,
+                      '<select><div id="app"></div></select>' + asset,
+                      '<select><body><div id="app"></div>' + asset + '</body></select>',
+                      '<div id="other" id="app"></div>' + asset,
+                      '<div id="app"></div><script type="text/plain" type="module" src="/assets/index.js"></script>')
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                original = ("<html><head></head><body>" + candidate + "</body></html>").encode()
+                response = await self.proxy(lambda outgoing: httpx.Response(200, stream=TrackedStream([original]), headers={"Content-Type": "text/html", "ETag": '"untouched"'})).forward_document(request(headers=[("Accept", "text/html")]), "")
+                self.assertEqual(await body(response), original)
+                self.assertEqual(response.headers["etag"], '"untouched"')
+
+    async def test_document_xhtml_is_preserved_without_assuming_html_case_rules(self):
+        for marker in (b'id="app"', b'ID="app"'):
+            original = b'<html xmlns="http://www.w3.org/1999/xhtml"><head><script type="module" src="/assets/main.js"/></head><body><div ' + marker + b'/></body></html>'
+            response = await self.proxy(lambda outgoing: httpx.Response(200, stream=TrackedStream([original]), headers={"Content-Type": "application/xhtml+xml"})).forward_document(request(headers=[("Accept", "application/xhtml+xml")]), "")
+            self.assertEqual(await body(response), original)
+
+    async def test_document_duplicate_html_nonce_matches_browsers_first_value(self):
+        original = b'<html><head><script type="module" src="/assets/main.js" nonce="first" nonce="last"></script></head><body><div id="app"></div></body></html>'
+        response = await self.proxy(lambda outgoing: httpx.Response(200, stream=TrackedStream([original]), headers={"Content-Type": "text/html"})).forward_document(request(headers=[("Accept", "text/html")]), "")
+        result = await body(response)
+        self.assertIn(b'data-sub2api-helper-native="script" nonce="first"', result)
+        self.assertNotIn(b'data-sub2api-helper-native="script" nonce="last"', result)
+
+    async def test_document_timeout_covers_headers_and_body_and_closes_upstream(self):
+        async def slow_headers(outgoing):
+            await asyncio.Event().wait()
+
+        with patch("helper.native_proxy.DOCUMENT_TIMEOUT", .02):
+            response = await self.proxy(slow_headers).forward_document(request(headers=[("Accept", "text/html")]), "")
+        self.assertEqual(response.status_code, 504)
+        stream = TrackedStream([b"<html>", b"never"], asyncio.Event())
+        with patch("helper.native_proxy.DOCUMENT_TIMEOUT", .02):
+            response = await self.proxy(lambda outgoing: httpx.Response(200, stream=stream, headers={"Content-Type": "text/html"})).forward_document(request(headers=[("Accept", "text/html")]), "")
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(stream.closed, 1)
+
+    async def test_document_body_limit_fails_before_returning_streaming_headers(self):
+        stream = TrackedStream([b"<html>", b"x" * 100])
+        with patch("helper.native_proxy.MAX_HTML_BYTES", 32):
+            response = await self.proxy(lambda outgoing: httpx.Response(200, stream=stream, headers={"Content-Type": "text/html"})).forward_document(request(headers=[("Accept", "text/html")]), "")
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIsInstance(response, StreamingResponse)
+        self.assertEqual(stream.closed, 1)
+
+    async def test_document_non_html_and_error_responses_preserve_original_bytes(self):
+        for status, content_type, original in ((200, "application/json", b'{"message":"not SPA"}'),
+                                               (503, "text/html", b'<div id="app"></div><script type="module" src="/assets/index.js"></script>')):
+            stream = TrackedStream([original])
+            response = await self.proxy(lambda outgoing: httpx.Response(status, stream=stream, headers={"Content-Type": content_type, "ETag": '"original"'})).forward_document(request("/login", headers=[("Accept", "text/html")]), "login")
+            self.assertEqual(response.status_code, status)
+            self.assertEqual(await body(response), original)
+            self.assertEqual(response.headers["etag"], '"original"')
+            self.assertEqual(stream.closed, 1)
 
 
 class NativeProxyWebSocketTests(unittest.IsolatedAsyncioTestCase):

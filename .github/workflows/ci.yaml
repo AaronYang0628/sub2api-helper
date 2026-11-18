@@ -83,8 +83,10 @@ jobs:
           node tests/gallery_admin/test.cjs
       - name: Build the GitHub Pages demo from the current UI
         run: node site/build.mjs
-      - run: docker build -t sub2api-helper:test .
+      - run: docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t sub2api-helper:test .
       - run: python tests/container_smoke.py sub2api-helper:test
+      - name: Verify ingress isolation and native UI rollback
+        run: python tests/ingress_smoke.py sub2api-helper:test
       - name: Verify compatibility approval and source fingerprints
         if: steps.release.outputs.exists == 'true'
         run: |
@@ -95,3 +97,24 @@ jobs:
           PY
           python scripts/sync_upstream_release.py check \
             --release-json "$RUNNER_TEMP/release-proof.json" --source ../upstream
+      - name: Archive the tested image for this main commit
+        id: image-archive
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          version=$(python scripts/version.py --check)
+          directory="$RUNNER_TEMP/helper-image"
+          archive="sub2api-helper-${version}-${GITHUB_SHA}-linux-amd64.tar.gz"
+          mkdir -p "$directory"
+          docker tag sub2api-helper:test "sub2api-helper:$version"
+          docker save "sub2api-helper:$version" | gzip > "$directory/$archive"
+          (cd "$directory" && sha256sum "$archive" > "$archive.sha256")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.image-archive.outcome == 'success'
+        with:
+          name: sub2api-helper-${{ steps.image-archive.outputs.version }}-${{ github.sha }}-linux-amd64
+          path: ${{ runner.temp }}/helper-image/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

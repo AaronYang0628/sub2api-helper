@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, Path as ApiPath
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Path as ApiPath
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -29,7 +29,7 @@ from .gallery import Gallery, GalleryError
 from .gallery_api import install_gallery_api
 from .gallery_generation import generate_artwork
 from .mailer import Mailer
-from .native_proxy import NativeProxy
+from .native_proxy import NativeProxy, is_document_request
 from .native_api import install_native_api
 from .schemas import Automation, Benchmark, BenchmarkSelection, Connection, Email, Modules, Rule, Schedule, Session, Toggle, UserStatus
 from .store import Store
@@ -101,6 +101,8 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     app.state.engine = engine
     app.state.store = store
     app.state.gallery = gallery
+    admin_api = APIRouter()
+    portal_api = APIRouter()
 
     @app.exception_handler(UpstreamError)
     async def upstream_error(request, exc):
@@ -121,7 +123,8 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     async def security_headers(request, call_next):
         path_parts = request.url.path.split("/")
         helper_path = (request.url.path.startswith("/_helper/api/") or
-                       (len(path_parts) >= 3 and path_parts[1] == "api" and path_parts[2] in HELPER_API_ROOTS))
+                       (config.legacy_routes and len(path_parts) >= 3
+                        and path_parts[1] == "api" and path_parts[2] in HELPER_API_ROOTS))
         if helper_path and request.method in {"POST", "PUT", "DELETE", "PATCH"}:
             try:
                 if int(request.headers.get("content-length", "0")) > 65536:
@@ -135,14 +138,16 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                     return JSONResponse(status_code=413, content={"detail": "请求过大"})
                 chunks.append(chunk)
             # Starlette's wrapped request replays a cached body to the route.
-            # Buffer only helper JSON; upstream uploads and streams stay untouched.
+            # Business requests are never relayed through this application.
             request._body = b"".join(chunks)
         response = await call_next(request)
         if getattr(request.state, "helper_proxied", False):
             return response
         source = urlsplit(config.sub2api_public_url or config.sub2api_url)
         ancestor = f"{source.scheme}://{source.netloc}" if source.hostname else "http: https:"
-        benchmark_page = request.url.path in {"/", "/_helper/setup", "/_helper/console", "/features/benchmark"}
+        benchmark_page = request.url.path in {"/_helper/setup", "/_helper/console", "/_helper/features/benchmark"}
+        if config.legacy_routes and request.url.path in {"/", "/features/benchmark"}:
+            benchmark_page = True
         image_sources = "'self' data: https:" if benchmark_page else "'self' data:"
         # A sandboxed srcdoc inherits its parent CSP. Permit artwork CSS here;
         # the child also supplies its own policy blocking all external loads.
@@ -288,16 +293,10 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             raise HTTPException(404, "记录不存在")
         return item
 
-    @app.get("/healthz")
+    @app.get("/_helper/healthz")
     async def health():
         # Liveness only; detailed upstream/worker state remains authenticated.
         return {"status": "ok", "version": __version__}
-
-    @app.get("/")
-    async def index(request: Request):
-        if config.native_ui and config.sub2api_url:
-            return await native_proxy.forward(request, "")
-        return FileResponse(STATIC / "index.html")
 
     @app.get("/_helper/setup")
     async def native_setup():
@@ -336,20 +335,36 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                                   "actor": profile["id"], "expires": now + 15 * 60}
         return {"session": token}
 
-    @app.get("/features/{module}")
+    @app.post("/_helper/api/session/revoke")
+    async def native_session_revoke(request: Request, authorization: str = Header(default="")):
+        # Possession can revoke only matching local sessions. Never validate this
+        # logout hint upstream, and never reveal whether a cached token existed.
+        limit(request, "native.session.revoke", 60)
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(401, "请提供需要退出的会话凭证")
+        token = authorization[7:]
+        if not token or len(token.encode("utf-8")) > 8192:
+            raise HTTPException(401, "会话凭证无效")
+        native_sessions.pop(token, None)
+        for cached, entry in list(native_sessions.items()):
+            if hmac.compare_digest(entry["jwt"].encode(), token.encode()):
+                native_sessions.pop(cached, None)
+        return {"ok": True}
+
+    @app.get("/_helper/features/{module}")
     async def feature(module: str):
         if module not in MODULE_NAMES:
             raise HTTPException(404)
         enabled(module)
         return FileResponse(STATIC / "feature.html")
 
-    @app.get("/api/status", dependencies=[Depends(admin)])
+    @admin_api.get("/status", dependencies=[Depends(admin)])
     async def status():
         return {"upstream_url": config.sub2api_url, "timezone": config.timezone,
                 "mail_configured": mailer.configured, "public_url": config.public_url,
                 "version": __version__, "engine": engine.status}
 
-    @app.get("/api/connection")
+    @admin_api.get("/connection")
     async def connection_info():
         return {"upstream_url": config.sub2api_url, "configured": bool(config.sub2api_admin_key),
                 "public_url": config.public_url, "timezone": config.timezone}
@@ -373,7 +388,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                         raise
             raise UpstreamError("管理员 Key 缺少助手所需的读取权限，或尚未完成上游运营确认", 403)
 
-    @app.post("/api/connection")
+    @admin_api.post("/connection")
     async def connection(value: Connection, request: Request):
         nonlocal config
         limit(request, "connection", 10)
@@ -411,17 +426,17 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             finally:
                 await candidate.close()
 
-    @app.post("/api/connection/disconnect")
+    @admin_api.post("/connection/disconnect")
     async def disconnect(authorization: str = Header(default="")):
         admin_sessions.pop(authorization.removeprefix("Bearer "), None)
         native_sessions.pop(authorization.removeprefix("Bearer "), None)
         return {"ok": True}
 
-    @app.get("/api/accounts", dependencies=[Depends(admin)])
+    @admin_api.get("/accounts", dependencies=[Depends(admin)])
     async def accounts():
         return [{k: v for k, v in item.items() if k in ACCOUNT_FIELDS} for item in await upstream.list_accounts()]
 
-    @app.post("/api/accounts/{account_id}/schedulable", dependencies=[Depends(admin)])
+    @admin_api.post("/accounts/{account_id}/schedulable", dependencies=[Depends(admin)])
     async def account_toggle(value: Toggle, account_id: int = ApiPath(gt=0)):
         async with mutations:
             for plan in store.list("schedules"):
@@ -431,11 +446,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("account.toggle", str(account_id), detail=str(value.schedulable))
             return {"ok": True}
 
-    @app.get("/api/schedules", dependencies=[Depends(admin)])
+    @admin_api.get("/schedules", dependencies=[Depends(admin)])
     async def schedules():
         return store.list("schedules")
 
-    @app.post("/api/schedules", dependencies=[Depends(admin)])
+    @admin_api.post("/schedules", dependencies=[Depends(admin)])
     async def schedule_create(value: Schedule):
         async with mutations:
             check_schedule(value)
@@ -444,7 +459,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("schedule.create", str(result["id"]), detail=value.name)
             return result
 
-    @app.put("/api/schedules/{item_id}", dependencies=[Depends(admin)])
+    @admin_api.put("/schedules/{item_id}", dependencies=[Depends(admin)])
     async def schedule_update(item_id: str, value: Schedule):
         async with mutations:
             existing("schedules", item_id)
@@ -454,7 +469,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("schedule.update", item_id, detail=value.name)
             return result
 
-    @app.delete("/api/schedules/{item_id}", dependencies=[Depends(admin)])
+    @admin_api.delete("/schedules/{item_id}", dependencies=[Depends(admin)])
     async def schedule_delete(item_id: str):
         async with mutations:
             existing("schedules", item_id)
@@ -462,11 +477,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("schedule.delete", item_id)
             return {"ok": True}
 
-    @app.get("/api/users", dependencies=[Depends(admin)])
+    @admin_api.get("/users", dependencies=[Depends(admin)])
     async def users():
         return [{k: v for k, v in item.items() if k in USER_FIELDS} for item in await upstream.list_users()]
 
-    @app.post("/api/users/{user_id}/email", dependencies=[Depends(admin)])
+    @admin_api.post("/users/{user_id}/email", dependencies=[Depends(admin)])
     async def user_email(value: Email, request: Request, user_id: int = ApiPath(gt=0)):
         limit(request, "email", 10)
         if not mailer.configured:
@@ -480,7 +495,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         store.audit("user.email", str(user_id))
         return {"ok": True}
 
-    @app.post("/api/users/{user_id}/status", dependencies=[Depends(admin)])
+    @admin_api.post("/users/{user_id}/status", dependencies=[Depends(admin)])
     async def user_status(value: UserStatus, user_id: int = ApiPath(gt=0)):
         async with mutations:
             user = await upstream.get_user(user_id)
@@ -496,11 +511,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         if value.enabled and any(r.get("enabled") and str(r["id"]) != str(exclude) for r in store.list("rules")):
             raise HTTPException(409, "当前版本仅允许一个自动闲置规则启用，避免重复发信")
 
-    @app.get("/api/rules", dependencies=[Depends(admin)])
+    @admin_api.get("/rules", dependencies=[Depends(admin)])
     async def rules():
         return store.list("rules")
 
-    @app.post("/api/rules", dependencies=[Depends(admin)])
+    @admin_api.post("/rules", dependencies=[Depends(admin)])
     async def rule_create(value: Rule):
         async with mutations:
             check_rule(value)
@@ -508,7 +523,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("rule.create", str(result["id"]), detail=value.name)
             return result
 
-    @app.put("/api/rules/{item_id}", dependencies=[Depends(admin)])
+    @admin_api.put("/rules/{item_id}", dependencies=[Depends(admin)])
     async def rule_update(item_id: str, value: Rule):
         async with mutations:
             existing("rules", item_id)
@@ -517,7 +532,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("rule.update", item_id, detail=value.name)
             return result
 
-    @app.delete("/api/rules/{item_id}", dependencies=[Depends(admin)])
+    @admin_api.delete("/rules/{item_id}", dependencies=[Depends(admin)])
     async def rule_delete(item_id: str):
         async with mutations:
             existing("rules", item_id)
@@ -525,11 +540,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("rule.delete", item_id)
             return {"ok": True}
 
-    @app.get("/api/modules", dependencies=[Depends(admin)])
+    @admin_api.get("/modules", dependencies=[Depends(admin)])
     async def modules():
         return Modules(**store.get_setting("modules", {})).model_dump()
 
-    @app.put("/api/modules", dependencies=[Depends(admin)])
+    @admin_api.put("/modules", dependencies=[Depends(admin)])
     async def module_update(value: Modules):
         async with mutations:
             if any(value.model_dump().values()) and not config.public_url:
@@ -543,7 +558,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             for i, (name, label) in enumerate(MODULE_NAMES.items()):
                 if getattr(value, name):
                     merged.append({"id": "sub2api-helper-" + name, "label": label, "icon_svg": "",
-                                   "url": config.public_url.rstrip("/") + "/features/" + name,
+                                   "url": config.public_url.rstrip("/") + "/_helper/features/" + name,
                                    "visibility": "user", "sort_order": 100 + i, "hide_open_button": True})
             if len(merged) > 20:
                 raise HTTPException(409, "上游最多支持 20 个菜单，请先移除部分菜单")
@@ -556,11 +571,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("modules.sync", "menus", detail=str(value.model_dump()))
             return value.model_dump()
 
-    @app.get("/api/audit", dependencies=[Depends(admin)])
+    @admin_api.get("/audit", dependencies=[Depends(admin)])
     async def audit():
         return store.audits(200)
 
-    @app.get("/api/groups", dependencies=[Depends(admin)])
+    @admin_api.get("/groups", dependencies=[Depends(admin)])
     async def groups():
         fields = {"id", "name", "status", "subscription_type", "rate_multiplier", "daily_limit_usd", "weekly_limit_usd", "monthly_limit_usd"}
         return [{k: v for k, v in item.items() if k in fields} for item in await upstream.list_groups()]
@@ -594,11 +609,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             if report.get("errors"):
                 raise HTTPException(409, {"message": "部分倍率尚未安全恢复，请查看执行记录并处理后重试", "report": report})
 
-    @app.get("/api/automations", dependencies=[Depends(admin)])
+    @admin_api.get("/automations", dependencies=[Depends(admin)])
     async def automation_list():
         return store.list("automations")
 
-    @app.get("/api/settlements", dependencies=[Depends(admin)])
+    @admin_api.get("/settlements", dependencies=[Depends(admin)])
     async def settlement_history():
         # Retain visibility into uncertain payouts even after the month changes
         # or the originating rule has been removed.
@@ -613,7 +628,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                          "actions": [{k: v for k, v in action.items() if k in fields} for action in snapshot.get("actions", [])]})
         return sorted(rows, key=lambda row: row.get("month", ""), reverse=True)
 
-    @app.post("/api/automations", dependencies=[Depends(admin)])
+    @admin_api.post("/automations", dependencies=[Depends(admin)])
     async def automation_create(value: Automation):
         async with mutations:
             await check_automation(value)
@@ -621,7 +636,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("automation.create", str(result["id"]), detail=f"{value.type}: {value.name}")
             return result
 
-    @app.put("/api/automations/{item_id}", dependencies=[Depends(admin)])
+    @admin_api.put("/automations/{item_id}", dependencies=[Depends(admin)])
     async def automation_update(item_id: str, value: Automation):
         async with mutations:
             old = existing("automations", item_id)
@@ -636,7 +651,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("automation.update", item_id, detail=value.name)
             return result
 
-    @app.delete("/api/automations/{item_id}", dependencies=[Depends(admin)])
+    @admin_api.delete("/automations/{item_id}", dependencies=[Depends(admin)])
     async def automation_delete(item_id: str):
         async with mutations:
             old = existing("automations", item_id)
@@ -645,13 +660,13 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("automation.delete", item_id)
             return {"ok": True}
 
-    @app.post("/api/automations/{item_id}/preview", dependencies=[Depends(admin)])
+    @admin_api.post("/automations/{item_id}/preview", dependencies=[Depends(admin)])
     async def automation_preview(item_id: str, request: Request):
         limit(request, "automation.preview", 10)
         async with mutations:
             return await engine.automation.preview(existing("automations", item_id))
 
-    @app.post("/api/automations/{item_id}/run", dependencies=[Depends(admin)])
+    @admin_api.post("/automations/{item_id}/run", dependencies=[Depends(admin)])
     async def automation_run(item_id: str, request: Request):
         limit(request, "automation.run", 5)
         async with mutations:
@@ -662,11 +677,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             store.audit("automation.manual_run", item_id, detail=str(result.get("executed", 0)))
             return result
 
-    @app.get("/api/analytics/models", dependencies=[Depends(admin)])
+    @admin_api.get("/analytics/models", dependencies=[Depends(admin)])
     async def models(start_date: str | None = None, end_date: str | None = None):
         return await upstream.models(*dates(start_date, end_date))
 
-    @app.get("/api/analytics/ranking", dependencies=[Depends(admin)])
+    @admin_api.get("/analytics/ranking", dependencies=[Depends(admin)])
     async def ranking(start_date: str | None = None, end_date: str | None = None):
         return await upstream.ranking(*dates(start_date, end_date))
 
@@ -682,18 +697,18 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         finally:
             benchmark_users.discard(identity)
 
-    @app.post("/api/benchmark", dependencies=[Depends(admin)])
+    @admin_api.post("/benchmark", dependencies=[Depends(admin)])
     async def benchmark(value: BenchmarkSelection, request: Request):
         limit(request, "benchmark", 3, 300)
         key = await upstream.benchmark_key(value.key_id, value.group_id)
         resolved = Benchmark(model=value.model, api_key=key, api_format=value.api_format)
         return await do_benchmark(resolved, "admin")
 
-    @app.get("/api/benchmark/options", dependencies=[Depends(admin)])
+    @admin_api.get("/benchmark/options", dependencies=[Depends(admin)])
     async def benchmark_options():
         return {"keys": await upstream.benchmark_keys()}
 
-    @app.post("/api/portal/session")
+    @portal_api.post("/session")
     async def portal_session(value: Session, request: Request):
         limit(request, "login", 20)
         settings = await upstream.settings()
@@ -710,16 +725,16 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         sessions[session] = {"token": value.token, "expires": now + 3600}
         return {"session": session, "username": profile.get("username"), "role": profile.get("role")}
 
-    @app.get("/api/portal/modules")
+    @portal_api.get("/modules")
     async def portal_modules(identity=Depends(portal)):
         return Modules(**store.get_setting("modules", {})).model_dump()
 
-    @app.get("/api/portal/models")
+    @portal_api.get("/models")
     async def portal_models(start_date: str | None = None, end_date: str | None = None, identity=Depends(portal)):
         enabled("pricing")
         return await upstream.models(*dates(start_date, end_date), token=identity["token"])
 
-    @app.get("/api/portal/ranking")
+    @portal_api.get("/ranking")
     async def portal_ranking(start_date: str | None = None, end_date: str | None = None, identity=Depends(portal)):
         enabled("ranking")
         result = await upstream.ranking(*dates(start_date, end_date))
@@ -733,7 +748,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
              "is_me": item.get("user_id") == identity["profile"].get("id")}
             for i, item in enumerate(result.get("ranking", []))]}
 
-    @app.post("/api/portal/benchmark")
+    @portal_api.post("/benchmark")
     async def portal_benchmark(value: BenchmarkSelection, request: Request, identity=Depends(portal)):
         enabled("benchmark")
         limit(request, "benchmark", 3, 300)
@@ -741,7 +756,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         resolved = Benchmark(model=value.model, api_key=key, api_format=value.api_format)
         return await do_benchmark(resolved, identity["profile"]["id"])
 
-    @app.get("/api/portal/benchmark/options")
+    @portal_api.get("/benchmark/options")
     async def portal_benchmark_options(identity=Depends(portal)):
         enabled("benchmark")
         return {"keys": await upstream.user_benchmark_keys(identity["token"])}
@@ -805,36 +820,46 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                 store.audit("compatibility.check", "upstream", status="error", detail="检查失败，稍后重试")
             await asyncio.sleep(6 * 3600)
 
-    @app.get("/api/compatibility", dependencies=[Depends(admin)])
+    @admin_api.get("/compatibility", dependencies=[Depends(admin)])
     async def compatibility():
         return store.get_setting("compatibility", {"checks": [], "upstream_commit": BASELINE, "notice": "尚未检查"})
 
-    @app.post("/api/compatibility/check", dependencies=[Depends(admin)])
+    @admin_api.post("/compatibility/check", dependencies=[Depends(admin)])
     async def compatibility_check(request: Request):
         limit(request, "compatibility", 2)
         return await check_compatibility()
 
     install_native_api(app, store, upstream, mailer, engine, lambda: config, native_admin, limit)
-    install_gallery_api(app, gallery, upstream, lambda: config, admin, portal, enabled, limit)
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    install_gallery_api(admin_api, portal_api, gallery, upstream, lambda: config, admin, portal, enabled, limit)
+    app.include_router(admin_api, prefix="/_helper/api/admin")
+    app.include_router(portal_api, prefix="/_helper/api/portal")
+    app.mount("/_helper/static", StaticFiles(directory=STATIC), name="static")
 
-    @app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-    async def native_forward(request: Request, path: str):
-        if not config.native_ui or not config.sub2api_url or path.startswith("_helper/"):
+    if config.legacy_routes:
+        # Compatibility is deliberate and opt-in; fresh deployments reserve
+        # only /_helper. Keep auth, payloads, and persisted menu links intact.
+        app.include_router(admin_api, prefix="/api")
+        app.include_router(portal_api, prefix="/api/portal")
+        app.add_api_route("/healthz", health, methods=["GET"])
+        app.add_api_route("/features/{module}", feature, methods=["GET"])
+        app.mount("/static", StaticFiles(directory=STATIC), name="legacy-static")
+
+        @app.get("/")
+        async def legacy_index(request: Request):
+            if config.native_ui and config.sub2api_url and is_document_request(request, ""):
+                return await native_proxy.forward_document(request, "")
+            return FileResponse(STATIC / "index.html")
+
+    @app.get("/{path:path}")
+    async def native_document(request: Request, path: str):
+        if (path == "_helper" or path.startswith("_helper/") or not config.native_ui
+                or not config.sub2api_url or not is_document_request(request, path)):
             raise HTTPException(404)
-        if path == "api/v1/auth/logout" and request.method == "POST":
-            authorization = request.headers.get("authorization", "")
-            if authorization.startswith("Bearer "):
-                jwt = authorization[7:]
-                for token, entry in list(native_sessions.items()):
-                    if hmac.compare_digest(entry["jwt"].encode(), jwt.encode()):
-                        native_sessions.pop(token, None)
-        return await native_proxy.forward(request, path)
+        return await native_proxy.forward_document(request, path)
 
-    @app.websocket("/{path:path}")
-    async def native_websocket(websocket: WebSocket, path: str):
-        if not config.native_ui or not config.sub2api_url or path.startswith("_helper/"):
-            await websocket.close(code=1008)
-            return
-        await native_proxy.websocket(websocket, path)
+    @app.api_route("/{path:path}", methods=["HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "CONNECT"])
+    async def unmapped_request(path: str):
+        # The ingress must send native APIs, assets, uploads, and all WebSockets
+        # directly to sub2api. Unknown helper paths also stop here locally.
+        raise HTTPException(404)
     return app

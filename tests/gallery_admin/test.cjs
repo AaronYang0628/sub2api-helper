@@ -20,23 +20,23 @@ function member(groupID) { return comparisonConfig?.group_ids.includes(groupID) 
 function detail(groupID) { return { group: { ...configs.get(groupID), comparison_member: member(groupID) }, stats: { success_24h: 1, failed_24h: 0, total: 1 }, works: [] }; }
 const fixture = `
 window.helperGallery=(container)=>{ container.textContent='最近生成的作品'; return {refresh(){window.VIEW_REFRESHES=(window.VIEW_REFRESHES||0)+1},destroy(){window.VIEW_DESTROYED=true}} };
-const request=async(path,method='GET',data)=>{const response=await fetch('/api'+path,{method,headers:{'Content-Type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});const body=await response.json();if(!response.ok)throw new Error(body.detail);return body};
+const request=async(path,method='GET',data)=>{const response=await fetch('/_helper/api/admin'+path,{method,headers:{'Content-Type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});const body=await response.json();if(!response.ok)throw new Error(body.detail);return body};
 window.controller=helperGalleryAdmin(document.getElementById('admin'),{request});
 `;
 (async () => {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname.startsWith('/api/')) {
+    if (url.pathname.startsWith('/_helper/api/')) {
       let raw = ''; for await (const part of req) raw += part;
       const body = raw ? JSON.parse(raw) : undefined;
-      const match = url.pathname.match(/^\/api\/gallery\/(\d+)(\/run|\/pause)?$/);
+      const match = url.pathname.match(/^\/_helper\/api\/admin\/gallery\/(\d+)(\/run|\/pause)?$/);
       let output, status = 200;
-      if (url.pathname === '/api/gallery') {
+      if (url.pathname === '/_helper/api/admin/gallery') {
         if (failCatalog) { status = 503; output = { detail: '分组目录暂不可用，请稍后刷新。' }; }
         else output = { groups: [...configs.values()].map(group => ({ ...group, comparison_member: member(group.group_id) })), timezone: 'Asia/Shanghai' };
       }
-      else if (url.pathname === '/api/benchmark/options') output = { keys };
-      else if (/^\/api\/gallery\/comparison(?:\/(?:run|pause))?$/.test(url.pathname)) {
+      else if (url.pathname === '/_helper/api/admin/benchmark/options') output = { keys };
+      else if (/^\/_helper\/api\/admin\/gallery\/comparison(?:\/(?:run|pause))?$/.test(url.pathname)) {
         if (req.method !== 'GET') writes.push({ path: url.pathname, method: req.method, body });
         if (req.method === 'DELETE') comparisonConfig = null;
         else if (req.method === 'PUT') {
@@ -69,12 +69,12 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
       res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(output)); return;
     }
     if (url.pathname === '/fixture.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(fixture); return; }
-    if (url.pathname.startsWith('/static/')) {
+    if (url.pathname.startsWith('/_helper/static/')) {
       const file = path.join(root, 'helper/static', path.basename(url.pathname));
       res.writeHead(200, { 'Content-Type': file.endsWith('.js') ? 'text/javascript' : 'text/css' }); res.end(await fs.readFile(file)); return;
     }
     res.writeHead(200, { 'Content-Type': 'text/html', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'" });
-    res.end('<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/gallery-admin.css"><script src="/static/gallery-admin.js" defer></script><script src="/fixture.js" defer></script></head><body class="embedded"><main id="admin" class="embed-shell"></main></body></html>');
+    res.end('<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><link rel="stylesheet" href="/_helper/static/style.css"><link rel="stylesheet" href="/_helper/static/gallery-admin.css"><script src="/_helper/static/gallery-admin.js" defer></script><script src="/fixture.js" defer></script></head><body class="embedded"><main id="admin" class="embed-shell"></main></body></html>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({ executablePath: process.env.HELPER_CHROMIUM_PATH || '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
@@ -82,7 +82,7 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     const page = await browser.newPage({ viewport: { width: 1200, height: 1100 }, locale: 'zh-CN' });
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.accept());
-    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.goto(`http://127.0.0.1:${server.address().port}/_helper/setup`);
     const group = page.locator('[name=gallery_group_id]'), model = page.locator('[name=gallery_model]');
     await model.waitFor(); assert.equal(await model.inputValue(), 'old-model');
     assert.equal(await page.evaluate(() => window.PWNED), undefined);
@@ -125,7 +125,7 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     const originalPrompts = [configs.get(1).prompt, configs.get(3).prompt];
     await page.locator('[name=gallery_comparison_prompt]').fill(commonPrompt);
     await page.getByRole('button', { name: '保存同题设置', exact: true }).click(); await page.getByText('同题设置已保存。', { exact: true }).waitFor();
-    const sharedSave = writes.find(value => value.path === '/api/gallery/comparison' && value.method === 'PUT');
+    const sharedSave = writes.find(value => value.path === '/_helper/api/admin/gallery/comparison' && value.method === 'PUT');
     assert.deepEqual(sharedSave.body, { group_ids: [1, 3], prompt: commonPrompt, interval_minutes: 30, enabled: false });
     assert.deepEqual([configs.get(1).prompt, configs.get(3).prompt], originalPrompts, 'comparison must not overwrite local prompts/model keys');
     assert.equal(await page.locator('[name=gallery_prompt]').isVisible(), false);

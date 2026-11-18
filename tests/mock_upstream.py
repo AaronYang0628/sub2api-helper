@@ -43,7 +43,7 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(urlsplit(self.path).query)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or "{}")
         if path == "/":
-            output = b'<!doctype html><html><head><title>sub2api fixture</title></head><body>Original upstream page</body></html>'
+            output = b'<!doctype html><html><head><title>sub2api fixture</title></head><body><div id="app">Original upstream page</div><script type="module" src="/assets/fixture-app.js"></script></body></html>'
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'")

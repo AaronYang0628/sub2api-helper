@@ -1,6 +1,6 @@
 # sub2api Helper
 
-为 sub2api 的账号管理和用户管理列表增加定时与邮件操作。管理员在原页面点击行按钮即可操作，按钮沿用 sub2api 的灰白配色和明暗主题。高级功能集中在行弹窗里，可配置闲置提醒、订阅倍率、月度奖励和自定义菜单。项目适配 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api)。
+为 sub2api 提供账号定时调度、用户邮件维护、自动化规则和自定义菜单。Helper 的页面、资源和 API 统一挂载在 `/_helper/`。默认保留原站的流量路径，原生列表行按钮可在独立试点开启。项目适配 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api)。
 
 [交互演示](https://aaronyang0628.github.io/sub2api-helper/) · [Docker 部署](docs/deployment.md) · [镜像与版本](https://github.com/AaronYang0628/sub2api-helper/releases) · [兼容性](docs/upstream-compatibility.md)
 
@@ -12,8 +12,8 @@ Pages 用不同颜色标出新增的定时和邮件按钮，方便在示例列�
 
 | 入口 | 可执行的操作 |
 | --- | --- |
-| 账号管理 → 定时 | 设置参与调度的时段和星期，支持北京时间 `23:00 → 次日 09:00`。Helper 默认只接管显式设置了时段的账号。 |
-| 用户管理 → 邮件 | 给当前用户发送自定义邮件或选用提醒模板。需要配置 Helper 的 SMTP。 |
+| Helper → 定时调度 | 设置参与调度的时段和星期，支持北京时间 `23:00 → 次日 09:00`。原生行按钮也可在试点开启。 |
+| Helper → 用户维护 | 给当前用户发送自定义邮件。需要配置 Helper 的 SMTP。原生行按钮另支持提醒模板。 |
 | 高级功能 → 闲置提醒 | 按实际模型使用时间筛选长期闲置的普通用户，发信提醒，并可在邮件被 SMTP 接受后禁用用户。 |
 | 高级功能 → 自动化规则 | 按到期时间和剩余订阅额度调整倍率，或按上个完整自然月的实际扣费排名为前三名发放余额奖励。 |
 | 高级功能 → 功能菜单 | 将智商检测、模型用量与费用统计、用户用量排名同步到 sub2api 自定义菜单。普通用户看到匿名榜单，管理员可查看完整数据。 |
@@ -28,17 +28,19 @@ HTML 和 SVG 在禁止脚本及外部资源请求的预览框中展示，CSS 和
 
 ## Docker 部署
 
-镜像以 sub2api 官方正式版号发布，支持 `linux/amd64` 和 `linux/arm64`。
+下列命令从当前源码构建路由隔离版，版本号以 [helper/VERSION](helper/VERSION) 为准。创建 `.env` 后，把 `SUB2API_URL` 指向 Helper 容器能访问的原服务地址，并把 `SUB2API_PUBLIC_URL` 与 `HELPER_PUBLIC_URL` 设置为原有公网 HTTPS 地址。
 
 ```sh
-docker pull ghcr.io/aaronyang0628/sub2api-helper:0.2.22
+cp .env.example .env
+# 设置上述地址后再运行这一步
+docker compose up -d --build
 ```
 
-1. 将 Helper 接入能访问原 sub2api 的网络，将 `SUB2API_URL` 指向 sub2api 内网服务，将 `SUB2API_PUBLIC_URL` 设置为原公网 HTTPS 地址。
-2. 挂载 `/data` 后启动 Helper，将原公网域名的网页入口代理到 Helper。首次在 `/_helper/setup` 绑定管理员 API Key，也可通过环境变量预配置。
-3. 登录原域名的 sub2api 管理员账号。在账号行点「定时」，或在用户行点「邮件」。需要自动化规则时，从弹窗展开「高级功能」。
+1. 保留原站的网页、管理 API、模型网关和流式转发。只把 `/_helper/` 转给 Helper。Compose 默认监听宿主机回环地址的 `18080`。
+2. 打开原公网域名下的 `/_helper/setup`，绑定管理员 API Key。已有部署在「功能与菜单」重新同步菜单，将已启用功能迁至新地址。
+3. 需要试点行按钮时，设置 `HELPER_NATIVE_UI=true` 并启用部署指南中的网页入口分流。该配置只选择 SPA 文档请求，Helper 不可用时由入口回到 sub2api。
 
-Docker 启动命令、Nginx 配置、SMTP、备份和升级步骤见[部署文档](docs/deployment.md)。原生行操作需要上游明确关闭 IP/UA 会话绑定。若部署需要保留会话绑定，可使用 `HELPER_NATIVE_UI=false` 的独立内嵌管理模式。
+默认接入与试点回切、SMTP、备份和升级步骤见[部署文档](docs/deployment.md)。这里的路由隔离版晚于已发布的 `0.2.22` 镜像。可从当前源码构建，或在对应提交的 CI 制品中下载通过测试的 `linux/amd64` 镜像归档。[镜像构建记录](https://github.com/AaronYang0628/sub2api-helper/actions/workflows/ci.yaml)
 
 ## 自动化规则
 

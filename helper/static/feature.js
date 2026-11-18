@@ -24,7 +24,7 @@ function node(tag, attrs = {}, ...children) {
 function note(text, kind = '') { return node('div', { class: `notice ${kind}` }, helperIcon('infoCircle', 'notice-icon'), node('span', {}, text)); }
 function field(label, input, help) { return node('label', { class: 'field' }, node('span', {}, label), input, help ? node('small', {}, help) : null); }
 async function request(endpoint, method = 'GET', data) {
-  const response = await fetch(`/api/portal${endpoint}`, { method, credentials: 'omit', headers: { ...(portalSession ? { 'X-Portal-Session': portalSession } : {}), ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(data !== undefined ? { body: JSON.stringify(data) } : {}) });
+  const response = await fetch(`/_helper/api/portal${endpoint}`, { method, credentials: 'omit', redirect: 'error', headers: { ...(portalSession ? { 'X-Portal-Session': portalSession } : {}), ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(data !== undefined ? { body: JSON.stringify(data) } : {}) });
   let body; try { body = await response.json(); } catch (_) { body = null; }
   if (!response.ok) {
     const detail = body?.detail || body?.message || `请求失败 (${response.status})`;

@@ -1,77 +1,61 @@
-# Docker 部署指南
+# Docker 部署与可回退接入
 
-将现有 sub2api 的网页入口接到 Helper，继续使用原来的公网域名。Helper 再访问原 sub2api 内网服务，浏览器中的管理员登录、用户列表和账号列表保持在同一个来源。
+默认部署不代理原站。原 sub2api 的页面、登录、管理 API、静态文件、模型请求、SSE 和 WebSocket 继续直达原服务；只有 `/_helper/` 交给 Helper。Helper 停止时，原站继续工作。定时、邮件、倍率规则和画廊先通过 `/_helper/setup`、`/_helper/console` 管理，原生行按钮属于可选 Beta。
 
 ```text
-浏览器 → 原有 HTTPS 域名 → Nginx → Helper:8080 → sub2api:8080
-                                  │
-                                  └─ /data 持久化数据卷
+浏览器 → 原有 HTTPS / Nginx ┬─ /_helper/* → Helper:8080 → 原管理 API
+                          └─ 其他路径 → 原 sub2api
+                                           Helper /data 持久化规则与凭据
 ```
 
-镜像提供 `linux/amd64` 和 `linux/arm64`，按正式 Release 固定版本部署。仓库不维护浮动 `latest` 标签。静态 [Pages 演示](pages.md) 只用于查看界面，实际定时任务和发信需要本指南中的后端服务。
+以下说明适用于当前源码，尚未在 ZJLAB 生产入口执行。已发布的历史 `v0.2.22` 镜像是此前的完整代理实现；版本号暂保持 `0.2.22`，并不表示旧镜像包含本次隔离。不要覆盖既有 tag，或重新拉取历史镜像验证本功能。请构建当前审阅 checkout，或使用对应镜像归档，并记录源码提交与镜像 ID。
 
-## 1. 准备版本与网络
+## 1. 构建与配置
 
-准备 Docker、可用的 sub2api 服务，以及现有 HTTPS 反向代理。Helper 使用 sub2api 管理员 API Key 执行后台任务，邮件另需 SMTP 服务。
-
-从 [已发布版本](https://github.com/AaronYang0628/sub2api-helper/releases) 选择一个 Release，用其实际 tag 替换下面的 `vX.Y.Z`。源码和镜像使用同一个版本。
+准备 Docker、现有 sub2api 和原有 HTTPS 代理。首次取得源码：
 
 ```sh
-HELPER_RELEASE_TAG=vX.Y.Z
-git clone --depth 1 --branch "$HELPER_RELEASE_TAG" \
-  https://github.com/AaronYang0628/sub2api-helper.git
+git clone https://github.com/AaronYang0628/sub2api-helper.git
 cd sub2api-helper
+git rev-parse HEAD
 HELPER_VERSION=$(cat helper/VERSION)
-HELPER_IMAGE="ghcr.io/aaronyang0628/sub2api-helper:${HELPER_VERSION}"
-docker pull "$HELPER_IMAGE"
+HELPER_IMAGE="sub2api-helper:${HELPER_VERSION}"
+docker build -t "$HELPER_IMAGE" .
+docker image inspect "$HELPER_IMAGE" --format '{{.Id}}'
 ```
 
-查询原 sub2api 容器所在的用户自定义网络。容器名不同时，将命令中的 `sub2api` 替换为实际名称。
+已有审阅 checkout 时直接在该目录构建，先核对其提交。也可在对应 `main` 提交的 CI 制品下载 `linux/amd64` 归档。解包后用 `sha256sum -c` 核对随附校验文件，再执行 `docker load -i` 加载 `.tar.gz`，镜像标签中的版本与归档文件名一致。[CI 构建记录](https://github.com/AaronYang0628/sub2api-helper/actions/workflows/ci.yaml)
+
+将 Helper 加入原 sub2api 的用户自定义 Docker 网络：
 
 ```sh
 docker inspect sub2api \
   --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name}}{{end}}'
 SUB2API_DOCKER_NETWORK="替换为上一步的网络名"
-```
-
-Helper 需要加入这个网络，才能通过容器名访问上游。上游官方 Docker 配置的容器内部端口默认为 `8080`，宿主机映射端口可以不同。重建原 sub2api 容器时，仍需保留所选网络和对应 DNS 名称。
-
-## 2. 配置连接
-
-```sh
 cp .env.example .env
 chmod 600 .env
 ```
 
-编辑 `.env`，按实际环境填写以下值。这里的域名和容器名都是示例。
+编辑 `.env`，以下均为示例：
 
 ```dotenv
 SUB2API_URL=http://sub2api:8080
 SUB2API_PUBLIC_URL=https://sub2api.example.com
 HELPER_PUBLIC_URL=https://sub2api.example.com
-HELPER_NATIVE_UI=true
 SUB2API_ADMIN_KEY=
+HELPER_NATIVE_UI=false
+HELPER_LEGACY_ROUTES=false
 HELPER_DB_PATH=/data/helper.db
 TZ=Asia/Shanghai
 ```
 
-| 配置 | 应填写的地址 |
-| --- | --- |
-| `SUB2API_URL` | Helper 能访问的原 sub2api 内网根地址，不带 `/api/v1` |
-| `SUB2API_PUBLIC_URL` | 用户原来打开 sub2api 的公网 HTTPS 根地址，非标准端口也要保留 |
-| `HELPER_PUBLIC_URL` | 用户浏览器能访问 Helper 的根地址，原生模式下通常与上一项相同 |
+`SUB2API_URL` 是直达原后端的内网根地址，不带 `/api/v1`，不能指向经 Helper 的入口。容器中的 `localhost` 指容器自己。公网配置填写浏览器实际协议、主机和端口；保留原域名有助于维持登录来源。
 
-**`SUB2API_URL` 必须直达原后端，不能指回已经经过 Helper 的公网入口，否则会形成代理循环。** 容器内的 `localhost` 指向 Helper 自己。
+管理 Key 可通过受保护环境变量提供，也可留空后在 `/_helper/setup` 绑定。推荐预设可信的 `SUB2API_URL`；服务地址也为空时，首次绑定前仅在受控网络开放 Helper。管理 Key 不加入统一 Nginx 请求头、网页链接或仓库。`HELPER_ADMIN_TOKEN` 仅用于可选自动化管理凭据，正常绑定不需要另设密码。
 
-`SUB2API_ADMIN_KEY` 可以预先填入受保护的 `.env`，也可以留空，启动后在 `/_helper/setup` 完成一次绑定。推荐始终预设可信的 `SUB2API_URL`。如果连服务地址也留空，首次绑定前只在受控网络开放 Helper。
+## 2. 启动 Helper
 
-原生行操作要求管理 Key 能读 `/api/v1/admin/settings`，用于核对会话绑定设置。当前适配版本推荐使用 FullAccess 或原有全权限管理 Key。所用功能还需要对应的账号、用户或设置权限。上游要求运营确认时，由管理员在 sub2api 中完成确认。
-
-保护 `.env`、数据卷和 Docker 管理权限，不将 Key 写入仓库、页面链接或统一的 Nginx 请求头。日常原生行操作验证当前已登录管理员，无需另外填写 Helper 密码。`HELPER_ADMIN_TOKEN` 仅在需要独立的自动化管理凭据时配置。
-
-## 3. 启动容器
-
-下面使用宿主机 `18080`，为原 sub2api 已使用的端口留出空间。
+宿主机使用 `18080`，避免占用原站的 `8080`：
 
 ```sh
 docker volume create sub2api-helper-data
@@ -85,82 +69,67 @@ docker run -d \
   --security-opt no-new-privileges:true \
   --cap-drop ALL \
   "$HELPER_IMAGE"
-```
 
-```sh
-curl --fail http://127.0.0.1:18080/healthz
+curl --fail http://127.0.0.1:18080/_helper/healthz
 docker logs --tail 100 sub2api-helper
 ```
 
-健康接口应返回 `status=ok` 和镜像版本。它只验证进程存活，上游权限、SMTP 和定时任务仍需分别确认。
+健康检查仅确认进程与版本，不证明上游写权限、SMTP 或规则正确。SQLite 与后台任务仅支持一个实例、一个 worker。
 
-仅运行一个 Helper 副本和一个 worker。镜像已固定一个 worker，SQLite 和后台任务不支持多个实例同时接管同一数据卷。
+## 3. 默认入口：只分流 `/_helper/`
 
-## 4. 接入原有 HTTPS 入口
+完整样例见 [deploy/nginx/sub2api-helper.conf](../deploy/nginx/sub2api-helper.conf)。默认 `set $helper_injection_enabled 0;`，原站请求不经过 Helper；只新增 `/_helper/` 路由。将两个内网 origin、域名及监听与现有站点合并，保留 TLS、证书和原站访问控制。样例的 `map` 位于 `http` 层，不能放进 `server`。
 
-下面适用于安装在宿主机上的 Nginx。保留原来的公网域名和证书，将网页入口转到 `127.0.0.1:18080`。`map` 放在 Nginx 的 `http` 配置层，不能放进 `server`。
-
-```nginx
-map $http_upgrade $helper_connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-
-server {
-    listen 443 ssl;
-    server_name sub2api.example.com;
-
-    ssl_certificate     /path/to/fullchain.pem;
-    ssl_certificate_key /path/to/privkey.pem;
-
-    # 可沿用原站点的请求体限制，示例不额外限制模型上传大小
-    client_max_body_size 0;
-
-    location / {
-        proxy_pass http://127.0.0.1:18080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $http_host;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $helper_connection_upgrade;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_read_timeout 3600s;
-        proxy_send_timeout 3600s;
-
-        # 内嵌功能首次访问可能携带用户 JWT，避免记录完整请求 URL
-        access_log off;
-    }
-}
-```
-
-合并到已有站点配置后检查并重新加载 Nginx。
+样例使用宿主机回环地址，Nginx 可在 Helper 容器不存在时启动或重载。Nginx 在容器中时，`127.0.0.1` 指向自己；改用可达内网地址。使用容器 DNS 时，应配置实际 resolver 和变量 `proxy_pass`，避免加载配置时依赖 Helper DNS。不要把原站上游地址改为 Helper。
 
 ```sh
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-若 Nginx 也运行在容器中，让它加入相同 Docker 网络，并将示例的 `proxy_pass` 改为 `http://sub2api-helper:8080`。Nginx 容器中的 `127.0.0.1` 不是宿主机。
+以上由部署者确认实际配置后执行；仓库测试不会修改现有 Nginx。
 
-必须填写真实的 `SUB2API_PUBLIC_URL`，尤其是在外层终止 TLS 的环境中。Helper 默认不信任传入的转发 IP 头，并使用受信任的公网配置处理 HTTPS 重定向和同源 WebSocket。上游通常看到 Helper 的网络来源，切换入口后可重新登录管理员。
+访问 `https://sub2api.example.com/_helper/setup` 绑定 Key，再打开 `/_helper/console`。先对测试账号保存计划、向受控邮箱发测试邮件，再启用规则。管理 Key 权限决定可用操作，当前适配推荐 FullAccess 或原有全权限 Key；上游运营确认在原站完成。
 
-如需让模型网关继续直达原 sub2api，可沿用原入口对 `/v1/`、`/v1beta/` 等网关路径的转发。原生网页、管理 API `/api/v1/` 和 `/_helper/` 仍应按同源入口配置，注意保留各自的流式及 WebSocket 转发。
+## 4. 可选 Beta：网页注入
 
-## 5. 首次验证
+原生邮件与定时按钮需要两个开关：Helper 的 `HELPER_NATIVE_UI=true`，以及 Nginx 的 `set $helper_injection_enabled 1;`。更改环境变量后重建 Helper 并保留数据卷。默认两者均关闭，原站不依赖 Helper。
 
-1. 打开原公网域名下的 `/_helper/setup`。未通过环境预配置 Key 时，在这里验证并绑定管理员 Key，填写的服务地址仍为内网 `SUB2API_URL`。
-2. 使用原 sub2api 管理员账号登录，检查用户行的邮件按钮和账号行的闹钟按钮。普通用户没有这些操作权限。
-3. 只对测试账号保存一个时间窗口，确认上游当前的可调度状态与窗口一致，再测试显式保存全天。首次访问和默认显示全天都不会批量开启账号。
-4. 配置 SMTP 后向自己管理的测试用户发一封邮件，再启用需要的自动规则。
-5. 使用作品画廊时，在「统计与检测」分别配置各分组的模型 Key。打开「同题对比」，勾选分组、填写一份共享提示词，手动生成一轮确认效果，再从「功能菜单」上线智商检测。开启定时后，每轮使用各自分组 Key 的额度。关停菜单会停止触发新的自动轮次。
+sub2api 使用 History SPA。从 `/`、`/login` 或其他页面首次加载后，切到 `/admin/accounts` 通常不会再请求 HTML。Beta 因此覆盖所有 SPA 首次文档入口，不能只代理两个管理路径。Helper 仅对含 `id="app"` 容器及 `/assets/` 模块脚本标记的原站 shell 注入，任意 HTML、错误页或文件不作为 SPA 增强。
 
-原生行操作要求上游的 IP/UA 会话绑定设置明确为关闭。绑定启用或无法读取其状态时，Helper 会停止该操作，原页面继续代理。若业务需要保留会话绑定，可使用独立管理模式通过管理 Key 操作。部署前后都不要把一次健康检查当作所有写权限已经验证。
+样例仅分流 GET、Accept 含 `text/html` 或 `application/xhtml+xml`、且不属于 API/网关/静态文件的请求。`Sec-Fetch-Dest` 必须为空、`document` 或 `iframe`；有 Upgrade 或 WebSocket Key 的请求直连原站。HTML 的 `q=0` 保守地禁用本次注入，即使另一个 HTML 类型权重非零。只有符合条件的文档 GET 的 `404/502/503/504` 会回原站；关闭 Helper 注入的 404 也回退。连接超时 1 秒、读取超时 10 秒。没有 HTML Accept 的老客户端直接获得原页面，不保证显示按钮。
 
-## SMTP
+`/api/v1/`、模型 POST、SSE、WebSocket、上传与静态文件仍直连原站，不因 Helper 失败自动重试。原站认证和登出保持原路由。网关不只有 `/v1/`：样例也排除 `/v1beta/`、`/backend-api/`、`/antigravity/`、`/responses`、`/chat/completions`、`/images/*`、`/videos/*`、语音、搜索和视频任务根别名，按已审阅 v0.2.22 维护。上游增加路由时重新核对；保留流式、Upgrade 和 `proxy_next_upstream off`。
 
-自定义发信使用 Helper 自己的 SMTP 配置，上游管理员 Key 不能代替邮件服务凭据。将服务商提供的值写入 `.env`，然后重建 Helper 容器。
+原生按钮验证当前原站管理员。当前要求 `session_binding_enabled` 明确关闭；启用或读不到时停止增强操作，不修改此设置、不强行验证可能撤销会话的 JWT。可继续用独立管理页面。注入保留上游 CSP 和 nonce；没有可靠行 ID 时不猜测目标。
+
+隔离验收应覆盖：首页/登录页再进账号列表、直接打开列表、前进后退与刷新、静态资源；停止 Helper 后登录、用户管理、模型 POST、SSE 和 WebSocket 仍可用。仓库测试使用真实 Nginx、当前镜像与假上游，无真实 Key、无付费模型调用：
+
+```sh
+python3 tests/ingress_smoke.py "$HELPER_IMAGE"
+```
+
+这不是 ZJLAB 现场验收。长期若上游提供稳定的脚本加载和行扩展接口，可去掉 HTML 层，仅保留 `/_helper/`。当前插件配置 iframe 不提供原列表行扩展。
+
+## 5. 回切与旧菜单
+
+将 Nginx 的 `set $helper_injection_enabled 0;` 后检查并重载，新文档立即走原站，无需先重启或停 Helper。已打开的 SPA 标签页需完整刷新才能移除脚本。彻底撤掉接入时可移除 `/_helper/` location，保留其他原站路由。
+
+入口回切不等于业务回滚。规则仍可运行；停止容器只停止未来执行，不恢复已修改的可调度状态、倍率、邮件或余额，也不撤销已发出的模型请求。停规则、恢复倍率应按业务语义操作，不能因页面回切重复奖励。保留 `/data`，不要删除数据卷来重置结算记录。
+
+新菜单使用 `/_helper/features/...`。升级后重新同步功能菜单，更新历史 `/features/benchmark`、`/features/pricing`、`/features/ranking` 链接。迁移时可显式开启 `HELPER_LEGACY_ROUTES=true`，并在 Nginx server 中临时增加三个**精确**别名：
+
+```nginx
+location = /features/benchmark { proxy_pass $helper_origin$request_uri; }
+location = /features/pricing   { proxy_pass $helper_origin$request_uri; }
+location = /features/ranking   { proxy_pass $helper_origin$request_uri; }
+```
+
+确认菜单同步后删除别名并关闭 legacy。不要扩大为整个 `/features/`、`/api/` 或根路径代理。旧书签改为新 `/_helper/` 入口。
+
+## SMTP、数据与升级
+
+邮件使用独立 SMTP，管理 Key 不能替代凭据：
 
 ```dotenv
 SMTP_HOST=smtp.example.com
@@ -171,57 +140,8 @@ SMTP_FROM=
 SMTP_TLS=starttls
 ```
 
-填写发件人地址以及服务商要求的用户名、密码或专用授权码。`starttls` 常用端口 `587`，`ssl` 常用端口 `465`。只配置 TLS 模式而未指定端口时，程序会选择相应默认端口。复制 `.env.example` 后若改用 `ssl`，也要把已有的 `SMTP_PORT=587` 改成服务商的 SSL 端口。
+仅支持 `starttls` 或 `ssl` 并验证证书；配置 host 必须提供 from。先向测试邮箱验证，SMTP 接受不等于最终送达。
 
-SMTP 始终验证证书。配置 `SMTP_HOST` 时必须同时配置 `SMTP_FROM`。SMTP 接受投递不代表邮件已进入收件箱，先用测试邮件确认发信域名和服务商状态。
+`/data` 保存计划、规则、审计、结算去重、画廊与加密凭据。主密钥在数据库旁 `.key` 文件中，备份整个卷和权限，并保护 `.env`。停 Helper 后可复制卷再启动，原站不受影响。恢复数据库与对应密钥，确保 UID/GID `10001:10001` 可读写、密钥 `0600`。密钥丢失不能通过重新生成恢复。
 
-## 自定义菜单与独立模式
-
-原生行操作之外，可按需在高级管理中启用内置菜单。菜单链接由 `HELPER_PUBLIC_URL` 生成，这个地址必须能被用户浏览器访问。在原生模式中使用原 sub2api 公网地址即可，核对外层代理允许同源 iframe，并避免记录内嵌链接的查询参数。
-
-需要独立管理页面时设置 `HELPER_NATIVE_UI=false`，将 Helper 放在单独的 HTTPS 地址，例如 `helper.example.com`，原 sub2api 网页入口继续指向原服务。此时 `HELPER_PUBLIC_URL` 填 Helper 地址，`SUB2API_PUBLIC_URL` 仍填 sub2api 地址。独立页面通过管理员 Key 建立会话，原列表不注入按钮。依赖用户 JWT 的内置功能页仍受上游会话绑定限制。
-
-## 数据、备份与升级
-
-`/data` 保存规则、计划、审计、去重记录和已绑定的加密凭据。浏览器绑定产生的主密钥位于数据库旁的 `.key` 文件中。备份时保留整个数据卷及其权限，另行保护 `.env`。数据库和主密钥一起泄漏仍等同于凭据泄漏。
-
-可在短暂停止 Helper 后复制整个目录，原 sub2api 服务继续运行。
-
-```sh
-mkdir -p backups
-chmod 700 backups
-docker stop sub2api-helper
-docker cp sub2api-helper:/data "./backups/helper-data-$(date +%Y%m%d-%H%M%S)"
-docker start sub2api-helper
-```
-
-恢复时同时恢复数据库和对应主密钥。镜像使用 UID/GID `10001:10001`，宿主机绑定目录或恢复文件后需保证该用户有读写权限，主密钥保持 `0600`。已有加密绑定但主密钥丢失或损坏时，程序会报错，不能通过生成新密钥恢复原凭据。
-
-升级前备份，将 `NEW_HELPER_RELEASE_TAG` 设为选定的已发布 tag，再从该版本的 `helper/VERSION` 取得镜像版本。
-
-```sh
-git fetch --tags origin
-git checkout "$NEW_HELPER_RELEASE_TAG"
-HELPER_VERSION=$(cat helper/VERSION)
-HELPER_IMAGE="ghcr.io/aaronyang0628/sub2api-helper:${HELPER_VERSION}"
-docker pull "$HELPER_IMAGE"
-docker stop sub2api-helper
-docker rm sub2api-helper
-```
-
-之后按第 3 步使用原网络、原 `.env` 和原数据卷重新创建容器，完成健康与行操作检查。删除容器会保留命名卷，升级时保留该卷。版本适配和发布流程见 [发布说明](releases.md)。
-
-## 常见问题
-
-| 现象 | 检查方向 |
-| --- | --- |
-| 镜像拉取失败 | 核对 Release 已发布、版本来自对应 tag 的 `helper/VERSION`，以及主机可访问 GHCR |
-| 页面出现代理错误或循环跳转 | 核对 `SUB2API_URL` 是内网原服务，容器加入了正确网络，使用的是上游容器端口 |
-| 页面正常但按钮不可用 | 确认打开的是 Helper 代理后的入口、当前为管理员、Key 已绑定，并检查上游会话绑定状态 |
-| 提示权限不足或运营确认 | 核对管理 Key 对应权限，在上游完成所需确认 |
-| HTTPS 重定向不正确或 WebSocket 被拒绝 | 核对公网 URL 的协议、主机和端口，以及 Nginx 的 Upgrade 转发 |
-| 流式回答延迟成批出现 | 检查外层 Nginx、CDN 等是否仍缓冲响应，以及读取超时是否足够 |
-| 发信不可用 | 检查 SMTP 发件人、端口与 TLS 组合，使用服务商要求的授权方式 |
-| 数据库或主密钥无法读取 | 检查卷挂载、UID `10001` 的权限，并恢复同一份备份中的数据库与主密钥 |
-
-先查看 `docker logs --tail 100 sub2api-helper`，再在高级管理中查看兼容性结果及执行记录。更详细的接口范围与限制见 [上游兼容性说明](upstream-compatibility.md)，功能概览见 [项目首页](../README.md)。
+升级前记录源码 SHA、镜像 ID 并备份数据，使用同一网络、环境和卷重建单实例。切旧镜像前也备份，不假定旧版理解新版数据。发布与上游审阅见 [发布说明](releases.md)。

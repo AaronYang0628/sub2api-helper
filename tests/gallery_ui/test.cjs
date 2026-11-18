@@ -26,13 +26,13 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/leak') { leaks++; res.writeHead(200); res.end('not allowed'); return; }
     if (url.pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
-    if (url.pathname.startsWith('/api/portal/')) {
+    if (url.pathname.startsWith('/_helper/api/portal/')) {
       calls.push(url.pathname);
       let value;
       if (url.pathname.endsWith('/session')) value = { session: 'fixture-session' };
       else if (url.pathname.endsWith('/modules')) value = { benchmark: true };
-      else if (url.pathname === '/api/portal/gallery') { if (fail) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: '示例服务暂时不可用' })); return; } value = { groups: empty ? [] : onlyFirst ? groups.slice(0, 1) : groups, timezone: 'Asia/Shanghai' }; }
-      else if (url.pathname === '/api/portal/gallery/comparison') {
+      else if (url.pathname === '/_helper/api/portal/gallery') { if (fail) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: '示例服务暂时不可用' })); return; } value = { groups: empty ? [] : onlyFirst ? groups.slice(0, 1) : groups, timezone: 'Asia/Shanghai' }; }
+      else if (url.pathname === '/_helper/api/portal/gallery/comparison') {
         if (comparisonUnavailable) { res.writeHead(404); res.end(); return; }
         const available = empty ? [] : onlyFirst ? groups.slice(0, 1) : groups;
         value = { timezone: 'Asia/Shanghai', config: available.length ? { enabled: true, interval_minutes: 60, group_ids: available.map(group => group.group_id), next_at: new Date(Date.now() + 3600000).toISOString() } : null, round: available.length ? { id: 'shared-round-1', prompt: sharedPrompt, status: 'partial', created_at: new Date(Date.now()).toISOString(), items: available.map(group => { const item = { group_id: group.group_id, name: group.name, model: group.model, status: group.group_id === 3 ? 'failed' : 'success' }; if (group.group_id !== 3) { item.work = work(group.group_id, 0); item.work.preview = item.work.content; delete item.work.content; } return item; }) } : null };
@@ -45,7 +45,7 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
       }
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); return;
     }
-    const file = url.pathname === '/static/style.css' ? cssFile : path.join(root, url.pathname.startsWith('/static/') ? 'helper/static/' + path.basename(url.pathname) : 'helper/static/feature.html');
+    const file = url.pathname === '/_helper/static/style.css' ? cssFile : path.join(root, url.pathname.startsWith('/_helper/static/') ? 'helper/static/' + path.basename(url.pathname) : 'helper/static/feature.html');
     res.writeHead(200, { 'Content-Type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src 'self'; connect-src 'self'; object-src 'none'" }); res.end(await fs.readFile(file));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -56,14 +56,14 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', item => { if (item.type() === 'error' && !/Blocked script execution|Content Security Policy|Failed to load resource|Refused to|violates the following/.test(item.text())) errors.push(item.text()); });
     await page.clock.install();
-    await page.goto(origin + '/features/benchmark?token=fixture-jwt&theme=light');
+    await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt&theme=light');
     await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.textContent === '同题对比');
     assert.equal(await page.locator('.helper-gallery-comparison-item').count(), 3, 'same round compares all accessible groups');
     assert((await page.locator('.helper-gallery-info').textContent()).includes('部分完成'));
     assert((await page.locator('.helper-gallery-comparison-item[data-group-id="3"]').textContent()).includes('失败'));
     assert((await page.locator('.helper-gallery-comparison-item[data-group-id="3"]').textContent()).includes('fixture-failed'));
     await page.getByText('本轮共用提示词', { exact: true }).click(); assert.equal(await page.locator('.helper-gallery-shared-prompt pre').textContent(), sharedPrompt); assert.equal(await page.locator('.helper-gallery-shared-prompt img').count(), 0);
-    assert.equal(calls.filter(value => value === '/api/portal/gallery/comparison').length, 1); assert.equal(calls.filter(value => /\/gallery\/\d+$/.test(value)).length, 0, 'comparison uses one shared round, no group prefetch');
+    assert.equal(calls.filter(value => value === '/_helper/api/portal/gallery/comparison').length, 1); assert.equal(calls.filter(value => /\/gallery\/\d+$/.test(value)).length, 0, 'comparison uses one shared round, no group prefetch');
     await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByText('生成提示词', { exact: true }).waitFor(); assert.equal(await page.locator('.helper-gallery-dialog .helper-gallery-prompt').textContent(), sharedPrompt); await page.getByRole('button', { name: '关闭', exact: true }).click();
     await page.screenshot({ path: path.join(directory, 'gallery-comparison.png'), fullPage: true });
     await page.getByRole('tab', { name: '白鹭单车分组', exact: true }).click();
@@ -84,13 +84,13 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     const moonFrame = await page.locator('.helper-gallery-work iframe').first().elementHandle().then(handle => handle.contentFrame()); await moonFrame.locator('#moon').waitFor({ state: 'attached' }); assert.equal(await moonFrame.locator('#moon').evaluate(node => getComputedStyle(node).fill), 'rgb(254, 243, 199)');
     await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByRole('dialog', { name: '作品详情', exact: true }).waitFor(); await page.getByText('生成提示词', { exact: true }).waitFor(); assert((await page.locator('.helper-gallery-prompt').textContent()).includes('<img')); assert.equal(await page.locator('.helper-gallery-prompt img').count(), 0); assert.equal(calls.filter(value => value.endsWith('/works/svg-0')).length, 2);
     const box = await page.locator('.helper-gallery-dialog').boundingBox(); assert(box.width <= 1152 && box.height <= 1012 && box.y >= 0); await page.screenshot({ path: path.join(directory, 'gallery-detail.png'), fullPage: true }); await page.getByRole('button', { name: '关闭', exact: true }).click();
-    const beforePoll = calls.filter(value => value === '/api/portal/gallery/2').length; await page.clock.fastForward(30000); await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.textContent === '月夜纸船分组'); await page.waitForTimeout(100); assert(calls.filter(value => value === '/api/portal/gallery/2').length > beforePoll, 'modest poll retains selected group');
+    const beforePoll = calls.filter(value => value === '/_helper/api/portal/gallery/2').length; await page.clock.fastForward(30000); await page.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.textContent === '月夜纸船分组'); await page.waitForTimeout(100); assert(calls.filter(value => value === '/_helper/api/portal/gallery/2').length > beforePoll, 'modest poll retains selected group');
     await page.setViewportSize({ width: 390, height: 844 }); await page.evaluate(() => document.documentElement.classList.add('dark')); await page.waitForTimeout(350); await page.screenshot({ path: path.join(directory, 'gallery-mobile-dark.png'), fullPage: true });
     await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByText('生成提示词', { exact: true }).waitFor(); onlyFirst = true; await page.clock.fastForward(30000); await page.getByRole('tab', { name: '白鹭单车分组', exact: true }).waitFor(); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.locator('dialog').count(), 0, 'revoked group closes stale detail');
     await page.evaluate(() => document.querySelector('.helper-gallery').parentElement.remove()); const afterDetach = calls.length; await page.clock.fastForward(60000); await page.waitForTimeout(80); assert.equal(calls.length, afterDetach, 'detached view stops timers/requests');
-    empty = true; await page.goto(origin + '/features/benchmark?token=fixture-jwt'); await page.getByText('暂无可用分组。', { exact: true }).waitFor();
-    empty = false; fail = true; await page.goto(origin + '/features/benchmark?token=fixture-jwt'); await page.getByText('示例服务暂时不可用', { exact: true }).waitFor(); fail = false; await page.getByRole('button', { name: '刷新', exact: true }).click(); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor();
-    comparisonUnavailable = true; await page.goto(origin + '/features/benchmark?token=fixture-jwt'); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.getByRole('tab', { name: '同题对比', exact: true }).count(), 0, 'older servers gracefully keep group gallery');
+    empty = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('暂无可用分组。', { exact: true }).waitFor();
+    empty = false; fail = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('示例服务暂时不可用', { exact: true }).waitFor(); fail = false; await page.getByRole('button', { name: '刷新', exact: true }).click(); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor();
+    comparisonUnavailable = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.getByRole('tab', { name: '同题对比', exact: true }).count(), 0, 'older servers gracefully keep group gallery');
     assert.equal(leaks, 0); assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0); assert.deepEqual(errors, []);
     console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['same shared round defaults to comparison', 'group model/status including failure', 'shared prompt plaintext and real detail', 'comparison endpoint gracefully optional', 'HTML CSS renders/animates in sandbox', 'raw SVG visible', 'scripts/network blocked', 'latest12/no detail prefetch', 'group tab/poll retention', 'detached cleanup', 'empty/error/retry', 'mobile/dark/no key storage'] }, null, 2));
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

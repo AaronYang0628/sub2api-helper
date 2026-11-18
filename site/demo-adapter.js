@@ -228,6 +228,16 @@
     return null;
   }
   function route(path, method, data) {
+    if (path.startsWith('/_helper/api/admin/')) path = '/api/' + path.slice('/_helper/api/admin/'.length);
+    if (path.startsWith('/_helper/api/portal/')) {
+      const endpoint = path.slice('/_helper/api/portal/'.length);
+      if (endpoint === 'session' && method === 'POST') return { session: 'demo-portal-session' };
+      if (endpoint === 'models' && method === 'GET') return { models: metrics.models };
+      if (endpoint === 'ranking' && method === 'GET') return { ranking: metrics.ranking.map(({ username, user_id, ...item }) => item) };
+      return route('/api/' + endpoint, method, data);
+    }
+    if (path === '/_helper/api/session/revoke' && method === 'POST') return { ok: true };
+    if (path === '/api/connection/disconnect' && method === 'POST') return { ok: true };
     const shared = path.match(/^\/api\/gallery\/comparison(?:\/(run|pause))?$/);
     if (shared) {
       if (!shared[1] && method === 'GET') return comparisonDetail();
@@ -413,7 +423,7 @@
     const controller = window.helperGallery(document.getElementById('demo-gallery-main'), {
       timezone: 'Asia/Shanghai',
       request: async path => {
-        const result = await fetch('/api' + path, { credentials: 'omit' });
+        const result = await fetch('/_helper/api/portal' + path, { credentials: 'omit' });
         const data = await result.json();
         if (!result.ok) throw new Error(data.detail || '离线示例暂时无法打开。');
         return data;

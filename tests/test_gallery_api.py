@@ -96,24 +96,24 @@ class GalleryApiTests(unittest.TestCase):
         value = self.job(**changes)
         if group_id == 4 and "key_id" not in changes:
             value["key_id"] = 41
-        response = self.client.put(f"/api/gallery/{group_id}", headers=self.auth, json=value)
+        response = self.client.put(f"/_helper/api/admin/gallery/{group_id}", headers=self.auth, json=value)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn(MODEL_KEY, response.text)
         return response.json()
 
     def portal(self, jwt="user-jwt"):
-        response = self.client.post("/api/portal/session", json={"token": jwt})
+        response = self.client.post("/_helper/api/portal/session", json={"token": jwt})
         self.assertEqual(response.status_code, 200, response.text)
         return {"X-Portal-Session": response.json()["session"]}
 
     def admin_view(self, group_id=3):
-        response = self.client.get(f"/api/gallery/{group_id}", headers=self.auth)
+        response = self.client.get(f"/_helper/api/admin/gallery/{group_id}", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
     def generate_one(self, group_id=3):
         previous = len(self.admin_view(group_id)["works"])
-        response = self.client.post(f"/api/gallery/{group_id}/run", headers=self.auth)
+        response = self.client.post(f"/_helper/api/admin/gallery/{group_id}/run", headers=self.auth)
         self.assertEqual(response.status_code, 202, response.text)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -135,16 +135,16 @@ class GalleryApiTests(unittest.TestCase):
         self.upstream.key_material = {31: "anthropic-key-server-only", 41: "kimi-key-server-only"}
         self.configure(3, name="Anthropic gallery", model="fixture-claude", prompt="Private Anthropic standalone prompt", api_format="chat")
         self.configure(4, name="Kimi gallery", model="fixture-kimi", prompt="Private Kimi standalone prompt", api_format="responses")
-        response = self.client.put("/api/gallery/comparison", headers=self.auth, json=self.comparison(**changes))
+        response = self.client.put("/_helper/api/admin/gallery/comparison", headers=self.auth, json=self.comparison(**changes))
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
     def generate_comparison(self):
-        response = self.client.post("/api/gallery/comparison/run", headers=self.auth)
+        response = self.client.post("/_helper/api/admin/gallery/comparison/run", headers=self.auth)
         self.assertEqual(response.status_code, 202, response.text)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            response = self.client.get("/api/gallery/comparison", headers=self.auth)
+            response = self.client.get("/_helper/api/admin/gallery/comparison", headers=self.auth)
             self.assertEqual(response.status_code, 200, response.text)
             latest = response.json().get("round")
             if latest and latest["status"] not in {"queued", "running"}:
@@ -156,9 +156,9 @@ class GalleryApiTests(unittest.TestCase):
     def test_gallery_configuration_and_manual_generation_require_management_auth(self):
         self.configure()
         ordinary = self.portal()
-        requests = [("GET", "/api/gallery", None), ("GET", "/api/gallery/3", None),
-                    ("PUT", "/api/gallery/3", self.job()), ("POST", "/api/gallery/3/run", None),
-                    ("POST", "/api/gallery/3/pause", None), ("GET", "/api/gallery/3/works/1", None)]
+        requests = [("GET", "/_helper/api/admin/gallery", None), ("GET", "/_helper/api/admin/gallery/3", None),
+                    ("PUT", "/_helper/api/admin/gallery/3", self.job()), ("POST", "/_helper/api/admin/gallery/3/run", None),
+                    ("POST", "/_helper/api/admin/gallery/3/pause", None), ("GET", "/_helper/api/admin/gallery/3/works/1", None)]
         for method, path, value in requests:
             for headers in ({}, ordinary, {"Authorization": "Bearer " + self.config.sub2api_admin_key}):
                 with self.subTest(method=method, path=path, headers=list(headers)):
@@ -169,7 +169,7 @@ class GalleryApiTests(unittest.TestCase):
     def test_configuration_checks_owned_key_group_and_defaults_to_paused(self):
         value = self.job()
         del value["enabled"]
-        response = self.client.put("/api/gallery/3", headers=self.auth, json=value)
+        response = self.client.put("/_helper/api/admin/gallery/3", headers=self.auth, json=value)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.upstream.key_lookups, [(31, 3)])
         view = self.admin_view()
@@ -177,7 +177,7 @@ class GalleryApiTests(unittest.TestCase):
         self.assertFalse(view["group"]["enabled"])
         self.assertEqual(view["group"]["prompt"], CONFIG_PROMPT)
         self.assertEqual(view["group"]["key_id"], 31)
-        response = self.client.get("/api/gallery", headers=self.auth)
+        response = self.client.get("/_helper/api/admin/gallery", headers=self.auth)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["groups"][0]["group_id"], 3)
         self.assertNotIn(MODEL_KEY, response.text)
@@ -186,11 +186,11 @@ class GalleryApiTests(unittest.TestCase):
     def test_unusable_or_cross_group_model_key_cannot_replace_existing_config(self):
         self.configure()
         before = self.admin_view()["group"]
-        response = self.client.put("/api/gallery/3", headers=self.auth, json=self.job(key_id=41, prompt="wrong group"))
+        response = self.client.put("/_helper/api/admin/gallery/3", headers=self.auth, json=self.job(key_id=41, prompt="wrong group"))
         self.assertGreaterEqual(response.status_code, 400, response.text)
         self.assertEqual(self.admin_view()["group"], before)
         self.upstream.key_unavailable = True
-        response = self.client.put("/api/gallery/3", headers=self.auth, json=self.job(enabled=True))
+        response = self.client.put("/_helper/api/admin/gallery/3", headers=self.auth, json=self.job(enabled=True))
         self.assertGreaterEqual(response.status_code, 400, response.text)
         self.assertEqual(self.admin_view()["group"], before)
         self.generator.assert_not_awaited()
@@ -200,13 +200,13 @@ class GalleryApiTests(unittest.TestCase):
                    {"api_format": "unsupported"}, {"interval_minutes": 4}, {"interval_minutes": 1441}]
         for change in invalid:
             with self.subTest(change=change):
-                response = self.client.put("/api/gallery/3", headers=self.auth, json=self.job(**change))
+                response = self.client.put("/_helper/api/admin/gallery/3", headers=self.auth, json=self.job(**change))
                 self.assertEqual(response.status_code, 422, response.text)
         for group_id in (0, -1):
-            response = self.client.put(f"/api/gallery/{group_id}", headers=self.auth, json=self.job())
+            response = self.client.put(f"/_helper/api/admin/gallery/{group_id}", headers=self.auth, json=self.job())
             self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(self.upstream.key_lookups, [])
-        self.assertEqual(self.client.get("/api/gallery", headers=self.auth).json()["groups"], [])
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery", headers=self.auth).json()["groups"], [])
 
     def test_interval_boundaries_are_supported(self):
         for interval in (5, 1440):
@@ -221,7 +221,7 @@ class GalleryApiTests(unittest.TestCase):
         self.assertEqual(self.generated[0], {"model": "fixture-model", "api_format": "responses",
                                             "prompt": CONFIG_PROMPT, "api_key": MODEL_KEY})
         self.assertGreaterEqual(self.upstream.key_lookups.count((31, 3)), 2, "The worker must resolve the key again at execution time")
-        response = self.client.get(f"/api/gallery/3/works/{summary['id']}", headers=self.auth)
+        response = self.client.get(f"/_helper/api/admin/gallery/3/works/{summary['id']}", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("Fixture artwork", response.text)
         self.assertEqual(response.json()["prompt"], self.generated[0]["prompt"])
@@ -232,7 +232,7 @@ class GalleryApiTests(unittest.TestCase):
         self.configure(enabled=True)
         self.upstream.key_unavailable = True
         previous = list(self.upstream.key_lookups)
-        response = self.client.post("/api/gallery/3/pause", headers=self.auth)
+        response = self.client.post("/_helper/api/admin/gallery/3/pause", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(self.admin_view()["group"]["enabled"])
         self.assertEqual(self.upstream.key_lookups, previous, "Pausing must not depend on a still-usable billing key")
@@ -240,11 +240,11 @@ class GalleryApiTests(unittest.TestCase):
 
     def test_portal_requires_session_and_enabled_benchmark_module(self):
         self.configure()
-        self.assertEqual(self.client.get("/api/portal/gallery").status_code, 401)
-        self.assertEqual(self.client.get("/api/portal/gallery/3").status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/portal/gallery").status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/portal/gallery/3").status_code, 401)
         ordinary = self.portal()
         self.store.set_setting("modules", {"benchmark": False, "pricing": False, "ranking": False})
-        for path in ("/api/portal/gallery", "/api/portal/gallery/3", "/api/portal/gallery/3/works/1"):
+        for path in ("/_helper/api/portal/gallery", "/_helper/api/portal/gallery/3", "/_helper/api/portal/gallery/3/works/1"):
             with self.subTest(path=path):
                 response = self.client.get(path, headers=ordinary)
                 self.assertEqual(response.status_code, 404, response.text)
@@ -254,7 +254,7 @@ class GalleryApiTests(unittest.TestCase):
         self.configure()
         self.configure(4, name="Inaccessible gallery", prompt="Hidden group configuration")
         ordinary = self.portal()
-        response = self.client.get("/api/portal/gallery", headers=ordinary)
+        response = self.client.get("/_helper/api/portal/gallery", headers=ordinary)
         self.assertEqual(response.status_code, 200, response.text)
         groups = response.json()["groups"]
         self.assertEqual([group["group_id"] for group in groups], [3])
@@ -263,7 +263,7 @@ class GalleryApiTests(unittest.TestCase):
         self.assertNotIn(CONFIG_PROMPT, response.text)
         self.assertNotIn("Hidden group configuration", response.text)
         self.assertNotIn(MODEL_KEY, response.text)
-        response = self.client.get("/api/portal/gallery/3", headers=ordinary)
+        response = self.client.get("/_helper/api/portal/gallery/3", headers=ordinary)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertNotIn("key_id", response.json()["group"])
         self.assertNotIn("prompt", response.json()["group"])
@@ -274,10 +274,10 @@ class GalleryApiTests(unittest.TestCase):
         self.configure()
         summary = self.generate_one()
         ordinary = self.portal()
-        listing = self.client.get("/api/portal/gallery/3", headers=ordinary)
+        listing = self.client.get("/_helper/api/portal/gallery/3", headers=ordinary)
         self.assertEqual(listing.status_code, 200, listing.text)
         self.assertNotIn(CONFIG_PROMPT, listing.text)
-        response = self.client.get(f"/api/portal/gallery/3/works/{summary['id']}", headers=ordinary)
+        response = self.client.get(f"/_helper/api/portal/gallery/3/works/{summary['id']}", headers=ordinary)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["prompt"], self.generated[0]["prompt"])
         self.assertIn("Fixture artwork", response.text)
@@ -294,7 +294,7 @@ class GalleryApiTests(unittest.TestCase):
         summary = self.generate_one()
         executed = self.generated[0]["prompt"]
         self.configure(prompt="New private configuration for future work only")
-        response = self.client.get(f"/api/portal/gallery/3/works/{summary['id']}", headers=self.portal())
+        response = self.client.get(f"/_helper/api/portal/gallery/3/works/{summary['id']}", headers=self.portal())
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["prompt"], executed)
         self.assertNotIn("New private configuration for future work only", response.text)
@@ -304,8 +304,8 @@ class GalleryApiTests(unittest.TestCase):
         self.configure(4)
         summary = self.generate_one(4)
         ordinary = self.portal()
-        for path in ("/api/portal/gallery/4", f"/api/portal/gallery/4/works/{summary['id']}",
-                     f"/api/portal/gallery/3/works/{summary['id']}"):
+        for path in ("/_helper/api/portal/gallery/4", f"/_helper/api/portal/gallery/4/works/{summary['id']}",
+                     f"/_helper/api/portal/gallery/3/works/{summary['id']}"):
             with self.subTest(path=path):
                 response = self.client.get(path, headers=ordinary)
                 self.assertEqual(response.status_code, 404, response.text)
@@ -315,19 +315,19 @@ class GalleryApiTests(unittest.TestCase):
         self.configure()
         summary = self.generate_one()
         ordinary = self.portal()
-        self.assertEqual(self.client.get("/api/portal/gallery/3", headers=ordinary).status_code, 200)
+        self.assertEqual(self.client.get("/_helper/api/portal/gallery/3", headers=ordinary).status_code, 200)
         self.upstream.allowed["user-jwt"] = []
-        response = self.client.get("/api/portal/gallery", headers=ordinary)
+        response = self.client.get("/_helper/api/portal/gallery", headers=ordinary)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["groups"], [])
-        for path in ("/api/portal/gallery/3", f"/api/portal/gallery/3/works/{summary['id']}"):
+        for path in ("/_helper/api/portal/gallery/3", f"/_helper/api/portal/gallery/3/works/{summary['id']}"):
             self.assertEqual(self.client.get(path, headers=ordinary).status_code, 404)
 
     def test_group_lookup_failure_does_not_fall_back_to_the_admins_all_group_visibility(self):
         self.configure()
         ordinary = self.portal()
         self.upstream.allowed["user-jwt"] = UpstreamError("Group access lookup failed", 503)
-        for path in ("/api/portal/gallery", "/api/portal/gallery/3"):
+        for path in ("/_helper/api/portal/gallery", "/_helper/api/portal/gallery/3"):
             with self.subTest(path=path):
                 response = self.client.get(path, headers=ordinary)
                 self.assertGreaterEqual(response.status_code, 400)
@@ -338,17 +338,17 @@ class GalleryApiTests(unittest.TestCase):
         self.configure()
         self.configure(4)
         administrator = self.portal("admin-jwt")
-        response = self.client.get("/api/portal/gallery", headers=administrator)
+        response = self.client.get("/_helper/api/portal/gallery", headers=administrator)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual({group["group_id"] for group in response.json()["groups"]}, {3, 4})
         self.assertEqual(self.upstream.available_calls, [])
 
     def test_comparison_configuration_and_execution_require_management_auth(self):
         ordinary = self.portal()
-        for method, path, value in (("GET", "/api/gallery/comparison", None),
-                                    ("PUT", "/api/gallery/comparison", self.comparison()),
-                                    ("POST", "/api/gallery/comparison/run", None),
-                                    ("POST", "/api/gallery/comparison/pause", None)):
+        for method, path, value in (("GET", "/_helper/api/admin/gallery/comparison", None),
+                                    ("PUT", "/_helper/api/admin/gallery/comparison", self.comparison()),
+                                    ("POST", "/_helper/api/admin/gallery/comparison/run", None),
+                                    ("POST", "/_helper/api/admin/gallery/comparison/pause", None)):
             for headers in ({}, ordinary, {"Authorization": "Bearer " + self.config.sub2api_admin_key}):
                 with self.subTest(method=method, path=path, headers=list(headers)):
                     response = self.client.request(method, path, json=value, headers=headers)
@@ -361,10 +361,10 @@ class GalleryApiTests(unittest.TestCase):
                    {"prompt": ""}, {"interval_minutes": 4}, {"interval_minutes": 1441}]
         for changes in invalid:
             with self.subTest(changes=changes):
-                response = self.client.put("/api/gallery/comparison", headers=self.auth, json=self.comparison(**changes))
+                response = self.client.put("/_helper/api/admin/gallery/comparison", headers=self.auth, json=self.comparison(**changes))
                 self.assertEqual(response.status_code, 422, response.text)
         self.configure(3)
-        response = self.client.put("/api/gallery/comparison", headers=self.auth, json=self.comparison())
+        response = self.client.put("/_helper/api/admin/gallery/comparison", headers=self.auth, json=self.comparison())
         self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(self.upstream.key_options_reads, 0, "Unconfigured participants must be rejected before key discovery")
         self.generator.assert_not_awaited()
@@ -372,7 +372,7 @@ class GalleryApiTests(unittest.TestCase):
     def test_comparison_validates_the_exact_stored_key_for_every_group_before_updating(self):
         self.configure_comparison()
         self.assertEqual(self.upstream.key_options_reads, 1)
-        before = self.client.get("/api/gallery/comparison", headers=self.auth).json()["config"]
+        before = self.client.get("/_helper/api/admin/gallery/comparison", headers=self.auth).json()["config"]
         invalid_live_options = [
             [{"id": 32, "group_id": 3}, {"id": 41, "group_id": 4}],
             [{"id": 31, "group_id": 4}, {"id": 41, "group_id": 4}],
@@ -381,10 +381,10 @@ class GalleryApiTests(unittest.TestCase):
         for options in invalid_live_options:
             with self.subTest(options=options):
                 self.upstream.keys = options
-                response = self.client.put("/api/gallery/comparison", headers=self.auth,
+                response = self.client.put("/_helper/api/admin/gallery/comparison", headers=self.auth,
                                            json=self.comparison(prompt="Should not replace the valid shared prompt", enabled=True))
                 self.assertEqual(response.status_code, 422, response.text)
-                self.assertEqual(self.client.get("/api/gallery/comparison", headers=self.auth).json()["config"], before)
+                self.assertEqual(self.client.get("/_helper/api/admin/gallery/comparison", headers=self.auth).json()["config"], before)
         self.generator.assert_not_awaited()
 
     def test_comparison_runs_distinct_model_keys_with_one_identical_persisted_prompt(self):
@@ -401,7 +401,7 @@ class GalleryApiTests(unittest.TestCase):
             self.assertEqual(item["status"], "success")
             self.assertEqual(item["work"]["round_id"], latest["id"])
             self.assertEqual(item["work"]["group_id"], item["group_id"])
-            response = self.client.get(f"/api/gallery/{item['group_id']}/works/{item['work']['id']}", headers=self.auth)
+            response = self.client.get(f"/_helper/api/admin/gallery/{item['group_id']}/works/{item['work']['id']}", headers=self.auth)
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["round_id"], latest["id"])
             self.assertEqual(response.json()["prompt"], COMPARISON_PROMPT)
@@ -411,7 +411,7 @@ class GalleryApiTests(unittest.TestCase):
     def test_individual_generation_cannot_use_a_different_prompt_for_a_shared_participant(self):
         self.configure_comparison(enabled=True)
         for group_id in (3, 4):
-            response = self.client.post(f"/api/gallery/{group_id}/run", headers=self.auth)
+            response = self.client.post(f"/_helper/api/admin/gallery/{group_id}/run", headers=self.auth)
             self.assertEqual(response.status_code, 409, response.text)
         self.generator.assert_not_awaited()
 
@@ -421,9 +421,9 @@ class GalleryApiTests(unittest.TestCase):
         lookups_before = list(self.upstream.key_lookups)
         self.upstream.key_unavailable = True
         self.upstream.keys = []
-        response = self.client.post("/api/gallery/comparison/pause", headers=self.auth)
+        response = self.client.post("/_helper/api/admin/gallery/comparison/pause", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
-        response = self.client.get("/api/gallery/comparison", headers=self.auth)
+        response = self.client.get("/_helper/api/admin/gallery/comparison", headers=self.auth)
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["config"]["enabled"])
         self.assertEqual(self.upstream.key_options_reads, options_before)
@@ -433,11 +433,11 @@ class GalleryApiTests(unittest.TestCase):
     def test_portal_comparison_filters_future_config_and_only_returns_currently_allowed_participants(self):
         self.configure_comparison()
         latest = self.generate_comparison()
-        response = self.client.put("/api/gallery/comparison", headers=self.auth,
+        response = self.client.put("/_helper/api/admin/gallery/comparison", headers=self.auth,
                                    json=self.comparison(prompt="Future private shared prompt; not yet executed"))
         self.assertEqual(response.status_code, 200, response.text)
         ordinary = self.portal()
-        response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+        response = self.client.get("/_helper/api/portal/gallery/comparison", headers=ordinary)
         self.assertEqual(response.status_code, 200, response.text)
         visible = response.json()
         self.assertEqual(visible["config"]["group_ids"], [3])
@@ -450,7 +450,7 @@ class GalleryApiTests(unittest.TestCase):
                        "key_id", "anthropic-key-server-only", "kimi-key-server-only"):
             self.assertNotIn(hidden, response.text)
         self.upstream.allowed["user-jwt"] = []
-        response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+        response = self.client.get("/_helper/api/portal/gallery/comparison", headers=ordinary)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIsNone(response.json()["config"])
         self.assertIsNone(response.json()["round"])
@@ -470,7 +470,7 @@ class GalleryApiTests(unittest.TestCase):
                       ]},
         }
         with patch.object(self.app.state.gallery, "comparison", return_value=hidden_state):
-            response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+            response = self.client.get("/_helper/api/portal/gallery/comparison", headers=ordinary)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["round"]["status"], "success")
         self.assertEqual(len(response.json()["round"]["items"]), 1)
@@ -479,10 +479,10 @@ class GalleryApiTests(unittest.TestCase):
             self.assertNotIn(hidden, response.text)
 
     def test_public_comparison_requires_a_session_and_an_enabled_benchmark_module(self):
-        self.assertEqual(self.client.get("/api/portal/gallery/comparison").status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/portal/gallery/comparison").status_code, 401)
         ordinary = self.portal()
         self.store.set_setting("modules", {"benchmark": False, "pricing": False, "ranking": False})
-        response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+        response = self.client.get("/_helper/api/portal/gallery/comparison", headers=ordinary)
         self.assertEqual(response.status_code, 404, response.text)
         self.assertEqual(self.upstream.available_calls, [])
 

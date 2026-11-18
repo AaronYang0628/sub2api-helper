@@ -9,7 +9,10 @@ from helper import __version__
 from helper.app import BASELINE, create_app
 from helper.config import Config
 from helper.store import Store
-from test_app import FakeMailer, FakeUpstream
+try:
+    from tests.test_app import FakeMailer, FakeUpstream
+except ModuleNotFoundError:
+    from test_app import FakeMailer, FakeUpstream
 
 HTTPClient = httpx.AsyncClient
 
@@ -41,7 +44,7 @@ class RuntimeReleaseTests(unittest.TestCase):
                         admin_token="private-fixture-helper-token", db_path=":memory:")
         app = create_app(config, upstream=upstream, store=Store(":memory:"), mailer=FakeMailer(), background=False)
         with patch("helper.app.httpx.AsyncClient", client), TestClient(app) as browser:
-            response = browser.post("/api/compatibility/check", headers={"Authorization": "Bearer " + config.admin_token})
+            response = browser.post("/_helper/api/admin/compatibility/check", headers={"Authorization": "Bearer " + config.admin_token})
         self.assertEqual(response.status_code, 200)
         for request in requests:
             self.assertNotIn("authorization", request.headers)

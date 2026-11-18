@@ -25,6 +25,20 @@ from .upstream import UpstreamError
 
 
 MAX_HTML_BYTES = 4 * 1024 * 1024
+DOCUMENT_TIMEOUT = 5
+# Mirrors upstream embed_on.go/gateway.go, plus static and helper namespaces.
+NON_DOCUMENT_ROOTS = {
+    "api", "v1", "v1beta", "backend-api", "antigravity", "responses", "models",
+    "images", "videos", "tts", "stt", "realtime", "custom-voices", "messages",
+    "embeddings", "web_search", "x_search", "contents", "v3", "live", "systemone",
+    "_helper", ".well-known", "assets", "static", "fonts", "src", "health", "healthz",
+    "ready", "readyz", "readiness", "liveness", "metrics", "openapi.json", "docs", "redoc",
+}
+STATIC_SUFFIXES = {".js", ".mjs", ".cjs", ".css", ".map", ".json", ".xml", ".txt", ".html", ".htm",
+                   ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".ico", ".bmp",
+                   ".woff", ".woff2", ".ttf", ".otf", ".eot", ".webmanifest", ".wasm",
+                   ".mp4", ".webm", ".mp3", ".wav", ".ogg", ".zip", ".pdf"}
+VOID_ELEMENTS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 HOP_HEADERS = {b"connection", b"keep-alive", b"proxy-authenticate", b"proxy-authorization",
                b"te", b"trailer", b"transfer-encoding", b"upgrade"}
 WS_HEADERS = {b"sec-websocket-key", b"sec-websocket-accept", b"sec-websocket-version",
@@ -33,6 +47,44 @@ VALIDATORS = {b"content-length", b"content-encoding", b"etag", b"last-modified",
               b"content-md5", b"digest", b"content-digest", b"accept-ranges"}
 IP_HEADERS = {b"forwarded", b"x-real-ip", b"x-client-ip", b"client-ip",
               b"true-client-ip", b"cf-connecting-ip", b"fastly-client-ip"}
+
+
+def is_document_request(request, path):
+    """Accept HTML navigation only; API, assets and sockets stay on sub2api."""
+    if request.scope.get("type") != "http" or request.method != "GET" or not isinstance(path, str):
+        return False
+    supplied = "/" + path.lstrip("/")
+    actual = request.scope.get("path", "")
+    if actual != supplied or any(char in actual for char in "\\%?#") or "//" in actual or any(ord(char) < 32 for char in actual):
+        return False
+    segments = actual.lower().split("/")[1:]
+    if any(segment in {".", ".."} for segment in segments) or (segments and segments[0] in NON_DOCUMENT_ROOTS):
+        return False
+    lowered = actual.lower()
+    if lowered.startswith(("/chat/completions", "/alpha/search", "/setup/")):
+        return False
+    if lowered != "/index.html" and any(lowered.rstrip("/").endswith(suffix) for suffix in STATIC_SUFFIXES):
+        return False
+    destination = request.headers.get("sec-fetch-dest")
+    if destination is not None and destination.strip().lower() not in {"document", "iframe"}:
+        return False
+    if request.headers.get("upgrade") or request.headers.get("sec-websocket-key"):
+        return False
+    for item in ",".join(request.headers.getlist("accept")).lower().split(","):
+        parts = [part.strip() for part in item.split(";")]
+        if parts[0] not in {"text/html", "application/xhtml+xml"}:
+            continue
+        quality = 1.0
+        try:
+            for parameter in parts[1:]:
+                name, separator, value = parameter.partition("=")
+                if separator and name.strip() == "q":
+                    quality = float(value.strip())
+        except ValueError:
+            continue
+        if 0 < quality <= 1:
+            return True
+    return False
 
 
 def filtered_headers(raw_headers, *, request=False, websocket=False):
@@ -114,19 +166,68 @@ def rewrite_location(location, base, request, public_url=None):
 
 
 class _Nonce(HTMLParser):
-    def __init__(self, html):
+    def __init__(self, html, *, xhtml=False):
         super().__init__()
         self.value = None
+        self.mount = self.module = False
+        self.xhtml, self.invalid_shell = xhtml, False
+        self.inert = []
+        self.stack = []
         self.closing = {}
         self.lines = [0] + [match.end() for match in re.finditer("\n", html)]
 
     def handle_starttag(self, tag, attrs):
+        parent = self.stack[-1] if self.stack else None
+        if ((tag == "html" and parent is not None)
+                or (tag in {"head", "body"} and parent not in {None, "html"})):
+            self.invalid_shell = True
+        if tag not in VOID_ELEMENTS:
+            self.stack.append(tag)
+        if self.inert:
+            if tag == self.inert[-1] == "template":
+                self.inert.append(tag)
+            return
+        if tag in {"template", "noscript", "textarea", "title", "xmp", "iframe", "noembed", "plaintext"}:
+            self.inert.append(tag)
+            return
+        # HTML browsers keep the first occurrence of duplicate attributes.
+        first_attrs = {}
+        for name, value in attrs:
+            if self.xhtml and name in first_attrs:
+                self.invalid_shell = True
+            first_attrs.setdefault(name, value)
+        attrs = first_attrs
+        if tag == "div" and parent == "body" and attrs.get("id") == "app":
+            self.mount = True
+        script_type = attrs.get("type")
+        if tag == "script" and parent in {"head", "body"} and isinstance(script_type, str) and script_type.lower() == "module":
+            src = attrs.get("src", "")
+            parsed = urlsplit(src) if isinstance(src, str) else urlsplit("")
+            if (not parsed.scheme and not parsed.netloc and parsed.path.startswith("/assets/")
+                    and parsed.path.endswith((".js", ".mjs")) and not any(char in src for char in "\\%")
+                    and not any(ord(char) < 32 for char in src)
+                    and all(part not in {"", ".", ".."} for part in parsed.path.split("/")[1:])):
+                self.module = True
         if self.value is None and tag == "script":
-            nonce = dict(attrs).get("nonce")
+            nonce = attrs.get("nonce")
             if nonce:
                 self.value = nonce
 
+    def handle_startendtag(self, tag, attrs):
+        if not self.xhtml and tag not in VOID_ELEMENTS:
+            # In HTML, <template/> and <script/> do not close their elements.
+            self.invalid_shell = True
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
     def handle_endtag(self, tag):
+        if tag in self.stack:
+            index = len(self.stack) - 1 - self.stack[::-1].index(tag)
+            del self.stack[index:]
+        if self.inert:
+            if tag == self.inert[-1]:
+                self.inert.pop()
+            return
         if tag in {"head", "body"} and tag not in self.closing:
             line, column = self.getpos()
             self.closing[tag] = self.lines[line - 1] + column
@@ -157,7 +258,10 @@ def _decode_html(raw, encoding):
     return value if len(value) <= MAX_HTML_BYTES else None
 
 
-def inject_html(raw, content_type, encoding, headers):
+def inject_html(raw, content_type, encoding, headers, *, require_shell=False):
+    if require_shell and content_type.split(";", 1)[0].strip().lower() != "text/html":
+        # HTMLParser cannot prove XML's case-sensitive element/attribute rules.
+        return None
     decoded = _decode_html(raw, encoding)
     if decoded is None:
         return None
@@ -169,8 +273,13 @@ def inject_html(raw, content_type, encoding, headers):
         return None
     if not html or "data-sub2api-helper-native=" in html:
         return None
-    parser = _Nonce(html)
-    parser.feed(html)
+    parser = _Nonce(html, xhtml=content_type.split(";", 1)[0].strip().lower() == "application/xhtml+xml")
+    try:
+        parser.feed(html)
+    except (ValueError, RecursionError):
+        return None
+    if require_shell and (parser.invalid_shell or not (parser.mount and parser.module)):
+        return None
     nonce = parser.value
     if not nonce:
         for name, value in headers:
@@ -245,13 +354,25 @@ class NativeProxy:
         )
 
     async def forward(self, request, path):
+        return await self._forward(request, path)
+
+    async def forward_document(self, request, path):
+        if not is_document_request(request, path):
+            return Response("Not found", status_code=404, media_type="text/plain")
+        try:
+            async with asyncio.timeout(DOCUMENT_TIMEOUT):
+                return await self._forward(request, path, document=True)
+        except TimeoutError:
+            return Response("Upstream navigation timed out", status_code=504, media_type="text/plain")
+
+    async def _forward(self, request, path, *, document=False):
         request.state.helper_proxied = True
         try:
             base = _trusted_base(self.base_url_provider)
             public = _public_origin(self.public_url_provider, request)
             headers = filtered_headers(request.headers.raw, request=True)
             headers.append((b"x-forwarded-proto", public.scheme.encode("ascii")))
-            if "text/html" in request.headers.get("accept", "").lower():
+            if document or "text/html" in request.headers.get("accept", "").lower():
                 # An old upstream 304 could reuse an unaugmented cached index.
                 headers = [(name, value) for name, value in headers if name not in {b"accept-encoding", b"if-none-match", b"if-modified-since"}]
                 headers.append((b"accept-encoding", b"identity"))
@@ -260,12 +381,12 @@ class NativeProxy:
         except (httpx.HTTPError, ValueError, UnicodeError):
             return Response("Upstream service unavailable", status_code=502, media_type="text/plain")
         try:
-            return await self._response(request, upstream, base, public)
+            return await self._response(request, upstream, base, public, document=document)
         except BaseException:
             await _close_response(upstream)
             raise
 
-    async def _response(self, request, upstream, base, public):
+    async def _response(self, request, upstream, base, public, *, document=False):
         raw_headers = filtered_headers(upstream.headers.raw)
         raw_headers = [(name, rewrite_location(value.decode("latin-1"), base, request, urlunsplit(public)).encode("latin-1") if name == b"location" else value) for name, value in raw_headers]
         content_type = upstream.headers.get("content-type", "")
@@ -282,11 +403,14 @@ class NativeProxy:
             return result
         iterator = _raw_chunks(upstream)
         rewrite = upstream.is_success and upstream.status_code != 206 and content_type.split(";", 1)[0].strip().lower() in {"text/html", "application/xhtml+xml"}
-        if rewrite:
+        if rewrite or document:
             chunks, length = [], 0
             try:
                 async for chunk in iterator:
                     if length + len(chunk) > MAX_HTML_BYTES:
+                        if document:
+                            await _close_response(upstream)
+                            return Response("Upstream document is too large", status_code=502, media_type="text/plain")
                         result = _Streaming(upstream, iterator, [*chunks, chunk])
                         result.raw_headers = raw_headers
                         return result
@@ -294,7 +418,7 @@ class NativeProxy:
                     length += len(chunk)
                 raw = b"".join(chunks)
                 # Already-buffered httpx responses have already been decoded.
-                rewritten = inject_html(raw, content_type, "" if buffered_decoded else encoding, raw_headers)
+                rewritten = inject_html(raw, content_type, "" if buffered_decoded else encoding, raw_headers, require_shell=document) if rewrite else None
             except httpx.HTTPError:
                 await _close_response(upstream)
                 return Response("Upstream HTML could not be read", status_code=502, media_type="text/plain")

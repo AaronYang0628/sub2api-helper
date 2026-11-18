@@ -28,6 +28,7 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
         const body = raw ? JSON.parse(raw) : undefined;
         calls.push({ path: url.pathname, method: request.method, body, authorization: request.headers.authorization, ui: request.headers['x-admin-ui-request'] });
         assert.equal(request.headers['x-admin-ui-request'], '1');
+        if (url.pathname === '/_helper/api/session/revoke') return send(200, { ok: true });
         if (!['Bearer fixture-admin-jwt', 'Bearer fixture-admin-two'].includes(request.headers.authorization)) return send(403, { detail: '需要管理员身份' });
         if (url.pathname.endsWith('/status')) { if (statusFailure) { statusFailure = false; return send(503, { detail: '模拟暂时不可用' }); } return send(200, { timezone: 'Asia/Shanghai', mail_configured: true }); }
         if (url.pathname.endsWith('/session')) return send(200, { session: 'fixture-opaque-helper-session' });
@@ -62,6 +63,11 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
   const browser = await chromium.launch({ executablePath: process.env.HELPER_CHROMIUM_PATH || '/usr/bin/chromium', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, locale: 'zh-CN' });
+    await page.addInitScript(() => {
+      window.fixtureOriginalFetch = window.fetch;
+      window.fixtureOriginalXHROpen = XMLHttpRequest.prototype.open;
+      window.fixtureOriginalXHRSend = XMLHttpRequest.prototype.send;
+    });
     const errors = [], browserDialogs = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', item => { if (item.type() === 'error' && !/Failed to load resource/.test(item.text())) errors.push(item.text()); });
@@ -71,6 +77,7 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     const close = async () => { await dialog.getByRole('button', { name: '关闭', exact: true }).first().click(); await dialog.waitFor({ state: 'detached' }); };
     await page.goto(origin + '/admin/accounts');
     await actions('accounts').first().waitFor();
+    assert.equal(await page.evaluate(() => window.fetch === window.fixtureOriginalFetch && XMLHttpRequest.prototype.open === window.fixtureOriginalXHROpen && XMLHttpRequest.prototype.send === window.fixtureOriginalXHRSend), true, 'enhancement must not intercept business fetch/XHR');
     assert.equal(await actions('accounts').count(), 2);
     assert.equal(calls.filter(c => c.method === 'PUT').length, 0);
     await page.locator('tr[data-row-id="1"]').getByRole('button', { name: '编辑', exact: true }).click();
@@ -120,11 +127,18 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     await dialog.locator('summary').click(); await dialog.locator('[aria-label="高级功能"]').selectOption('automations'); await dialog.getByRole('button', { name: '打开', exact: true }).click();
     await page.frameLocator('.helper-native-console').getByText('高级功能会话已验证', { exact: true }).waitFor();
     const frameSource = await page.locator('.helper-native-console').getAttribute('src'); assert(!frameSource.includes('jwt')); assert(frameSource.endsWith('#automations'));
+    assert.equal(calls.filter(c => c.path === '/_helper/api/session/revoke').length, 0, 'initial login and unchanged identity must not revoke sessions');
+    const revokeFirst = page.waitForResponse(value => new URL(value.url()).pathname === '/_helper/api/session/revoke' && value.request().headers().authorization === 'Bearer fixture-admin-jwt');
     await page.evaluate(() => fixture.identity('fixture-admin-two'));
+    assert.equal((await revokeFirst).status(), 200);
+    const revoked = calls.find(c => c.path === '/_helper/api/session/revoke');
+    assert.equal(revoked.method, 'POST'); assert.equal(revoked.body, undefined); assert.equal(revoked.ui, '1');
     await dialog.waitFor({ state: 'detached' }); assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_session')), null, 'identity change clears advanced console session');
     await actions('users').first().waitFor(); await actions('users').first().click(); await dialog.getByText('fresh7@example.invalid', { exact: true }).waitFor();
     assert.equal(calls.at(-1).authorization, 'Bearer fixture-admin-two', 'per-request current native JWT'); await close();
+    const revokeSecond = page.waitForResponse(value => new URL(value.url()).pathname === '/_helper/api/session/revoke' && value.request().headers().authorization === 'Bearer fixture-admin-two');
     await page.evaluate(() => fixture.identity('fixture-user-jwt'));
+    assert.equal((await revokeSecond).status(), 200);
     await page.getByRole('button', { name: '重试连接助手' }).waitFor(); assert.equal(await actions('users').count(), 0, 'forged auth_user role cannot grant actions');
     assert.equal(await page.locator('[data-helper-native-unavailable]').count(), 1);
     await page.evaluate(() => fixture.identity('fixture-admin-jwt')); await actions('users').first().waitFor();
@@ -152,7 +166,8 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     await dialog.locator('summary').click(); await dialog.getByRole('button', { name: '打开', exact: true }).click(); await page.locator('.helper-native-console').waitFor();
     await page.evaluate(() => history.pushState({}, '', '/login')); await dialog.waitFor({ state: 'detached' }); assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_session')), null);
     assert.deepEqual(browserDialogs, [], 'native flows use explicit modal buttons, no browser confirm');
+    assert.equal(await page.evaluate(() => window.fetch === window.fixtureOriginalFetch && XMLHttpRequest.prototype.open === window.fixtureOriginalXHROpen && XMLHttpRequest.prototype.send === window.fixtureOriginalXHRSend), true, 'navigation/logout must keep native fetch/XHR unchanged');
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ passed: true, screenshots: directory, apiCalls: calls.length, checks: ['unmanaged read makes zero writes', 'explicit all-day/window saves', 'foreign plan read-only', 'virtual row current-ID lookup', 'observer dedupe/no polling', 'SPA route changes', 'fresh selected user only', 'untrusted labels text-only', '429 no retry', 'opaque advanced session/no JWT URL', 'identity/logout clears iframe+session', 'regular user denied', 'mobile visible ID only', 'transient failure explicit retry', 'dark/mobile modal bounds', 'no browser confirm'] }, null, 2));
+    console.log(JSON.stringify({ passed: true, screenshots: directory, apiCalls: calls.length, checks: ['unmanaged read makes zero writes', 'explicit all-day/window saves', 'foreign plan read-only', 'virtual row current-ID lookup', 'observer dedupe/no polling', 'SPA route changes', 'fresh selected user only', 'untrusted labels text-only', '429 no retry', 'opaque advanced session/no JWT URL', 'identity/logout clears iframe+session', 'explicit best-effort session revoke', 'no business fetch/XHR interception', 'regular user denied', 'mobile visible ID only', 'transient failure explicit retry', 'dark/mobile modal bounds', 'no browser confirm'] }, null, 2));
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
