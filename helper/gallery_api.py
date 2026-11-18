@@ -3,7 +3,7 @@
 from typing import Literal
 
 from fastapi import Depends, HTTPException, Path, Request
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .schemas import Input
 
@@ -18,8 +18,24 @@ class GalleryJob(Input):
     enabled: bool = False
 
 
-PUBLIC_GROUP = ("group_id", "name", "model", "enabled", "interval_minutes", "next_at", "running")
-PUBLIC_WORK = ("id", "group_id", "title", "model", "created_at", "finished_at", "latency_ms", "status", "kind", "preview", "content", "mime", "error")
+class GalleryComparison(Input):
+    group_ids: list[int] = Field(min_length=2, max_length=32)
+    prompt: str = Field(min_length=1, max_length=8000)
+    interval_minutes: int = Field(default=30, ge=5, le=1440)
+    enabled: bool = False
+
+    @field_validator("group_ids")
+    @classmethod
+    def valid_groups(cls, values):
+        if any(not 0 < value < 2**63 for value in values) or len(set(values)) != len(values):
+            raise ValueError("请选择不同的有效分组")
+        return values
+
+
+PUBLIC_GROUP = ("group_id", "name", "model", "enabled", "interval_minutes", "next_at", "running",
+                "comparison_member", "comparison_enabled", "comparison_next_at")
+PUBLIC_WORK = ("id", "group_id", "round_id", "title", "model", "created_at", "finished_at", "latency_ms",
+               "status", "kind", "preview", "content", "mime", "error")
 
 
 def project_group(group):
@@ -29,6 +45,42 @@ def project_group(group):
 def project_work(work, detail=False):
     fields = (*PUBLIC_WORK, "prompt") if detail else PUBLIC_WORK
     return {key: work[key] for key in fields if key in work}
+
+
+def project_comparison(data, allowed):
+    config = data.get("config")
+    visible_config = None
+    if config:
+        group_ids = [group_id for group_id in config["group_ids"] if allowed is None or group_id in allowed]
+        if group_ids:
+            visible_config = {key: config.get(key) for key in ("enabled", "interval_minutes", "next_at", "running")}
+            visible_config["group_ids"] = group_ids
+    source = data.get("round")
+    visible_round = None
+    if source:
+        items = []
+        for item in source["items"]:
+            if allowed is not None and item["group_id"] not in allowed:
+                continue
+            safe = {key: item.get(key) for key in ("group_id", "name", "model", "status")}
+            if isinstance(item.get("work"), dict):
+                safe["work"] = project_work(item["work"])
+            items.append(safe)
+        if items:
+            states = {item["status"] for item in items}
+            if allowed is None:
+                status = source["status"]
+            elif states.intersection({"queued", "running"}):
+                status = "running"
+            elif len(states) == 1:
+                status = states.pop()
+            else:
+                status = "partial"
+            visible_round = {key: source.get(key) for key in ("id", "prompt", "created_at", "finished_at")}
+            visible_round.update(status=status, items=items)
+    if visible_config:
+        visible_config["running"] = bool(visible_round and visible_round["status"] == "running")
+    return {"config": visible_config, "round": visible_round}
 
 
 def install_gallery_api(app, gallery, upstream, config_provider, admin, portal, enabled, limit):
@@ -46,6 +98,35 @@ def install_gallery_api(app, gallery, upstream, config_provider, admin, portal, 
     @app.get("/api/gallery", dependencies=[Depends(admin)])
     async def list_gallery_jobs():
         return {"groups": gallery.groups(), "timezone": config_provider().timezone}
+
+    @app.get("/api/gallery/comparison", dependencies=[Depends(admin)])
+    async def get_comparison():
+        return {**gallery.comparison(), "timezone": config_provider().timezone}
+
+    @app.put("/api/gallery/comparison", dependencies=[Depends(admin)])
+    async def save_comparison(value: GalleryComparison, request: Request):
+        limit(request, "gallery.configure", 15)
+        jobs = {group["group_id"]: group for group in gallery.groups()}
+        if any(group_id not in jobs for group_id in value.group_ids):
+            raise HTTPException(422, "请先为所有参与对比的分组保存模型和 Key")
+        options = await upstream.benchmark_keys()
+        live = {(key["group_id"], key["id"]) for key in options}
+        if any((group_id, jobs[group_id]["key_id"]) not in live for group_id in value.group_ids):
+            raise HTTPException(422, "部分参与分组的模型 Key 已失效，请更换后保存")
+        return gallery.configure_comparison(value.model_dump())
+
+    @app.post("/api/gallery/comparison/run", status_code=202, dependencies=[Depends(admin)])
+    async def run_comparison(request: Request):
+        limit(request, "gallery.run", 5)
+        return await gallery.start_comparison()
+
+    @app.post("/api/gallery/comparison/pause", dependencies=[Depends(admin)])
+    async def pause_comparison():
+        return gallery.pause_comparison()
+
+    @app.delete("/api/gallery/comparison", dependencies=[Depends(admin)])
+    async def clear_comparison():
+        return gallery.clear_comparison()
 
     @app.get("/api/gallery/{group_id}", dependencies=[Depends(admin)])
     async def get_gallery_job(group_id: int = Path(gt=0)):
@@ -80,6 +161,11 @@ def install_gallery_api(app, gallery, upstream, config_provider, admin, portal, 
         return {"groups": [project_group(group) for group in gallery.groups()
                            if allowed is None or group["group_id"] in allowed],
                 "timezone": config_provider().timezone}
+
+    @app.get("/api/portal/gallery/comparison")
+    async def portal_comparison(identity=Depends(portal)):
+        allowed = await visible_groups(identity)
+        return {**project_comparison(gallery.comparison(), allowed), "timezone": config_provider().timezone}
 
     @app.get("/api/portal/gallery/{group_id}")
     async def portal_gallery_group(group_id: int = Path(gt=0), identity=Depends(portal)):

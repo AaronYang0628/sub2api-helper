@@ -123,6 +123,22 @@ def main():
         assert artwork["prompt"] == gallery_job["prompt"] and "fixture-model-key" not in json.dumps(artwork)
         gallery = request("/api/portal/gallery/3", headers=headers)
         assert gallery["stats"]["total"] == 1 and "key_id" not in gallery["group"]
+        second_job = {**gallery_job, "name": "第二分组作品", "model": "fixture-other-model", "key_id": 9}
+        request("/api/gallery/4", "PUT", second_job)
+        shared_prompt = "画廊验证：同一份提示词，用 SVG 画湖畔。"
+        comparison = request("/api/gallery/comparison", "PUT", {"group_ids": [3, 4], "prompt": shared_prompt})
+        assert comparison["config"]["enabled"] is False
+        round_id = request("/api/gallery/comparison/run", "POST", {})["round"]["id"]
+        for _ in range(50):
+            result = request("/api/portal/gallery/comparison", headers=headers)["round"]
+            if result["status"] != "running":
+                break
+            time.sleep(.1)
+        assert result["id"] == round_id and result["status"] == "success"
+        assert {item["model"] for item in result["items"]} == {"fixture-model", "fixture-other-model"}
+        for item in result["items"]:
+            detail = request(f"/api/portal/gallery/{item['group_id']}/works/{item['work']['id']}", headers=headers)
+            assert detail["prompt"] == shared_prompt and detail["round_id"] == round_id
         assert request("/api/portal/models", headers=headers)["models"][0]["requests"] == 10
         assert request("/api/groups")[0]["id"] == 3
         rate_rule = request("/api/automations", "POST", {"name": "到期倍率测试", "type": "subscription_multiplier",

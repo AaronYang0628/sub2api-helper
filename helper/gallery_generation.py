@@ -21,7 +21,7 @@ MAX_HTML_BYTES = 128 * 1024
 MAX_TEXT_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_PROMPT_BYTES = 32_000
-GENERATION_TIMEOUT = 120
+GENERATION_TIMEOUT = 240
 
 # The caller must put this policy on the surrounding srcdoc document, before
 # the fragment. An empty iframe sandbox is an additional independent boundary.

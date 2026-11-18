@@ -31,7 +31,9 @@ for (const name of ['icons.js', 'style.css', 'native.css', 'native-console.css',
 const galleryAdmin = await readFile(join(root, 'helper/static/gallery-admin.js'), 'utf8');
 await writeFile(join(assets, 'gallery-admin.js'), galleryAdmin.replace(
   '生成会实际调用所选模型并消耗该分组 Key 的额度。手动生成使用已保存的配置；暂停只停止后续定时生成。',
-  '离线演示只修改本页示例，不调用模型、不消耗额度。刷新后恢复初始作品与配置。'));
+  '离线演示只修改本页示例，不调用模型、不消耗额度。刷新后恢复初始作品与配置。').replace(
+  '每轮会调用所选分组的模型并消耗额度。智商检测菜单上线后才执行定时生成；参与分组的单独定时和手动生成会停用。',
+  '离线演示把各参与组的固定场景保存为同一轮，不调用模型、不消耗额度。刷新后恢复初始配置和作品。'));
 const nativeSource = await readFile(join(root, 'helper/static/native.js'), 'utf8');
 const consoleSource = "new URL('/_helper/console', location.origin)";
 if (!nativeSource.includes(consoleSource)) throw new Error('Native advanced-console path changed; update the Pages-only URL rewrite.');
@@ -81,7 +83,7 @@ await writeFile(join(target, 'gallery.html'), `<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>模型展示画廊 · sub2api Helper</title>
+  <title>同题作品对比 · sub2api Helper</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./assets/style.css">
   <link rel="stylesheet" href="./assets/demo.css">
@@ -93,7 +95,7 @@ await writeFile(join(target, 'gallery.html'), `<!doctype html>
   <div class="feature-shell">
     <main class="feature-main">
       <div class="demo-native-toolbar"><a class="btn btn-secondary btn-sm" href="./admin/accounts/">返回账号列表</a><div class="demo-links"><a class="btn btn-secondary btn-sm" href="./results.html">固定题集结果</a><button id="demo-theme" type="button" class="btn btn-ghost btn-sm">深色</button></div></div>
-      <p class="demo-native-note">离线画廊示例 · 两个示例分组展示原创 HTML/CSS 与 SVG 场景。统计、历史及倒计时均为示例数据，不调用模型、不消耗额度。</p>
+      <p class="demo-native-note">离线同题对比 · 四个示例分组共用一个提示词，并保存同一轮作品。OpenAI、Anthropic、GLM、Kimi 仅为演示标签；画面为原创固定示例，不是真实模型输出或能力排名。所有操作均不调用模型、不消耗额度。</p>
       <section id="demo-gallery-main" aria-label="模型展示画廊"></section>
     </main>
   </div>

@@ -102,9 +102,14 @@ class Handler(BaseHTTPRequestHandler):
             data = {"required": False, "acknowledgement": {"admin_user_id": 1}}
         elif path.endswith("/api-keys") or path == "/api/v1/keys":
             owner = 1 if path.endswith("/api-keys") else 2
-            data = self.page([{"id": owner, "name": "测试分组 Key", "user_id": owner,
-                               "key": "fixture-model-key", "group_id": 3, "status": "active", "quota": 0,
-                               "group": {"id": 3, "name": "标准分组", "status": "active"}}])
+            keys = [{"id": owner, "name": "测试分组 Key", "user_id": owner,
+                     "key": "fixture-model-key", "group_id": 3, "status": "active", "quota": 0,
+                     "group": {"id": 3, "name": "标准分组", "status": "active"}}]
+            if owner == 1:
+                keys.append({"id": 9, "name": "第二分组 Key", "user_id": 1, "key": "fixture-other-model-key",
+                             "group_id": 4, "status": "active", "quota": 0,
+                             "group": {"id": 4, "name": "第二分组", "status": "active"}})
+            data = self.page(keys)
         elif path.endswith("/settings"):
             if self.command == "PUT":
                 if set(body) != {"custom_menu_items"}:
@@ -118,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/v1/groups/available":
             if self.headers.get("Authorization") != "Bearer fixture-user-jwt":
                 return self.reply(401, {})
-            data = [GROUP]
+            data = [GROUP, {**GROUP, "id": 4, "name": "第二分组"}]
         elif path.endswith("/models"):
             data = {"models": [{"model": "fixture-model", "requests": 10, "input_tokens": 100,
                                 "output_tokens": 20, "total_tokens": 120, "actual_cost": 0.01}]}
@@ -126,7 +131,8 @@ class Handler(BaseHTTPRequestHandler):
             data = {"ranking": [{"user_id": 2, "username": "private-user", "email": "private@example.invalid",
                                  "requests": 10, "tokens": 120, "actual_cost": 0.01}]}
         elif path in {"/v1/chat/completions", "/v1/responses"}:
-            if self.headers.get("Authorization") != "Bearer fixture-model-key":
+            expected_key = "fixture-other-model-key" if body.get("model") == "fixture-other-model" else "fixture-model-key"
+            if self.headers.get("Authorization") != f"Bearer {expected_key}":
                 return self.reply(401, {})
             if "画廊验证" in json.dumps(body, ensure_ascii=False):
                 artwork = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40"><title>湖畔</title><rect width="60" height="40" fill="#1b766e"/><script>alert(1)</script></svg>'

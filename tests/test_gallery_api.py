@@ -20,6 +20,7 @@ except ModuleNotFoundError:
 
 MODEL_KEY = "ordinary-model-key-server-only"
 CONFIG_PROMPT = "Private configured prompt: draw a blue clock as a self-contained SVG."
+COMPARISON_PROMPT = "Draw the same animated clock scene for a fair cross-model comparison."
 
 
 class GalleryUpstream(FakeUpstream):
@@ -30,18 +31,21 @@ class GalleryUpstream(FakeUpstream):
             {"id": 41, "name": "Group four key", "group_id": 4, "group_name": "Group four"},
         ]
         self.key_lookups = []
+        self.key_options_reads = 0
+        self.key_material = {31: MODEL_KEY, 41: MODEL_KEY}
         self.key_unavailable = False
         self.allowed = {"user-jwt": [3], "other-user-jwt": [4]}
         self.available_calls = []
 
     async def benchmark_keys(self):
+        self.key_options_reads += 1
         return deepcopy(self.keys)
 
     async def benchmark_key(self, key_id, group_id):
         self.key_lookups.append((key_id, group_id))
         if self.key_unavailable or not any(item["id"] == key_id and item["group_id"] == group_id for item in self.keys):
             raise UpstreamError("Selected model key is unavailable for this group", 403)
-        return MODEL_KEY
+        return self.key_material[key_id]
 
     async def available_groups(self, token):
         self.available_calls.append(token)
@@ -122,6 +126,32 @@ class GalleryApiTests(unittest.TestCase):
                     self.fail("The mocked gallery generation failed: " + str(latest.get("error")))
             time.sleep(.01)
         self.fail("The mocked background generation did not persist a work within three seconds")
+
+    @staticmethod
+    def comparison(**changes):
+        return {"group_ids": [3, 4], "prompt": COMPARISON_PROMPT, "interval_minutes": 30, "enabled": False} | changes
+
+    def configure_comparison(self, **changes):
+        self.upstream.key_material = {31: "anthropic-key-server-only", 41: "kimi-key-server-only"}
+        self.configure(3, name="Anthropic gallery", model="fixture-claude", prompt="Private Anthropic standalone prompt", api_format="chat")
+        self.configure(4, name="Kimi gallery", model="fixture-kimi", prompt="Private Kimi standalone prompt", api_format="responses")
+        response = self.client.put("/api/gallery/comparison", headers=self.auth, json=self.comparison(**changes))
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def generate_comparison(self):
+        response = self.client.post("/api/gallery/comparison/run", headers=self.auth)
+        self.assertEqual(response.status_code, 202, response.text)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            response = self.client.get("/api/gallery/comparison", headers=self.auth)
+            self.assertEqual(response.status_code, 200, response.text)
+            latest = response.json().get("round")
+            if latest and latest["status"] not in {"queued", "running"}:
+                self.assertEqual(latest["status"], "success", response.text)
+                return latest
+            time.sleep(.01)
+        self.fail("The mocked comparison did not finish within three seconds")
 
     def test_gallery_configuration_and_manual_generation_require_management_auth(self):
         self.configure()
@@ -311,6 +341,149 @@ class GalleryApiTests(unittest.TestCase):
         response = self.client.get("/api/portal/gallery", headers=administrator)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual({group["group_id"] for group in response.json()["groups"]}, {3, 4})
+        self.assertEqual(self.upstream.available_calls, [])
+
+    def test_comparison_configuration_and_execution_require_management_auth(self):
+        ordinary = self.portal()
+        for method, path, value in (("GET", "/api/gallery/comparison", None),
+                                    ("PUT", "/api/gallery/comparison", self.comparison()),
+                                    ("POST", "/api/gallery/comparison/run", None),
+                                    ("POST", "/api/gallery/comparison/pause", None)):
+            for headers in ({}, ordinary, {"Authorization": "Bearer " + self.config.sub2api_admin_key}):
+                with self.subTest(method=method, path=path, headers=list(headers)):
+                    response = self.client.request(method, path, json=value, headers=headers)
+                    self.assertEqual(response.status_code, 401, response.text)
+        self.generator.assert_not_awaited()
+
+    def test_comparison_requires_distinct_configured_groups_and_valid_shared_settings(self):
+        invalid = [{"group_ids": [3]}, {"group_ids": [3, 3]}, {"group_ids": [0, 4]},
+                   {"group_ids": [-1, 4]}, {"group_ids": [3, 2**63]}, {"group_ids": list(range(1, 34))},
+                   {"prompt": ""}, {"interval_minutes": 4}, {"interval_minutes": 1441}]
+        for changes in invalid:
+            with self.subTest(changes=changes):
+                response = self.client.put("/api/gallery/comparison", headers=self.auth, json=self.comparison(**changes))
+                self.assertEqual(response.status_code, 422, response.text)
+        self.configure(3)
+        response = self.client.put("/api/gallery/comparison", headers=self.auth, json=self.comparison())
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.upstream.key_options_reads, 0, "Unconfigured participants must be rejected before key discovery")
+        self.generator.assert_not_awaited()
+
+    def test_comparison_validates_the_exact_stored_key_for_every_group_before_updating(self):
+        self.configure_comparison()
+        self.assertEqual(self.upstream.key_options_reads, 1)
+        before = self.client.get("/api/gallery/comparison", headers=self.auth).json()["config"]
+        invalid_live_options = [
+            [{"id": 32, "group_id": 3}, {"id": 41, "group_id": 4}],
+            [{"id": 31, "group_id": 4}, {"id": 41, "group_id": 4}],
+            [{"id": 31, "group_id": 3}],
+        ]
+        for options in invalid_live_options:
+            with self.subTest(options=options):
+                self.upstream.keys = options
+                response = self.client.put("/api/gallery/comparison", headers=self.auth,
+                                           json=self.comparison(prompt="Should not replace the valid shared prompt", enabled=True))
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(self.client.get("/api/gallery/comparison", headers=self.auth).json()["config"], before)
+        self.generator.assert_not_awaited()
+
+    def test_comparison_runs_distinct_model_keys_with_one_identical_persisted_prompt(self):
+        self.configure_comparison(enabled=True)
+        latest = self.generate_comparison()
+        self.assertEqual(latest["prompt"], COMPARISON_PROMPT)
+        self.assertEqual({item["group_id"] for item in latest["items"]}, {3, 4})
+        self.assertEqual(self.generator.await_count, 2)
+        self.assertEqual({item["prompt"] for item in self.generated}, {COMPARISON_PROMPT})
+        self.assertEqual({item["model"] for item in self.generated}, {"fixture-claude", "fixture-kimi"})
+        self.assertEqual({item["api_key"] for item in self.generated}, {"anthropic-key-server-only", "kimi-key-server-only"})
+        self.assertEqual({item["api_format"] for item in self.generated}, {"chat", "responses"})
+        for item in latest["items"]:
+            self.assertEqual(item["status"], "success")
+            self.assertEqual(item["work"]["round_id"], latest["id"])
+            self.assertEqual(item["work"]["group_id"], item["group_id"])
+            response = self.client.get(f"/api/gallery/{item['group_id']}/works/{item['work']['id']}", headers=self.auth)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["round_id"], latest["id"])
+            self.assertEqual(response.json()["prompt"], COMPARISON_PROMPT)
+            self.assertNotIn("anthropic-key-server-only", response.text)
+            self.assertNotIn("kimi-key-server-only", response.text)
+
+    def test_individual_generation_cannot_use_a_different_prompt_for_a_shared_participant(self):
+        self.configure_comparison(enabled=True)
+        for group_id in (3, 4):
+            response = self.client.post(f"/api/gallery/{group_id}/run", headers=self.auth)
+            self.assertEqual(response.status_code, 409, response.text)
+        self.generator.assert_not_awaited()
+
+    def test_shared_comparison_pause_does_not_need_currently_usable_model_keys(self):
+        self.configure_comparison(enabled=True)
+        options_before = self.upstream.key_options_reads
+        lookups_before = list(self.upstream.key_lookups)
+        self.upstream.key_unavailable = True
+        self.upstream.keys = []
+        response = self.client.post("/api/gallery/comparison/pause", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.client.get("/api/gallery/comparison", headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["config"]["enabled"])
+        self.assertEqual(self.upstream.key_options_reads, options_before)
+        self.assertEqual(self.upstream.key_lookups, lookups_before)
+        self.generator.assert_not_awaited()
+
+    def test_portal_comparison_filters_future_config_and_only_returns_currently_allowed_participants(self):
+        self.configure_comparison()
+        latest = self.generate_comparison()
+        response = self.client.put("/api/gallery/comparison", headers=self.auth,
+                                   json=self.comparison(prompt="Future private shared prompt; not yet executed"))
+        self.assertEqual(response.status_code, 200, response.text)
+        ordinary = self.portal()
+        response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        visible = response.json()
+        self.assertEqual(visible["config"]["group_ids"], [3])
+        self.assertNotIn("prompt", visible["config"])
+        self.assertEqual(visible["round"]["id"], latest["id"])
+        self.assertEqual(visible["round"]["prompt"], COMPARISON_PROMPT)
+        self.assertEqual([item["group_id"] for item in visible["round"]["items"]], [3])
+        self.assertEqual(visible["round"]["items"][0]["work"]["round_id"], latest["id"])
+        for hidden in ("Kimi gallery", "fixture-kimi", "Private Kimi standalone prompt", "Future private shared prompt",
+                       "key_id", "anthropic-key-server-only", "kimi-key-server-only"):
+            self.assertNotIn(hidden, response.text)
+        self.upstream.allowed["user-jwt"] = []
+        response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["config"])
+        self.assertIsNone(response.json()["round"])
+
+    def test_public_comparison_status_depends_only_on_visible_items_not_hidden_failures(self):
+        ordinary = self.portal()
+        hidden_state = {
+            "config": {"group_ids": [3, 4], "prompt": "Unexecuted private configuration", "enabled": True,
+                       "interval_minutes": 30, "next_at": None, "running": False},
+            "round": {"id": 17, "prompt": COMPARISON_PROMPT, "status": "partial", "created_at": "2026-11-18T00:00:00Z", "finished_at": "2026-11-18T00:00:01Z",
+                      "items": [
+                          {"group_id": 3, "name": "Anthropic gallery", "model": "fixture-claude", "status": "success",
+                           "work": {"id": 11, "group_id": 3, "round_id": 17, "status": "success", "kind": "html", "content": "<svg></svg>",
+                                    "prompt": "Do not expose prompt in nested list metadata", "key_id": 31, "api_key": MODEL_KEY}},
+                          {"group_id": 4, "name": "Hidden failed Kimi", "model": "hidden-model", "status": "failed",
+                           "work": {"id": 12, "group_id": 4, "round_id": 17, "status": "failed", "error": "Hidden failure details"}},
+                      ]},
+        }
+        with patch.object(self.app.state.gallery, "comparison", return_value=hidden_state):
+            response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["round"]["status"], "success")
+        self.assertEqual(len(response.json()["round"]["items"]), 1)
+        for hidden in ("Hidden failed Kimi", "hidden-model", "Hidden failure details", "Unexecuted private configuration",
+                       "Do not expose prompt", "key_id", MODEL_KEY):
+            self.assertNotIn(hidden, response.text)
+
+    def test_public_comparison_requires_a_session_and_an_enabled_benchmark_module(self):
+        self.assertEqual(self.client.get("/api/portal/gallery/comparison").status_code, 401)
+        ordinary = self.portal()
+        self.store.set_setting("modules", {"benchmark": False, "pricing": False, "ranking": False})
+        response = self.client.get("/api/portal/gallery/comparison", headers=ordinary)
+        self.assertEqual(response.status_code, 404, response.text)
         self.assertEqual(self.upstream.available_calls, [])
 
 

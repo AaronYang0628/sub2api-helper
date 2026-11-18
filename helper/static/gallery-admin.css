@@ -16,6 +16,16 @@
 .helper-gallery-admin-key-hint { display: block; margin: -.25rem 0 1rem; font-size: .75rem; line-height: 1.5; color: #64748b; overflow-wrap: anywhere; }
 .dark .helper-gallery-admin-key-hint { color: #94a3b8; }
 .helper-gallery-admin-form > .caption { margin-top: .75rem; }
+.helper-gallery-comparison-form .field { margin-bottom: 1rem; }
+.helper-gallery-comparison-groups { display: flex; flex-wrap: wrap; gap: .5rem; }
+.helper-gallery-comparison-groups .check-chip { min-width: 0; max-width: 100%; }
+.helper-gallery-comparison-groups .check-chip > span { overflow-wrap: anywhere; }
+.helper-gallery-comparison-form .caption { margin: 0 0 1rem; }
+.helper-gallery-comparison-round { margin-top: 1rem; }
+.helper-gallery-comparison-items { display: grid; gap: .5rem; }
+.helper-gallery-comparison-items > .helper-gallery-comparison-item { display: flex; align-items: center; justify-content: space-between; gap: 1rem; font-size: .875rem; }
+.helper-gallery-comparison-items > .helper-gallery-comparison-item > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.helper-gallery-comparison-items > .helper-gallery-comparison-item > .pill { flex-shrink: 0; }
 @media (max-width: 640px) {
   .helper-gallery-admin-grid { grid-template-columns: 1fr; }
   .helper-gallery-admin-actions { align-items: flex-start; flex-direction: column; }

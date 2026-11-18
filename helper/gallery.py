@@ -11,13 +11,15 @@ import time
 MAX_GROUPS = 32
 MAX_WORKS_PER_GROUP = 500
 CONTENT_LIMITS = {"html": 128 * 1024, "text": 16 * 1024, "image": 3 * 1024 * 1024}
-MAX_HISTORY_BYTES = 64 * 1024 * 1024
+# A complete latest round (32 images of at most 3 MiB) remains retainable.
+MAX_HISTORY_BYTES = 128 * 1024 * 1024
 MAX_PREVIEW_BYTES = 1024 * 1024
 FAILED = "生成失败，请检查模型、Key 权限或服务连接"
 INTERRUPTED = "生成已中断，结果未确认，本次请求不会自动重试"
 DEFAULT_PROMPT = "请生成一个精美、有创意、可交互的独立 HTML 或 SVG 作品。只输出完整代码，不使用外部资源。"
 FIELDS = {"name", "model", "key_id", "api_format", "prompt", "enabled", "interval_minutes"}
-METADATA_COLUMNS = "id,group_id,title,model,created_at,finished_at,latency_ms,status,kind,mime,error,storage_bytes-length(CAST(prompt AS BLOB)) AS content_bytes"
+METADATA_COLUMNS = "id,group_id,round_id,title,model,created_at,finished_at,latency_ms,status,kind,mime,error,storage_bytes-length(CAST(prompt AS BLOB)) AS content_bytes"
+PREVIEW_COLUMNS = METADATA_COLUMNS + ",CASE WHEN storage_bytes-length(CAST(prompt AS BLOB))<=131072 THEN content ELSE NULL END AS content"
 
 
 class GalleryError(RuntimeError):
@@ -58,7 +60,14 @@ class Gallery:
                 CREATE TABLE IF NOT EXISTS gallery_stats (
                   group_id INTEGER NOT NULL, bucket INTEGER NOT NULL, counts TEXT NOT NULL,
                   PRIMARY KEY(group_id,bucket));
+                CREATE TABLE IF NOT EXISTS gallery_comparison (
+                  id INTEGER PRIMARY KEY CHECK(id=1), config TEXT NOT NULL, next_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS gallery_rounds (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, prompt TEXT NOT NULL,
+                  items TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, finished_at TEXT);
             """)
+            if "round_id" not in {row["name"] for row in self._db.execute("PRAGMA table_info(gallery_runs)")}:
+                self._db.execute("ALTER TABLE gallery_runs ADD COLUMN round_id INTEGER")
             now = self._now()
             interrupted = self._db.execute("SELECT * FROM gallery_runs WHERE status='running'").fetchall()
             for run in interrupted:
@@ -69,6 +78,11 @@ class Gallery:
                     cfg = json.loads(row["config"])
                     self._db.execute("UPDATE gallery_jobs SET running_id=NULL,next_at=? WHERE group_id=?",
                                      ((now + timedelta(minutes=cfg["interval_minutes"])).timestamp(), row["group_id"]))
+            self._settle_comparison(now, interrupt=True)
+            comparison = self._db.execute("SELECT * FROM gallery_comparison WHERE id=1").fetchone()
+            if comparison and comparison["next_at"] <= now.timestamp():
+                cfg = json.loads(comparison["config"])
+                self._db.execute("UPDATE gallery_comparison SET next_at=? WHERE id=1", ((now + timedelta(minutes=cfg["interval_minutes"])).timestamp(),))
             self._prune(now)
 
     def _now(self, now=None):
@@ -125,7 +139,7 @@ class Gallery:
 
     def _metadata(self, row):
         content_bytes = row["content_bytes"] if "content_bytes" in row.keys() else len((row["content"] or "").encode("utf-8"))
-        return {key: row[key] for key in ("id", "group_id", "title", "model", "created_at", "finished_at", "latency_ms", "status", "kind", "mime", "error")} | {"content_bytes": content_bytes}
+        return {key: row[key] for key in ("id", "group_id", "round_id", "title", "model", "created_at", "finished_at", "latency_ms", "status", "kind", "mime", "error")} | {"content_bytes": content_bytes}
 
     def _stats(self, group_id, now):
         cutoff = int(now.timestamp()) - 24 * 3600
@@ -143,10 +157,11 @@ class Gallery:
         with self._lock:
             row = self._job(group_id)
             cfg = json.loads(row["config"])
-            group = cfg | {"group_id": group_id, "next_at": datetime.fromtimestamp(row["next_at"], timezone.utc).isoformat() if cfg["enabled"] else None,
+            shared = self._comparison_fields(group_id, self._comparison_schedule())
+            group = cfg | shared | {"group_id": group_id, "next_at": datetime.fromtimestamp(row["next_at"], timezone.utc).isoformat() if cfg["enabled"] and not shared["comparison_member"] else None,
                            "running": row["running_id"] is not None, "last_error": row["last_error"]}
             works, preview_bytes = [], 0
-            for work in self._db.execute("SELECT * FROM gallery_runs WHERE group_id=? ORDER BY id DESC LIMIT 12", (group_id,)):
+            for work in self._db.execute(f"SELECT {PREVIEW_COLUMNS} FROM gallery_runs WHERE group_id=? ORDER BY id DESC LIMIT 12", (group_id,)):
                 item = self._metadata(work)
                 content = work["content"]
                 if work["status"] == "success" and work["kind"] in {"html", "text", "image"} and content:
@@ -162,11 +177,13 @@ class Gallery:
         with self._lock:
             summaries = []
             now = self._now()
+            shared = self._comparison_schedule()
             for row in self._db.execute("SELECT * FROM gallery_jobs"):
                 cfg = json.loads(row["config"])
                 latest = self._db.execute(f"SELECT {METADATA_COLUMNS} FROM gallery_runs WHERE group_id=? ORDER BY id DESC LIMIT 1", (row["group_id"],)).fetchone()
                 # Catalog polling must not load stored artwork bodies.
-                summaries.append(cfg | {"group_id": row["group_id"], "next_at": datetime.fromtimestamp(row["next_at"], timezone.utc).isoformat() if cfg["enabled"] else None,
+                comparison_fields = self._comparison_fields(row["group_id"], shared)
+                summaries.append(cfg | comparison_fields | {"group_id": row["group_id"], "next_at": datetime.fromtimestamp(row["next_at"], timezone.utc).isoformat() if cfg["enabled"] and not comparison_fields["comparison_member"] else None,
                                        "running": row["running_id"] is not None, "last_error": row["last_error"],
                                        "stats": self._stats(row["group_id"], now), "latest_work": self._metadata(latest) if latest else None})
         return sorted(summaries, key=lambda item: (item["name"].casefold(), item["group_id"]))
@@ -190,12 +207,15 @@ class Gallery:
 
     def _prune(self, now):
         self._db.execute("DELETE FROM gallery_stats WHERE bucket<?", ((int(now.timestamp()) - 24 * 3600) // 60 * 60,))
+        latest_round = self._db.execute("SELECT COALESCE(MAX(id),0) FROM gallery_rounds").fetchone()[0]
         for row in self._db.execute("SELECT group_id FROM gallery_jobs").fetchall():
-            self._db.execute("DELETE FROM gallery_runs WHERE group_id=? AND status!='running' AND id NOT IN (SELECT id FROM gallery_runs WHERE group_id=? ORDER BY id DESC LIMIT ?)",
-                             (row[0], row[0], MAX_WORKS_PER_GROUP))
+            protected = self._db.execute("SELECT COUNT(*) FROM gallery_runs WHERE group_id=? AND (status='running' OR round_id=?)", (row[0], latest_round)).fetchone()[0]
+            remaining = max(0, MAX_WORKS_PER_GROUP - protected)
+            self._db.execute("DELETE FROM gallery_runs WHERE group_id=? AND status!='running' AND COALESCE(round_id,-1)!=? AND id NOT IN (SELECT id FROM gallery_runs WHERE group_id=? AND status!='running' AND COALESCE(round_id,-1)!=? ORDER BY id DESC LIMIT ?)",
+                             (row[0], latest_round, row[0], latest_round, remaining))
         used = self._db.execute("SELECT COALESCE(SUM(storage_bytes),0) FROM gallery_runs").fetchone()[0]
         if used > MAX_HISTORY_BYTES:
-            for row in self._db.execute("SELECT id,storage_bytes FROM gallery_runs WHERE status!='running' ORDER BY id").fetchall():
+            for row in self._db.execute("SELECT id,storage_bytes FROM gallery_runs WHERE status!='running' AND COALESCE(round_id,-1)!=? ORDER BY id", (latest_round,)).fetchall():
                 self._db.execute("DELETE FROM gallery_runs WHERE id=?", (row["id"],))
                 used -= row["storage_bytes"]
                 if used <= MAX_HISTORY_BYTES:
@@ -219,25 +239,31 @@ class Gallery:
         self._db.execute("UPDATE gallery_jobs SET running_id=NULL,last_error=?,next_at=? WHERE group_id=? AND running_id=?", (error, next_at, group_id, work_id))
         self._prune(now)
 
+    def _begin_work(self, group_id, cfg, now, round_id=None):
+        self._prune(now)
+        title = cfg["name"] + " · 作品"
+        cur = self._db.execute("INSERT INTO gallery_runs(group_id,round_id,title,model,prompt,created_at,status,storage_bytes) VALUES (?,?,?,?,?,?,'running',?)",
+                               (group_id, round_id, title, cfg["model"], cfg["prompt"], now.isoformat(), len(cfg["prompt"].encode("utf-8"))))
+        work_id = cur.lastrowid
+        self._db.execute("UPDATE gallery_runs SET title=? WHERE id=?", (f"{title} #{work_id}", work_id))
+        self._db.execute("UPDATE gallery_jobs SET running_id=?,last_error=NULL,next_at=? WHERE group_id=?", (work_id, (now + timedelta(minutes=cfg["interval_minutes"])).timestamp(), group_id))
+        self._prune(now)
+        return work_id
+
     async def start(self, group_id, now=None):
         async with self._start_lock:
             if self._closed:
                 raise GalleryError("生成服务正在停止", 503)
             group_id, now = _id(group_id), self._now(now)
             with self._lock, self._db:
+                if group_id in self._comparison_members():
+                    raise GalleryError("该分组参与共享 Prompt 对比，请从对比面板生成整轮作品", 409)
                 row = self._job(group_id)
                 cfg = json.loads(row["config"])
                 self._ready(cfg)
                 if self._tasks or self._db.execute("SELECT 1 FROM gallery_runs WHERE status='running' LIMIT 1").fetchone():
                     raise GalleryError("已有作品正在生成，请稍后再试", 409)
-                self._prune(now)
-                title = cfg["name"] + " · 作品"
-                cur = self._db.execute("INSERT INTO gallery_runs(group_id,title,model,prompt,created_at,status,storage_bytes) VALUES (?,?,?,?,?,'running',?)",
-                                       (group_id, title, cfg["model"], cfg["prompt"], now.isoformat(), len(cfg["prompt"].encode("utf-8"))))
-                work_id = cur.lastrowid
-                self._db.execute("UPDATE gallery_runs SET title=? WHERE id=?", (f"{title} #{work_id}", work_id))
-                self._db.execute("UPDATE gallery_jobs SET running_id=?,last_error=NULL,next_at=? WHERE group_id=?", (work_id, (now + timedelta(minutes=cfg["interval_minutes"])).timestamp(), group_id))
-                self._prune(now)
+                work_id = self._begin_work(group_id, cfg, now)
             task = asyncio.create_task(self._generate(group_id, work_id, cfg | {"group_id": group_id, "work_id": work_id}))
             self._tasks[group_id] = task
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
@@ -271,21 +297,220 @@ class Gallery:
         finally:
             self._tasks.pop(group_id, None)
 
+    def _comparison_members(self):
+        row = self._db.execute("SELECT config FROM gallery_comparison WHERE id=1").fetchone()
+        return set(json.loads(row[0])["group_ids"]) if row else set()
+
+    def _comparison_schedule(self):
+        row = self._db.execute("SELECT * FROM gallery_comparison WHERE id=1").fetchone()
+        return json.loads(row["config"]) | {"next_at": row["next_at"]} if row else None
+
+    @staticmethod
+    def _comparison_fields(group_id, shared):
+        member = bool(shared and group_id in shared["group_ids"])
+        enabled = bool(member and shared["enabled"])
+        return {"comparison_member": member, "comparison_enabled": enabled,
+                "comparison_next_at": datetime.fromtimestamp(shared["next_at"], timezone.utc).isoformat() if enabled else None}
+
+    def configure_comparison(self, data):
+        if self._closed:
+            raise GalleryError("生成服务正在停止", 503)
+        if not isinstance(data, dict) or set(data) - {"group_ids", "prompt", "enabled", "interval_minutes"}:
+            raise GalleryError("共享 Prompt 配置包含不支持的字段")
+        now = self._now()
+        with self._lock, self._db:
+            previous = self._db.execute("SELECT config FROM gallery_comparison WHERE id=1").fetchone()
+            cfg = {"group_ids": [], "prompt": DEFAULT_PROMPT, "enabled": False, "interval_minutes": 30} | (json.loads(previous[0]) if previous else {}) | data
+            ids = cfg["group_ids"]
+            if not isinstance(ids, list) or not 2 <= len(ids) <= MAX_GROUPS:
+                raise GalleryError("请选择 2 至 32 个已配置的分组")
+            for group_id in ids:
+                _id(group_id)
+            if len(set(ids)) != len(ids):
+                raise GalleryError("对比分组不能重复")
+            if not isinstance(cfg["prompt"], str) or not cfg["prompt"].strip() or len(cfg["prompt"]) > 8000:
+                raise GalleryError("共享 Prompt 应为 1 至 8000 个字符")
+            cfg["prompt"] = cfg["prompt"].strip()
+            if type(cfg["enabled"]) is not bool or type(cfg["interval_minutes"]) is not int or not 5 <= cfg["interval_minutes"] <= 1440:
+                raise GalleryError("自动生成开关或间隔无效")
+            for group_id in ids:
+                group_cfg = json.loads(self._job(group_id)["config"])
+                if cfg["enabled"]:
+                    self._ready(group_cfg)
+            previous_ids = set(json.loads(previous[0])["group_ids"]) if previous else set()
+            self._db.execute("INSERT INTO gallery_comparison(id,config,next_at) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config,next_at=excluded.next_at",
+                             (json.dumps(cfg), (now + timedelta(minutes=cfg["interval_minutes"])).timestamp()))
+            self._rearm_groups(previous_ids | set(ids), now)
+        return self.comparison()
+
+    def pause_comparison(self):
+        with self._lock, self._db:
+            row = self._db.execute("SELECT config FROM gallery_comparison WHERE id=1").fetchone()
+            if row:
+                cfg = json.loads(row[0]) | {"enabled": False}
+                self._db.execute("UPDATE gallery_comparison SET config=?,next_at=? WHERE id=1", (json.dumps(cfg), (self._now() + timedelta(minutes=cfg["interval_minutes"])).timestamp()))
+        return self.comparison()
+
+    def clear_comparison(self):
+        with self._lock, self._db:
+            former = self._comparison_members()
+            self._db.execute("DELETE FROM gallery_comparison WHERE id=1")
+            self._rearm_groups(former, self._now())
+        return self.comparison()
+
+    def _rearm_groups(self, group_ids, now):
+        for group_id in group_ids:
+            row = self._db.execute("SELECT config FROM gallery_jobs WHERE group_id=?", (group_id,)).fetchone()
+            if row:
+                cfg = json.loads(row[0])
+                self._db.execute("UPDATE gallery_jobs SET next_at=? WHERE group_id=?", ((now + timedelta(minutes=cfg["interval_minutes"])).timestamp(), group_id))
+
+    def comparison(self):
+        with self._lock:
+            config_row = self._db.execute("SELECT * FROM gallery_comparison WHERE id=1").fetchone()
+            round_row = self._db.execute("SELECT * FROM gallery_rounds ORDER BY id DESC LIMIT 1").fetchone()
+            config = None
+            if config_row:
+                cfg = json.loads(config_row["config"])
+                config = cfg | {"next_at": datetime.fromtimestamp(config_row["next_at"], timezone.utc).isoformat() if cfg["enabled"] else None,
+                                "running": bool(round_row and round_row["status"] == "running")}
+            current = None
+            if round_row:
+                current = {key: round_row[key] for key in ("id", "prompt", "status", "created_at", "finished_at")}
+                current["items"], preview_bytes = [], 0
+                for item in json.loads(round_row["items"]):
+                    public = {key: item[key] for key in ("group_id", "name", "model", "status")}
+                    work = self._db.execute(f"SELECT {PREVIEW_COLUMNS} FROM gallery_runs WHERE id=? AND group_id=? AND round_id=?", (item.get("work_id"), item["group_id"], round_row["id"])).fetchone()
+                    if work:
+                        public["work"] = self._metadata(work)
+                        content = work["content"]
+                        if work["status"] == "success" and content:
+                            preview = content[:2000] if work["kind"] == "text" else content
+                            length = len(preview.encode("utf-8"))
+                            if length <= 128 * 1024 and preview_bytes + length <= MAX_PREVIEW_BYTES:
+                                public["work"]["preview"] = preview
+                                preview_bytes += length
+                    current["items"].append(public)
+            return {"config": config, "round": current}
+
+    async def start_comparison(self, now=None):
+        async with self._start_lock:
+            if self._closed:
+                raise GalleryError("生成服务正在停止", 503)
+            now = self._now(now)
+            with self._lock, self._db:
+                row = self._db.execute("SELECT * FROM gallery_comparison WHERE id=1").fetchone()
+                if row is None:
+                    raise GalleryError("请先保存共享 Prompt 与对比分组", 404)
+                if self._tasks or self._db.execute("SELECT 1 FROM gallery_runs WHERE status='running'").fetchone() or self._db.execute("SELECT 1 FROM gallery_rounds WHERE status='running'").fetchone():
+                    raise GalleryError("已有作品或对比轮次正在生成，请稍后再试", 409)
+                cfg, items = json.loads(row["config"]), []
+                for group_id in cfg["group_ids"]:
+                    snapshot = json.loads(self._job(group_id)["config"])
+                    self._ready(snapshot)
+                    snapshot.pop("prompt", None)
+                    items.append({"group_id": group_id, "name": snapshot["name"], "model": snapshot["model"], "status": "queued", "config": snapshot})
+                self._db.execute("DELETE FROM gallery_rounds")
+                cur = self._db.execute("INSERT INTO gallery_rounds(prompt,items,status,created_at) VALUES (?,?,'running',?)", (cfg["prompt"], json.dumps(items), now.isoformat()))
+                round_id = cur.lastrowid
+                self._db.execute("UPDATE gallery_comparison SET next_at=? WHERE id=1", ((now + timedelta(minutes=cfg["interval_minutes"])).timestamp(),))
+                self._rearm_groups(cfg["group_ids"], now)
+            task = asyncio.create_task(self._generate_comparison(round_id))
+            self._tasks["comparison"] = task
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            return self.comparison()
+
+    def _settle_comparison(self, now, *, interrupt):
+        row = self._db.execute("SELECT * FROM gallery_rounds WHERE status='running' ORDER BY id DESC LIMIT 1").fetchone()
+        if row is None:
+            return
+        items = json.loads(row["items"])
+        for item in items:
+            work = self._db.execute("SELECT * FROM gallery_runs WHERE id=? AND round_id=?", (item.get("work_id"), row["id"])).fetchone()
+            if work and work["status"] == "running" and interrupt:
+                self._finish(item["group_id"], work["id"], now, status="failed", error=INTERRUPTED)
+                item["status"] = "interrupted"
+            elif work and work["status"] != "running":
+                item["status"] = "interrupted" if work["error"] == INTERRUPTED else work["status"]
+            elif interrupt and item["status"] in {"queued", "running"}:
+                item["status"] = "interrupted"
+        statuses = [item["status"] for item in items]
+        if "interrupted" in statuses:
+            status = "interrupted"
+        elif all(value == "success" for value in statuses):
+            status = "success"
+        elif all(value == "failed" for value in statuses):
+            status = "failed"
+        elif any(value in {"queued", "running"} for value in statuses):
+            status = "running"
+        else:
+            status = "partial"
+        self._db.execute("UPDATE gallery_rounds SET items=?,status=?,finished_at=? WHERE id=?", (json.dumps(items), status, None if status == "running" else now.isoformat(), row["id"]))
+        if status != "running":
+            self._rearm_groups([item["group_id"] for item in items], now)
+            cfg = self._db.execute("SELECT * FROM gallery_comparison WHERE id=1").fetchone()
+            if cfg and (cfg["next_at"] <= now.timestamp() or status == "interrupted"):
+                minutes = json.loads(cfg["config"])["interval_minutes"]
+                self._db.execute("UPDATE gallery_comparison SET next_at=? WHERE id=1", ((now + timedelta(minutes=minutes)).timestamp(),))
+
+    async def _generate_comparison(self, round_id):
+        try:
+            with self._lock:
+                row = self._db.execute("SELECT items FROM gallery_rounds WHERE id=?", (round_id,)).fetchone()
+            for index in range(len(json.loads(row[0]))):
+                with self._lock, self._db:
+                    row = self._db.execute("SELECT * FROM gallery_rounds WHERE id=? AND status='running'", (round_id,)).fetchone()
+                    if row is None or self._closed:
+                        break
+                    items = json.loads(row["items"])
+                    item = items[index]
+                    cfg = item["config"] | {"prompt": row["prompt"]}
+                    work_id = self._begin_work(item["group_id"], cfg, self._now(), round_id)
+                    item.update(status="running", work_id=work_id)
+                    self._db.execute("UPDATE gallery_rounds SET items=? WHERE id=?", (json.dumps(items), round_id))
+                await self._generate(item["group_id"], work_id, cfg | {"group_id": item["group_id"], "work_id": work_id, "round_id": round_id})
+                with self._lock, self._db:
+                    work = self._db.execute("SELECT status,error FROM gallery_runs WHERE id=?", (work_id,)).fetchone()
+                    item["status"] = "interrupted" if work and work["error"] == INTERRUPTED else work["status"] if work else "failed"
+                    self._db.execute("UPDATE gallery_rounds SET items=? WHERE id=?", (json.dumps(items), round_id))
+        finally:
+            try:
+                with self._lock, self._db:
+                    self._settle_comparison(self._now(), interrupt=True)
+            finally:
+                self._tasks.pop("comparison", None)
+
     async def tick(self, now=None):
         now = self._now(now)
         if self._closed or self._tasks:
             return
         module = self.store.get_setting("modules", {}).get("benchmark") is True
         with self._lock, self._db:
+            members = self._comparison_members()
+            shared_due = False
+            shared = self._db.execute("SELECT * FROM gallery_comparison WHERE id=1").fetchone()
+            if shared and shared["next_at"] <= now.timestamp():
+                cfg = json.loads(shared["config"])
+                shared_minutes = cfg["interval_minutes"]
+                shared_due = module and cfg["enabled"] and now.timestamp() - shared["next_at"] < cfg["interval_minutes"] * 60
+                if not shared_due:
+                    self._db.execute("UPDATE gallery_comparison SET next_at=? WHERE id=1", ((now + timedelta(minutes=cfg["interval_minutes"])).timestamp(),))
             rows = self._db.execute("SELECT * FROM gallery_jobs WHERE next_at<=? ORDER BY next_at,group_id", (now.timestamp(),)).fetchall()
             due = []
             for row in rows:
                 cfg = json.loads(row["config"])
-                if not module or not cfg["enabled"] or now.timestamp() - row["next_at"] >= cfg["interval_minutes"] * 60:
+                if row["group_id"] in members or not module or not cfg["enabled"] or now.timestamp() - row["next_at"] >= cfg["interval_minutes"] * 60:
                     self._db.execute("UPDATE gallery_jobs SET next_at=? WHERE group_id=?", ((now + timedelta(minutes=cfg["interval_minutes"])).timestamp(), row["group_id"]))
                 elif cfg["enabled"]:
                     due.append(row["group_id"])
             self._prune(now)
+        if shared_due:
+            try:
+                await self.start_comparison(now=now)
+            except GalleryError:
+                with self._lock, self._db:
+                    self._db.execute("UPDATE gallery_comparison SET next_at=? WHERE id=1", ((now + timedelta(minutes=shared_minutes)).timestamp(),))
+            return
         if due:
             try:
                 await self.start(due[0], now=now)
@@ -316,4 +541,5 @@ class Gallery:
         with self._lock, self._db:
             for row in self._db.execute("SELECT id,group_id FROM gallery_runs WHERE status='running'").fetchall():
                 self._finish(row["group_id"], row["id"], self._now(), status="failed", error=INTERRUPTED)
+            self._settle_comparison(self._now(), interrupt=True)
         self._tasks.clear()

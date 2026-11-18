@@ -15,7 +15,9 @@ let failCatalog = false;
 const keys = [{ id: 10, name: 'Group one key', group_id: 1, group_name: '第一组' }, { id: 30, name: 'New key', group_id: 3, group_name: '第三组' }];
 const writes = [], errors = [];
 let runReads = 0, rejectSave = false;
-function detail(groupID) { return { group: configs.get(groupID), stats: { success_24h: 1, failed_24h: 0, total: 1 }, works: [] }; }
+let comparisonConfig = null, comparisonRound = null, comparisonReads = 0, rejectComparison = false;
+function member(groupID) { return comparisonConfig?.group_ids.includes(groupID) || false; }
+function detail(groupID) { return { group: { ...configs.get(groupID), comparison_member: member(groupID) }, stats: { success_24h: 1, failed_24h: 0, total: 1 }, works: [] }; }
 const fixture = `
 window.helperGallery=(container)=>{ container.textContent='最近生成的作品'; return {refresh(){window.VIEW_REFRESHES=(window.VIEW_REFRESHES||0)+1},destroy(){window.VIEW_DESTROYED=true}} };
 const request=async(path,method='GET',data)=>{const response=await fetch('/api'+path,{method,headers:{'Content-Type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});const body=await response.json();if(!response.ok)throw new Error(body.detail);return body};
@@ -31,9 +33,25 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
       let output, status = 200;
       if (url.pathname === '/api/gallery') {
         if (failCatalog) { status = 503; output = { detail: '分组目录暂不可用，请稍后刷新。' }; }
-        else output = { groups: [...configs.values()], timezone: 'Asia/Shanghai' };
+        else output = { groups: [...configs.values()].map(group => ({ ...group, comparison_member: member(group.group_id) })), timezone: 'Asia/Shanghai' };
       }
       else if (url.pathname === '/api/benchmark/options') output = { keys };
+      else if (/^\/api\/gallery\/comparison(?:\/(?:run|pause))?$/.test(url.pathname)) {
+        if (req.method !== 'GET') writes.push({ path: url.pathname, method: req.method, body });
+        if (req.method === 'DELETE') comparisonConfig = null;
+        else if (req.method === 'PUT') {
+          if (rejectComparison) { status = 422; output = { detail: '同题设置暂时无法保存，请重试。' }; }
+          else comparisonConfig = { ...body, next_at: body.enabled ? '2026-11-19T00:00:00Z' : null, running: false };
+        } else if (url.pathname.endsWith('/pause')) comparisonConfig.enabled = false;
+        else if (url.pathname.endsWith('/run')) {
+          comparisonConfig.running = true; comparisonReads = 0;
+          comparisonRound = { id: 1, prompt: comparisonConfig.prompt, status: 'running', items: comparisonConfig.group_ids.map((groupID, index) => ({ group_id: groupID, name: configs.get(groupID).name, model: configs.get(groupID).model, status: index ? 'queued' : 'running' })) };
+        } else if (comparisonRound?.status === 'running' && ++comparisonReads > 1) {
+          comparisonRound.status = 'partial'; comparisonConfig.running = false;
+          comparisonRound.items.forEach((item, index) => { item.status = index ? 'failed' : 'success'; });
+        }
+        output ??= { config: comparisonConfig, round: comparisonRound, timezone: 'Asia/Shanghai' };
+      }
       else if (match) {
         const groupID = Number(match[1]);
         if (req.method !== 'GET') writes.push({ path: url.pathname, method: req.method, body });
@@ -63,6 +81,7 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
   try {
     const page = await browser.newPage({ viewport: { width: 1200, height: 1100 }, locale: 'zh-CN' });
     page.on('pageerror', error => errors.push(error.message));
+    page.on('dialog', dialog => dialog.accept());
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     const group = page.locator('[name=gallery_group_id]'), model = page.locator('[name=gallery_model]');
     await model.waitFor(); assert.equal(await model.inputValue(), 'old-model');
@@ -95,6 +114,39 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     assert.equal(await page.locator('[name=gallery_model]').inputValue(), 'new-group-model', 'failed save retains edits'); rejectSave = false;
     await page.getByRole('button', { name: '保存配置', exact: true }).click(); await page.getByText('配置已保存。', { exact: true }).waitFor();
     assert.equal(configs.get(3).enabled, false); assert.equal(configs.get(3).key_id, 30);
+    const sharedGroups = page.locator('[name=gallery_comparison_group_ids]');
+    assert.equal(await page.locator('[name=gallery_comparison_interval]').inputValue(), '30');
+    assert.equal(await page.locator('[name=gallery_comparison_enabled]').isChecked(), false);
+    assert.equal(await page.getByRole('button', { name: '同题生成一轮', exact: true }).isDisabled(), true);
+    await page.locator('[name=gallery_comparison_group_ids][value="1"]').check();
+    await page.locator('[name=gallery_comparison_group_ids][value="3"]').check();
+    assert.equal(await page.locator('[name=gallery_comparison_group_ids][value="2"]').isDisabled(), true, 'revoked-key group is excluded');
+    const commonPrompt = '所有分组请用 SVG 创作相同主题：海边落日。';
+    const originalPrompts = [configs.get(1).prompt, configs.get(3).prompt];
+    await page.locator('[name=gallery_comparison_prompt]').fill(commonPrompt);
+    await page.getByRole('button', { name: '保存同题设置', exact: true }).click(); await page.getByText('同题设置已保存。', { exact: true }).waitFor();
+    const sharedSave = writes.find(value => value.path === '/api/gallery/comparison' && value.method === 'PUT');
+    assert.deepEqual(sharedSave.body, { group_ids: [1, 3], prompt: commonPrompt, interval_minutes: 30, enabled: false });
+    assert.deepEqual([configs.get(1).prompt, configs.get(3).prompt], originalPrompts, 'comparison must not overwrite local prompts/model keys');
+    assert.equal(await page.locator('[name=gallery_prompt]').isVisible(), false);
+    assert.equal(await page.locator('[name=gallery_interval_minutes]').isVisible(), false);
+    assert.equal(await page.locator('.helper-gallery-admin-config').getByRole('button', { name: '生成一轮', exact: true }).count(), 0);
+    assert.equal(await page.locator('[name=gallery_model]').inputValue(), 'new-group-model', 'group model remains editable');
+    await page.locator('[name=gallery_comparison_enabled]').check(); await page.getByText('同题定时已开启。', { exact: true }).waitFor();
+    assert.equal(comparisonConfig.enabled, true);
+    await page.locator('[name=gallery_comparison_enabled]').uncheck(); await page.getByText('同题定时已暂停，当前一轮会继续完成。', { exact: true }).waitFor();
+    assert.equal(comparisonConfig.enabled, false); assert.equal(await page.locator('[name=gallery_prompt]').isVisible(), false, 'paused membership still suppresses independent generation');
+    await page.getByRole('button', { name: '同题生成一轮', exact: true }).click(); await page.getByText('本轮已提交，各分组将使用同一条提示词生成。', { exact: true }).waitFor();
+    await page.getByText('本轮同题对比已结束，可在下方查看各分组的作品。', { exact: true }).waitFor({ timeout: 8000 });
+    assert.equal(comparisonRound.prompt, commonPrompt); assert.equal(comparisonRound.status, 'partial');
+    assert.equal(await page.locator('.helper-gallery-comparison-item').count(), 2);
+    await page.getByText('已完成 2 / 2', { exact: false }).first().waitFor();
+    await page.locator('[name=gallery_comparison_prompt]').fill(commonPrompt + ' 保留编辑。'); rejectComparison = true;
+    await page.getByRole('button', { name: '保存同题设置', exact: true }).click(); await page.getByText('同题设置暂时无法保存，请重试。', { exact: true }).waitFor();
+    assert.equal(await page.locator('[name=gallery_comparison_prompt]').inputValue(), commonPrompt + ' 保留编辑。'); rejectComparison = false;
+    await page.getByRole('button', { name: '退出同题配置', exact: true }).click(); await page.getByText('已退出同题配置，作品已保留。', { exact: true }).waitFor();
+    assert.equal(comparisonConfig, null); assert.equal(comparisonRound.items.length, 2, 'clear keeps historical round');
+    assert.equal(await page.locator('[name=gallery_prompt]').isVisible(), true, 'clearing shared config restores local settings');
     assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0, 'no model key/config stored in browser storage');
     failCatalog = true; await page.reload(); await page.getByText('分组目录暂不可用，请稍后刷新。', { exact: true }).waitFor();
     assert.equal(await page.locator('[name=gallery_model]').count(), 0, 'failed catalog cannot silently replace saved jobs with new defaults');
@@ -104,6 +156,6 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile layout must fit viewport');
     await page.evaluate(() => document.getElementById('admin').remove()); await page.waitForFunction(() => window.VIEW_DESTROYED === true);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ passed: true, checks: ['group/key metadata', 'save exact safe fields', 'schedule toggle and pause', 'explicit queued generation', 'revoked-key config view and pause', 'new config defaults', 'failure retains form', 'catalog failure and retry', 'inert names/no browser key storage', 'dark/mobile and detach cleanup'] }, null, 2));
+    console.log(JSON.stringify({ passed: true, checks: ['group/key metadata', 'save exact safe fields', 'schedule toggle and pause', 'explicit queued generation', 'revoked-key config view and pause', 'new config defaults', 'same-prompt multi-group save/run/status', 'shared pause keeps membership/local config', 'clear shared config keeps history/restores individual controls', 'failed saves retain form', 'catalog failure and retry', 'inert names/no browser key storage', 'dark/mobile and detach cleanup'] }, null, 2));
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

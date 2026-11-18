@@ -4,6 +4,7 @@
 (() => {
   const PREFIX = '<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; script-src \'none\'; frame-src \'none\'; connect-src \'none\'; object-src \'none\'; form-action \'none\'; base-uri \'none\'"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;min-height:100%;max-width:100%;overflow-x:hidden}body{font-family:system-ui,sans-serif}img,svg{max-width:100%}body>svg:only-child{display:block;width:100%;height:100vh}</style></head><body>';
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  const COMPARISON = 'comparison';
   const str = value => value === undefined || value === null ? '' : String(value);
   const count = value => Number.isFinite(Number(value)) && Number(value) >= 0 ? Math.floor(Number(value)) : 0;
   function el(tag, attrs = {}, ...children) {
@@ -57,18 +58,19 @@
   }
   window.helperGallery = function helperGallery(container, { request, timezone = 'Asia/Shanghai', groupId } = {}) {
     if (!(container instanceof Element) || typeof request !== 'function') throw new Error('Gallery requires a container and a request function');
-    let destroyed = false, connected = container.isConnected, selected = validGroup(groupId), catalog = [], payload = null;
-    let loadSequence = 0, modalSequence = 0, refreshPromise = null, modal = null;
+    let destroyed = false, connected = container.isConnected, selected = validGroup(groupId), catalog = [], payload = null, comparison = null, selectionInitialized = Boolean(selected);
+    let loadSequence = 0, modalSequence = 0, refreshPromise = null, modal = null, modalGroup = null;
     const root = el('section', { class: 'helper-gallery', 'aria-label': '模型生成作品' });
     const tabs = el('div', { class: 'tabs helper-gallery-tabs', role: 'tablist', 'aria-label': '作品分组' });
     const refreshButton = button('刷新', () => refresh());
     const info = el('p', { class: 'helper-gallery-info' });
     const error = el('div', { class: 'helper-gallery-error', role: 'alert', hidden: true });
     const stats = el('div', { class: 'helper-gallery-stats' });
+    const shared = el('div', { class: 'helper-gallery-comparison', hidden: true });
     const nextValue = el('strong');
     const works = el('div', { class: 'helper-gallery-grid' });
     const empty = el('div', { class: 'card helper-gallery-empty', hidden: true });
-    root.append(el('div', { class: 'helper-gallery-toolbar' }, tabs, refreshButton), info, error, stats, works, empty);
+    root.append(el('div', { class: 'helper-gallery-toolbar' }, tabs, refreshButton), info, error, stats, shared, works, empty);
     container.replaceChildren(root);
     function active() { return !destroyed && (!connected || container.isConnected); }
     function formatDate(value) {
@@ -78,10 +80,16 @@
     }
     function latency(value) { return Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) >= 1000 ? `${(Number(value) / 1000).toFixed(1)} 秒` : `${Math.round(Number(value))} ms` : '耗时未知'; }
     function showError(value) { error.textContent = str(value?.message || value || '作品读取失败，请稍后重试。'); error.hidden = false; }
-    function closeModal() { modalSequence++; if (modal) { if (modal.open) modal.close(); modal.remove(); modal = null; } }
+    function closeModal() { modalSequence++; modalGroup = null; if (modal) { if (modal.open) modal.close(); modal.remove(); modal = null; } }
+    function hasComparison() { return Boolean(comparison && (comparison.config || comparison.round)); }
+    function statusLabel(value) { return ({ queued: '排队中', running: '生成中', success: '已完成', partial: '部分完成', failed: '失败', interrupted: '已中断' })[value] || '等待生成'; }
+    function statusBadge(status) { return el('span', { class: `pill ${status === 'success' ? 'green' : ['failed', 'interrupted'].includes(status) ? 'red' : 'gray'}` }, statusLabel(status)); }
     function renderTabs() {
-      tabs.replaceChildren(...catalog.map(group => button(str(group.name) || `分组 #${group.group_id}`, () => selectGroup(group.group_id), `tab${str(group.group_id) === selected ? ' tab-active' : ''}`)));
-      for (const [index, tab] of [...tabs.children].entries()) { tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(str(catalog[index].group_id) === selected)); }
+      const entries = [...(hasComparison() ? [{ id: COMPARISON, name: '同题对比', action: selectComparison }] : []), ...catalog.map(group => ({ id: str(group.group_id), name: str(group.name) || `分组 #${group.group_id}`, action: () => selectGroup(group.group_id) }))];
+      tabs.replaceChildren(...entries.map(entry => {
+        const tab = button(entry.name, entry.action, `tab${entry.id === selected ? ' tab-active' : ''}`);
+        tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(entry.id === selected)); return tab;
+      }));
     }
     function updateCountdown() {
       if (!payload) return;
@@ -95,26 +103,55 @@
       nextValue.textContent = `${hours ? `${hours}时 ` : ''}${String(minutes).padStart(2, '0')}分 ${String(rest).padStart(2, '0')}秒`;
     }
     function draw(data) {
-      payload = data;
+      shared.hidden = true; shared.replaceChildren();
       const group = data.group || {}, values = data.stats || {};
-      info.textContent = [str(group.model) || '未设置模型', group.interval_minutes ? `每 ${count(group.interval_minutes)} 分钟生成` : '', timezone].filter(Boolean).join(' · ');
+      payload = { ...data, group: group.comparison_member ? { ...group, enabled: group.comparison_enabled ?? group.enabled, next_at: group.comparison_next_at ?? group.next_at } : group };
+      info.textContent = [str(group.model) || '未设置模型', group.comparison_member ? '同题任务' : group.interval_minutes ? `每 ${count(group.interval_minutes)} 分钟生成` : '', timezone].filter(Boolean).join(' · ');
       stats.replaceChildren(...[['24 小时成功', count(values.success_24h)], ['24 小时失败', count(values.failed_24h)], ['作品总数', count(values.total)], ['距离下次生成', nextValue]].map(([label, value]) => el('div', { class: 'card helper-gallery-stat' }, el('span', {}, label), value instanceof Node ? value : el('strong', {}, value))));
       updateCountdown();
       const items = (Array.isArray(data.works) ? data.works : []).filter(item => item && validWork(item.id)).sort((a, b) => (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0)).slice(0, 12);
-      works.replaceChildren(...items.map(item => {
-        const id = validWork(item.id), title = str(item.title) || '未命名作品', groupId = selected;
-        return button([
-          el('div', { class: 'helper-gallery-preview' }, artwork(item)),
-          el('div', { class: 'helper-gallery-caption' }, el('div', { class: 'helper-gallery-title' }, el('h3', {}, title), item.status === 'failed' ? el('span', { class: 'pill red' }, '失败') : null), el('p', {}, str(item.model || group.model)), el('div', { class: 'helper-gallery-meta' }, el('time', { datetime: str(item.created_at) }, formatDate(item.created_at)), el('span', {}, latency(item.latency_ms))))
-        ], () => openWork(groupId, id), 'card helper-gallery-work');
-      }));
-      for (const [index, card] of [...works.children].entries()) card.setAttribute('aria-label', `查看作品：${str(items[index].title) || '未命名作品'}`);
+      works.replaceChildren(...items.map(item => workCard(item, { groupId: selected, model: group.model })));
       empty.hidden = items.length > 0;
       if (!items.length) empty.textContent = '此分组暂无作品，请稍后查看。';
+    }
+    function workCard(work, { groupId, groupName, model, status = work.status, createdAt } = {}) {
+      const id = validWork(work.id), title = str(work.title) || (groupName ? str(model) || '等待作品' : '未命名作品');
+      const preview = !id && !work.content && !work.preview ? el('div', { class: 'helper-gallery-placeholder' }, statusLabel(status)) : artwork({ ...work, status });
+      const children = [
+        groupName ? el('div', { class: 'helper-gallery-comparison-heading' }, el('strong', {}, groupName), statusBadge(status)) : null,
+        el('div', { class: 'helper-gallery-preview' }, preview),
+        el('div', { class: 'helper-gallery-caption' }, el('div', { class: 'helper-gallery-title' }, el('h3', {}, title), !groupName && ['failed', 'interrupted'].includes(status) ? statusBadge(status) : null), el('p', {}, str(work.model || model)), el('div', { class: 'helper-gallery-meta' }, el('time', { datetime: str(work.created_at || createdAt) }, formatDate(work.created_at || createdAt)), el('span', {}, work.latency_ms == null ? '—' : latency(work.latency_ms))), work.error ? el('p', { class: 'helper-gallery-card-error' }, str(work.error)) : null)
+      ];
+      const card = id ? button(children, () => openWork(groupId, id), 'card helper-gallery-work') : el('article', { class: 'card helper-gallery-work helper-gallery-pending' }, children);
+      if (id) card.setAttribute('aria-label', `查看作品：${title}`);
+      if (groupName) { card.classList.add('helper-gallery-comparison-item'); card.setAttribute('data-group-id', groupId); }
+      return card;
+    }
+    function drawComparison() {
+      const round = comparison?.round, config = comparison?.config || {};
+      payload = { group: config }; error.hidden = true;
+      const items = (Array.isArray(round?.items) ? round.items : []).filter(item => item && validGroup(item.group_id));
+      const seen = new Set(), unique = items.filter(item => { const id = str(item.group_id); if (seen.has(id)) return false; seen.add(id); return true; });
+      info.textContent = [round ? `${statusLabel(round.status)} · ${formatDate(round.created_at)}` : '同一个提示词，查看不同分组的模型表现', config.interval_minutes ? `每 ${count(config.interval_minutes)} 分钟一轮` : '', timezone].filter(Boolean).join(' · ');
+      stats.replaceChildren(...[['本轮成功', unique.filter(item => item.status === 'success').length], ['失败 / 中断', unique.filter(item => ['failed', 'interrupted'].includes(item.status)).length], ['参与分组', unique.length], ['距离下次生成', nextValue]].map(([label, value]) => el('div', { class: 'card helper-gallery-stat' }, el('span', {}, label), value instanceof Node ? value : el('strong', {}, value))));
+      updateCountdown();
+      const promptOpen = Boolean(shared.querySelector('details')?.open);
+      shared.replaceChildren(); shared.hidden = !round;
+      if (round) {
+        const details = el('details', { class: 'card helper-gallery-shared-prompt' }, el('summary', {}, '本轮共用提示词'), el('pre', { class: 'helper-gallery-prompt' }, str(round.prompt) || '暂无提示词记录'));
+        details.open = promptOpen; shared.append(details);
+      }
+      works.replaceChildren(...unique.map(item => workCard(item.work || {}, { groupId: str(item.group_id), groupName: str(item.name) || `分组 #${item.group_id}`, model: item.model, status: item.status, createdAt: round.created_at })));
+      empty.hidden = unique.length > 0; if (!unique.length) empty.textContent = '暂无同题对比记录。';
+    }
+    function selectComparison() {
+      if (!hasComparison() || destroyed) return;
+      selected = COMPARISON; selectionInitialized = true; loadSequence++; closeModal(); renderTabs(); drawComparison();
     }
     async function openWork(group, id) {
       if (destroyed || !validGroup(group) || !validWork(id)) return;
       closeModal();
+      modalGroup = group;
       const sequence = modalSequence;
       const body = el('div', { class: 'modal-body helper-gallery-dialog-body' }, el('p', {}, '正在读取作品…'));
       const heading = el('h3', { class: 'modal-title' }, '作品详情');
@@ -130,7 +167,7 @@
       } catch (failure) { if (modal && modalSequence === sequence) body.replaceChildren(el('p', { class: 'helper-gallery-error', role: 'alert' }, str(failure?.message || '作品读取失败。'))); }
     }
     async function loadGroup() {
-      if (!active() || !selected) return;
+      if (!active() || !validGroup(selected)) return;
       const group = selected, sequence = ++loadSequence;
       refreshButton.disabled = true; error.hidden = true;
       try {
@@ -143,9 +180,9 @@
     }
     async function selectGroup(value) {
       const id = validGroup(value);
-      if (!id || destroyed) return;
-      selected = id; closeModal(); renderTabs();
-      if (catalog.some(group => str(group.group_id) === id)) { payload = null; stats.replaceChildren(); works.replaceChildren(); empty.hidden = false; empty.textContent = '正在读取作品…'; await loadGroup(); }
+      if (!id || destroyed || !catalog.some(group => str(group.group_id) === id)) return;
+      selected = id; selectionInitialized = true; closeModal(); renderTabs();
+      payload = null; shared.hidden = true; shared.replaceChildren(); stats.replaceChildren(); works.replaceChildren(); empty.hidden = false; empty.textContent = '正在读取作品…'; await loadGroup();
     }
     function refresh() {
       if (destroyed) return Promise.resolve();
@@ -153,14 +190,21 @@
       refreshButton.disabled = true;
       refreshPromise = (async () => {
         try {
-          const directory = await request('/gallery');
+          const [directoryResult, comparisonResult] = await Promise.allSettled([request('/gallery'), request('/gallery/comparison')]);
           if (!active()) return;
+          if (directoryResult.status !== 'fulfilled') throw directoryResult.reason;
+          const directory = directoryResult.value;
           if (!directory || !Array.isArray(directory.groups)) throw new Error('分组列表响应不完整。');
           catalog = directory.groups.filter(group => group && validGroup(group.group_id));
+          comparison = comparisonResult.status === 'fulfilled' && comparisonResult.value && typeof comparisonResult.value === 'object' ? comparisonResult.value : null;
+          if (comparison?.round && (!Array.isArray(comparison.round.items) || !comparison.round.items.some(item => item && validGroup(item.group_id)))) comparison = { ...comparison, round: null };
+          if (modalGroup && !catalog.some(group => str(group.group_id) === modalGroup) && !comparison?.round?.items?.some(item => str(item?.group_id) === modalGroup)) closeModal();
           if (typeof directory.timezone === 'string' && directory.timezone) timezone = directory.timezone;
-          if (!catalog.some(group => str(group.group_id) === selected)) { closeModal(); payload = null; stats.replaceChildren(); works.replaceChildren(); selected = catalog.length ? str(catalog[0].group_id) : null; }
+          if (!selectionInitialized) { selected = comparison?.round ? COMPARISON : catalog.length ? str(catalog[0].group_id) : null; selectionInitialized = true; }
+          if ((selected === COMPARISON && !hasComparison()) || (selected !== COMPARISON && !catalog.some(group => str(group.group_id) === selected))) { closeModal(); payload = null; shared.hidden = true; shared.replaceChildren(); stats.replaceChildren(); works.replaceChildren(); selected = catalog.length ? str(catalog[0].group_id) : null; }
           renderTabs();
-          if (!selected) { payload = null; stats.replaceChildren(); works.replaceChildren(); empty.hidden = false; empty.textContent = '暂无可用分组。'; error.hidden = true; return; }
+          if (selected === COMPARISON) { drawComparison(); return; }
+          if (!selected) { payload = null; shared.hidden = true; shared.replaceChildren(); stats.replaceChildren(); works.replaceChildren(); empty.hidden = false; empty.textContent = '暂无可用分组。'; error.hidden = true; return; }
           await loadGroup();
         } catch (failure) { if (active()) showError(failure); }
         finally { if (active()) refreshButton.disabled = false; refreshPromise = null; }
