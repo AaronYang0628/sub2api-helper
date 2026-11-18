@@ -98,7 +98,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
   await fs.writeFile(cssInput, await fs.readFile(path.join(root, 'ui/upstream.css'), 'utf8') + '\n' + await fs.readFile(path.join(root, 'ui/adapters.css'), 'utf8'));
   const compiled = spawnSync(process.execPath, [path.join(root, 'ui/node_modules/tailwindcss/lib/cli.js'), '-i', cssInput, '-c', path.join(root, 'ui/tailwind.config.js'), '-o', cssFile, '--minify'], { encoding: 'utf8' });
   assert.equal(compiled.status, 0, compiled.stderr);
-  let empty = false, fail = false, onlyFirst = false, comparisonUnavailable = false, comparisonEmpty = false, leaks = 0;
+  let empty = false, noWorks = false, fail = false, onlyFirst = false, comparisonUnavailable = false, comparisonEmpty = false, leaks = 0;
   const calls = [];
   let realBackendOrigin = '', liveIngress = false, realBackend;
   const groups = [{ group_id: 1, name: '白鹭单车分组', model: 'fixture-html', enabled: true, interval_minutes: 60, reasoning_effort: 'high' }, { group_id: 2, name: '月夜纸船分组', model: 'fixture-svg', enabled: false, interval_minutes: 90, comparison_member: true, comparison_enabled: true, reasoning_effort: 'low' }, { group_id: 3, name: '失败示例分组', model: 'fixture-failed', enabled: true, interval_minutes: 90 }];
@@ -115,7 +115,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     if (url.pathname === '/real-menu') {
       const childOrigin = url.searchParams.get('mode') === 'same' ? `http://${req.headers.host}` : realBackendOrigin;
       const token = ({ user: 'real-feature-user-jwt', empty: 'real-feature-empty-jwt', admin: 'real-feature-admin-jwt', invalid: 'forged-browser-jwt' })[url.searchParams.get('auth')] || '';
-      const source = new URL('/_helper/features/benchmark', childOrigin);
+      const source = new URL('/_helper/features/' + (url.searchParams.get('feature') || 'benchmark'), childOrigin);
       if (token) source.searchParams.set('token', token);
       source.searchParams.set('user_id', '99');
       const escaped = source.href.replaceAll('&', '&amp;').replaceAll('"', '&quot;');
@@ -147,7 +147,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
         const match = url.pathname.match(/\/gallery\/(\d+)(?:\/works\/([\w-]+))?$/), group = Number(match?.[1]);
         if (!match || !groups[group - 1]) { res.writeHead(404); res.end(); return; }
         if (match[2]) { const n = Number(match[2].split('-').at(-1)); value = { ...work(group, n), prompt: sharedPrompt }; }
-        else value = { group: { ...groups[group - 1], next_at: new Date(Date.now() + 3600000).toISOString(), comparison_next_at: group === 2 ? new Date(Date.now() + 7200000).toISOString() : null }, stats: { success_24h: 8, failed_24h: 2, total: 31 }, works: Array.from({ length: group === 1 ? 13 : 4 }, (_, n) => { const item = work(group, n); item.preview = item.content; delete item.content; return item; }) };
+        else value = { group: { ...groups[group - 1], next_at: new Date(Date.now() + 3600000).toISOString(), comparison_next_at: group === 2 ? new Date(Date.now() + 7200000).toISOString() : null }, stats: noWorks ? { success_24h: 0, failed_24h: 0, total: 0 } : { success_24h: 8, failed_24h: 2, total: 31 }, works: noWorks ? [] : Array.from({ length: group === 1 ? 13 : 4 }, (_, n) => { const item = work(group, n); item.preview = item.content; delete item.content; return item; }) };
       }
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); return;
     }
@@ -164,7 +164,9 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     await page.clock.install();
     await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt&theme=light');
     await page.waitForFunction(() => document.querySelector('select[aria-label="作品分组"]')?.value === 'comparison');
+    assert.equal(await page.locator('#feature-main h1,.page-head').count(), 0, 'embedded modules leave page titles to sub2api');
     assert.equal(await page.locator('.helper-gallery-comparison-item').count(), 3, 'same round compares all accessible groups');
+    assert.equal(await page.locator('.helper-gallery-stat.card').count(), 0, 'gallery metrics use a compact inline summary');
     assert((await page.locator('.helper-gallery-info').textContent()).includes('部分完成'));
     assert((await page.locator('.helper-gallery-comparison-item[data-group-id="3"]').textContent()).includes('失败'));
     assert((await page.locator('.helper-gallery-comparison-item[data-group-id="3"]').textContent()).includes('fixture-failed'));
@@ -177,7 +179,9 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert((await page.locator('.helper-gallery-info').textContent()).includes('思考强度：高'));
     assert.equal(await page.locator('.helper-gallery-work').count(), 12, 'latest twelve only');
     assert.equal(await page.locator('header,aside,.brand,.benchmark-form').count(), 0);
-    await page.getByText('24 小时失败', { exact: true }).waitFor(); assert.equal(new URL(page.url()).search, '');
+    assert((await page.locator('.helper-gallery-stats').textContent()).includes('24 小时'));
+    assert.equal(await page.locator('.helper-gallery-stat.card').count(), 0);
+    assert.equal(new URL(page.url()).search, '');
     assert.equal(calls.filter(value => value.includes('/works/')).length, 1, 'no extra detail requests on group render');
     const artwork = page.locator('.helper-gallery-work iframe').first();
     assert.equal(await artwork.getAttribute('sandbox'), ''); assert.equal(await artwork.getAttribute('inert'), ''); assert.equal(await artwork.getAttribute('allow'), null);
@@ -193,7 +197,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await page.evaluate(() => window.PWNED), undefined); assert.equal(leaks, 0, 'model scripts/images cannot contact parent or network');
     await page.screenshot({ path: path.join(directory, 'gallery-html.png'), fullPage: true });
     await page.getByLabel('作品分组', { exact: true }).selectOption('2'); await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).waitFor();
-    assert((await page.locator('.helper-gallery-info').textContent()).includes('同题任务')); assert.notEqual(await page.locator('.helper-gallery-stat:last-child strong').textContent(), '已暂停', 'group uses comparison schedule rather than disabled individual schedule');
+    assert((await page.locator('.helper-gallery-info').textContent()).includes('fixture-svg')); assert.notEqual(await page.locator('.helper-gallery-stats strong').last().textContent(), '已暂停', 'group uses comparison schedule rather than disabled individual schedule');
     const moonFrame = await page.locator('.helper-gallery-work iframe').first().elementHandle().then(handle => handle.contentFrame()); await moonFrame.locator('#moon').waitFor({ state: 'attached' }); assert.equal(await moonFrame.locator('#moon').evaluate(node => getComputedStyle(node).fill), 'rgb(254, 243, 199)');
     await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByRole('dialog', { name: '作品详情', exact: true }).waitFor(); await page.getByText('生成提示词', { exact: true }).waitFor(); assert((await page.locator('.helper-gallery-prompt').textContent()).includes('<img')); assert.equal(await page.locator('.helper-gallery-prompt img').count(), 0); assert.equal(calls.filter(value => value.endsWith('/works/svg-0')).length, 2);
     const box = await page.locator('.helper-gallery-dialog').boundingBox(); assert(box.width <= 1152 && box.height <= 1012 && box.y >= 0); await page.screenshot({ path: path.join(directory, 'gallery-detail.png'), fullPage: true }); await page.getByRole('button', { name: '关闭', exact: true }).click();
@@ -202,6 +206,8 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByText('生成提示词', { exact: true }).waitFor(); onlyFirst = true; await page.clock.fastForward(30000); await page.waitForFunction(() => document.querySelector('select[aria-label="作品分组"]')?.value === '1'); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.locator('dialog').count(), 0, 'revoked group closes stale detail');
     await page.evaluate(() => document.querySelector('.helper-gallery').parentElement.remove()); const afterDetach = calls.length; await page.clock.fastForward(60000); await page.waitForTimeout(80); assert.equal(calls.length, afterDetach, 'detached view stops timers/requests');
     empty = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('当前账号暂无可查看的作品分组。', { exact: true }).waitFor();
+    assert.equal((await page.locator('.helper-gallery-stats').textContent()).trim(), '', 'empty gallery omits zero-valued metric blocks');
+    assert((await page.locator('.helper-gallery-empty').boundingBox()).height <= 120, 'empty gallery stays compact inside its menu frame');
     assert.equal(await page.getByRole('link', { name: '配置作品分组', exact: true }).count(), 0, 'ordinary empty gallery must not show admin configuration');
     await page.goto(origin + '/_helper/features/benchmark?token=fixture-admin-jwt'); await page.getByText('尚未配置作品分组。', { exact: true }).waitFor();
     assert.equal(await page.getByRole('link', { name: '配置作品分组', exact: true }).getAttribute('href'), '/_helper/setup#analytics', 'fresh admin can enter setup with a visible connection form');
@@ -211,6 +217,10 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await page.locator('select[aria-label="作品分组"] option').count(), 4, 'comparison and every visible group remain selectable');
     const selectionBox = await page.getByLabel('作品分组', { exact: true }).boundingBox(); assert(selectionBox.x >= 0 && selectionBox.x + selectionBox.width <= 390, 'native group selector fits a narrow menu frame');
     comparisonUnavailable = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.locator('select[aria-label="作品分组"] option[value="comparison"]').count(), 0, 'older servers gracefully keep group gallery');
+    noWorks = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('此分组还没有生成作品。', { exact: true }).waitFor();
+    assert.deepEqual(await page.locator('.helper-gallery-stats dt').allTextContents(), ['下次生成'], 'a new scheduled group keeps only its real next-run time, with zero metrics omitted');
+    assert((await page.locator('.helper-gallery-empty').boundingBox()).height <= 120);
+    noWorks = false;
     assert.equal(leaks, 0); assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0); assert.deepEqual(errors, []);
     await page.close();
 
@@ -233,6 +243,8 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       assert.equal(await menu().locator('select[aria-label="作品分组"] option').count(), 1, 'real portal exposes only the JWT user’s current group');
       assert((await menu().locator('.helper-gallery-info').textContent()).includes('fixture-loopback-model'));
       assert((await menu().locator('.helper-gallery-info').textContent()).includes('思考强度：高'));
+      assert.equal(await menu().locator('#feature-main h1,.page-head').count(), 0);
+      assert.equal(await menu().locator('.helper-gallery-stat.card').count(), 0);
       assert.equal(await menu().getByText('禁止泄露分组', { exact: true }).count(), 0);
       const directFrame = await livePage.locator('#feature-menu').elementHandle().then(handle => handle.contentFrame());
       assert.equal(new URL(directFrame.url()).search, '', 'the actual feature page removes query JWT before API calls');
@@ -243,7 +255,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       assert.equal(await menu().locator('.helper-gallery-dialog .helper-gallery-prompt').textContent(), 'Fixture immutable executed prompt');
       await menu().getByRole('button', { name: '关闭', exact: true }).click();
     }
-    const expectedAssets = ['icons.js', 'feature.js', 'gallery-view.js', 'style.css', 'gallery-view.css'];
+    const expectedAssets = ['feature.js', 'gallery-view.js', 'style.css', 'gallery-view.css'];
     for (const asset of expectedAssets) assert(assetResponses.some(response => response.path.endsWith('/' + asset) && response.status === 200), `real menu must load ${asset}`);
     assert(assetResponses.every(response => response.status === 200), JSON.stringify(assetResponses));
     for (const request of traffic.filter(value => new URL(value.url).pathname.startsWith('/_helper/static/'))) {
@@ -253,16 +265,32 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     }
     await livePage.goto(parentOrigin + '/real-menu?mode=cross&auth=empty');
     await menu().getByText('当前账号暂无可查看的作品分组。', { exact: true }).waitFor();
+    assert.equal((await menu().locator('.helper-gallery-stats').textContent()).trim(), '');
+    assert((await menu().locator('.helper-gallery-empty').boundingBox()).height <= 120);
     assert.equal(await menu().getByLabel('作品分组', { exact: true }).isDisabled(), true);
     assert.equal(await menu().getByRole('link', { name: '配置作品分组', exact: true }).count(), 0);
+    for (const [feature, expectedTitle, expectedContent] of [
+      ['pricing', '模型价格统计', 'sample'], ['ranking', '用户用量排名', '用户 #1']
+    ]) {
+      await livePage.goto(parentOrigin + `/real-menu?mode=cross&auth=user&feature=${feature}`);
+      await menu().locator('table').waitFor();
+      assert.equal(await menu().locator('#feature-main h1,.page-head').count(), 0, `${feature} iframe must not duplicate the host title or intro`);
+      assert.equal(await menu().getByText(expectedTitle, { exact: true }).count(), 0);
+      assert((await menu().locator('table').textContent()).includes(expectedContent));
+      const childFrame = await livePage.locator('#feature-menu').elementHandle().then(handle => handle.contentFrame());
+      assert((await childFrame.title()).includes(expectedTitle), 'feature identity remains accessible through document title');
+      if (feature === 'ranking') assert(!/Alice|Bob|alice@example|bob@example/.test(await menu().locator('table').textContent()), 'ordinary ranking stays anonymous');
+    }
     const beforeInvalid = traffic.length;
     await livePage.goto(parentOrigin + '/real-menu?mode=cross&auth=invalid');
-    await menu().getByText('暂时无法打开此功能', { exact: true }).waitFor();
+    await menu().getByRole('alert').waitFor();
+    assert((await menu().getByRole('alert').textContent()).trim(), 'invalid login keeps a compact readable error');
     assert.equal(await menu().locator('.helper-gallery').count(), 0, 'forged user_id=99 cannot turn an invalid JWT into an administrator');
     assert.equal(traffic.slice(beforeInvalid).filter(request => new URL(request.url).pathname.includes('/api/portal/gallery')).length, 0);
     const beforeMissing = traffic.length;
     await livePage.goto(parentOrigin + '/real-menu?mode=cross&auth=missing');
-    await menu().getByText('暂时无法打开此功能', { exact: true }).waitFor();
+    await menu().getByRole('alert').waitFor();
+    assert((await menu().getByRole('alert').textContent()).includes('请从 sub2api'));
     assert.equal(traffic.slice(beforeMissing).filter(request => new URL(request.url).pathname.endsWith('/api/portal/session')).length, 0);
 
     const beforeBlocked = traffic.filter(request => new URL(request.url).pathname.endsWith('/api/portal/session')).length;
@@ -272,7 +300,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await menu().locator('#feature-main').count(), 0);
     assert.deepEqual(liveErrors, []);
     await livePage.close();
-    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['same shared round defaults to comparison', 'no-round selects first real group', 'labelled group selector/model/thought display', 'shared prompt plaintext and real detail', 'comparison endpoint gracefully optional', 'HTML CSS renders/animates in sandbox', 'legacy broken images become notes without requests; valid inline GIF remains', 'raw SVG visible', 'scripts/network blocked', 'latest12/no detail prefetch', 'group selection/poll retention', 'empty user/admin configuration entry', 'actual same-origin and loopback cross-origin menu iframe', 'real JWT rejection and current group ACL', 'real CSP rejects unauthorized ancestor', 'all real feature assets load without JWT referrer', 'detached cleanup', 'mobile/dark/no key storage'] }, null, 2));
+    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['same shared round defaults to comparison', 'no-round selects first real group', 'labelled group selector/model/thought display', 'shared prompt plaintext and real detail', 'comparison endpoint gracefully optional', 'HTML CSS renders/animates in sandbox', 'legacy broken images become notes without requests; valid inline GIF remains', 'raw SVG visible', 'scripts/network blocked', 'latest12/no detail prefetch', 'group selection/poll retention', 'compact empty states and zero metrics omitted', 'compact summary replaces metric cards', 'gallery/pricing/ranking frames have no duplicate titles or intro', 'real pricing data and anonymous ranking table', 'empty user/admin configuration entry', 'actual same-origin and loopback cross-origin menu iframe', 'real JWT rejection and current group ACL', 'real CSP rejects unauthorized ancestor', 'all real feature assets load without JWT referrer', 'detached cleanup', 'mobile/dark/no key storage'] }, null, 2));
   } finally {
     if (realBackend) {
       realBackend.child.kill('SIGTERM');

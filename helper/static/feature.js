@@ -31,12 +31,11 @@ async function request(endpoint, method = 'GET', data) {
   return body;
 }
 function table(headers, rows) { return node('div', { class: 'table-wrap' }, node('table', { class: 'table' }, node('thead', {}, node('tr', {}, headers.map(h => node('th', {}, h)))), node('tbody', {}, rows))); }
-function card(title, subtitle, body) { return node('section', { class: 'card' }, node('div', { class: 'card-header' }, node('div', {}, node('h2', {}, title), subtitle ? node('p', {}, subtitle) : null)), body); }
 function metricTable(data, ranking) {
   let rows = [];
   if (Array.isArray(data)) rows = data;
   else for (const key of ranking ? ['ranking', 'users', 'items'] : ['models', 'items', 'stats']) { if (Array.isArray(data?.[key])) { rows = data[key]; break; } }
-  if (!rows.length) return node('div', { class: 'empty' }, helperIcon('inbox', 'empty-icon'), node('strong', {}, '暂无使用记录'), node('p', {}, '当前统计周期内没有可展示的数据。'));
+  if (!rows.length) return node('p', { class: 'feature-context' }, '当前统计周期暂无使用记录。');
   const labels = { rank: '排名', username: '用户', model: '模型', model_name: '模型', name: '名称', requests: '请求数', request_count: '请求数', tokens: 'Token', input_tokens: '输入 Token', output_tokens: '输出 Token', total_tokens: '总 Token', actual_cost: '实际费用（USD）', cost: '费用（USD）', total_cost: '费用（USD）', percentage: '占比' };
   // Display only known metric keys; never accidentally surface future upstream identity fields.
   const keys = Object.keys(rows[0]).filter(key => Object.hasOwn(labels, key) && typeof rows[0][key] !== 'object');
@@ -52,6 +51,7 @@ async function benchmark(role) {
 }
 async function initialize() {
   document.title = `${titles[feature] || '用户工具'} · sub2api Helper`;
+  featureMain.setAttribute('aria-label', titles[feature] || '用户工具');
   try {
     if (!titles[feature]) throw new Error('此功能页面不存在。');
     if (!loginToken) throw new Error('请从 sub2api 的自定义菜单进入此页面，以验证你的登录身份。');
@@ -60,14 +60,15 @@ async function initialize() {
     if (!portalSession) throw new Error('登录身份验证失败，请从 sub2api 菜单重新打开。');
     const modules = await request('/modules');
     if (!modules[feature]) throw new Error('此功能尚未上线，或已被管理员关闭。');
-    const anonymous = session.role !== 'admin';
-    const subtitle = feature === 'benchmark' ? null : feature === 'pricing' ? '查看模型请求、Token 使用量与费用。' : anonymous ? '匿名展示用户用量。' : '按用户查看用量与费用。';
-    featureMain.replaceChildren(node('div', { class: 'page-head' }, node('div', {}, node('h1', {}, titles[feature]), subtitle ? node('p', {}, subtitle) : null)));
-    if (feature === 'benchmark') { await benchmark(session.role); return; }
+    if (feature === 'benchmark') { featureMain.replaceChildren(); await benchmark(session.role); return; }
     const data = await request(feature === 'pricing' ? '/models' : '/ranking');
-    featureMain.append(card(feature === 'pricing' ? '我的模型使用统计' : '用户用量榜单', data.start_date && data.end_date ? `${data.start_date} — ${data.end_date}` : '当前统计周期', metricTable(data, feature === 'ranking')));
+    featureMain.replaceChildren(
+      ...(data.start_date && data.end_date ? [node('p', { class: 'feature-context' }, `${data.start_date} — ${data.end_date}`)] : []),
+      metricTable(data, feature === 'ranking'),
+    );
   } catch (err) {
-    loginToken = ''; featureMain.replaceChildren(node('section', { class: 'card feature-login' }, node('h1', {}, '暂时无法打开此功能'), node('p', {}, err.message), node('p', { class: 'tiny' }, '如果刚刚登录或更新配置，请回到 sub2api 后重新打开菜单。')));
+    loginToken = '';
+    featureMain.replaceChildren(node('div', { class: 'feature-context', role: 'alert' }, node('p', {}, err.message)));
   }
 }
 initialize();

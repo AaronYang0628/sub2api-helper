@@ -97,7 +97,7 @@ await writeFile(join(target, 'gallery.html'), `<!doctype html>
   <div class="feature-shell">
     <main class="feature-main">
       <div class="demo-native-toolbar"><a class="btn btn-secondary btn-sm" href="./admin/accounts/">返回账号列表</a><div class="demo-links"><a class="btn btn-secondary btn-sm" href="./results.html">固定题集结果</a><button id="demo-theme" type="button" class="btn btn-ghost btn-sm">深色</button></div></div>
-      <p class="demo-native-note">离线同题对比 · 四个示例分组共用一个提示词，并保存同一轮作品。OpenAI、Anthropic、GLM、Kimi 仅为演示标签；画面为原创固定示例，不是真实模型输出或能力排名。所有操作均不调用模型、不消耗额度。</p>
+      <p class="demo-native-note">离线演示，作品为固定示例。</p>
       <section id="demo-gallery-main" aria-label="模型展示画廊"></section>
     </main>
   </div>

@@ -1,17 +1,19 @@
 /* Scoped layout for the read-only works gallery; native cards/buttons/tabs remain. */
+.feature-body > .feature-shell { padding: .75rem 1rem; }
+.feature-context { margin: 0 0 .5rem; font-size: .875rem; line-height: 1.25rem; color: #6b7280; overflow-wrap: anywhere; }
+.dark .feature-context { color: #94a3b8; }
 .helper-gallery { min-width: 0; }
-.helper-gallery-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; margin-bottom: .75rem; }
+.helper-gallery-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; margin-bottom: .5rem; }
 .helper-gallery-group-field { display: grid; flex: 1 1 12rem; max-width: 28rem; min-width: 0; gap: .375rem; font-size: .875rem; line-height: 1.25rem; font-weight: 500; }
 .helper-gallery-select { min-width: 0; text-overflow: ellipsis; }
-.helper-gallery-info { margin: 0 0 1rem; color: #6b7280; font-size: .875rem; line-height: 1.25rem; overflow-wrap: anywhere; }
+.helper-gallery-info { margin: 0 0 .5rem; color: #6b7280; font-size: .875rem; line-height: 1.25rem; overflow-wrap: anywhere; }
 .helper-gallery-info:empty { display: none; }
 .dark .helper-gallery-info { color: #94a3b8; }
-.helper-gallery-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-.helper-gallery-stat { margin-bottom: 0; padding: 1.25rem; display: grid; gap: .5rem; min-width: 0; }
-.helper-gallery-stat > span { color: #6b7280; font-size: .875rem; line-height: 1.25rem; }
-.dark .helper-gallery-stat > span { color: #94a3b8; }
-.helper-gallery-stat > strong { font-size: 1.5rem; line-height: 2rem; font-weight: 700; overflow-wrap: anywhere; }
-.helper-gallery-stat:last-child > strong { font-size: 1.125rem; }
+.helper-gallery-stats { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin: 0 0 .75rem; font-size: .75rem; line-height: 1rem; }
+.helper-gallery-stat { display: flex; gap: .375rem; align-items: baseline; }
+.helper-gallery-stat dt { color: #6b7280; }
+.dark .helper-gallery-stat dt { color: #94a3b8; }
+.helper-gallery-stat strong { font-weight: 600; }
 .helper-gallery-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,18rem),1fr)); align-items: start; gap: 1.5rem; }
 .helper-gallery-work { display: block; width: 100%; min-width: 0; padding: 0; text-align: left; overflow: hidden; cursor: pointer; margin: 0; }
 .helper-gallery-work:focus-visible { outline: 2px solid #14b8a6; outline-offset: 3px; }
@@ -32,8 +34,8 @@
 .helper-gallery-error { color: #dc2626; font-size: .875rem; line-height: 1.6; margin-bottom: 1rem; overflow-wrap: anywhere; }
 .dark .helper-gallery-error { color: #f87171; }
 .helper-gallery [hidden] { display: none !important; }
-.helper-gallery-empty { padding: 2.5rem 1rem; text-align: center; color: #6b7280; font-size: .875rem; line-height: 1.25rem; }
-.helper-gallery-empty > a { margin-top: .75rem; }
+.helper-gallery-empty { padding: .5rem 0; color: #6b7280; font-size: .875rem; line-height: 1.25rem; }
+.helper-gallery-empty > a { margin-top: .5rem; }
 .dark .helper-gallery-empty { color: #94a3b8; }
 dialog.helper-gallery-dialog { width: min(72rem,calc(100vw - 2rem)); max-height: 92vh; padding: 0; margin: auto; overflow: hidden; }
 dialog.helper-gallery-dialog:not([open]) { display: none; }
@@ -48,9 +50,9 @@ dialog.helper-gallery-dialog::backdrop { background: rgba(0,0,0,.5); backdrop-fi
 .dark .helper-gallery-detail-meta { color: #94a3b8; }
 .helper-gallery-dialog h4 { font-weight: 600; font-size: .875rem; margin: 0 0 .5rem; }
 .helper-gallery-prompt { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .875rem; line-height: 1.7; margin: 0; }
-@media (max-width: 700px) { .helper-gallery-stats { grid-template-columns: repeat(2,minmax(0,1fr)); gap: .75rem; } .helper-gallery-stat { padding: 1rem; } .helper-gallery-toolbar { gap: .5rem; } .helper-gallery-stat > span { font-size: .75rem; } .helper-gallery-large { height: 45vh; } }
+@media (max-width: 700px) { .helper-gallery-toolbar { gap: .5rem; } .helper-gallery-large { height: 45vh; } }
 .helper-gallery-text-artwork { margin: 0; padding: 1rem; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: .875rem; line-height: 1.6; height: 100%; overflow: auto; }
-.helper-gallery-shared-prompt { padding: 1rem 1.25rem; margin-bottom: 1.5rem; }
+.helper-gallery-shared-prompt { margin-bottom: .75rem; }
 .helper-gallery-shared-prompt summary { cursor: pointer; font-weight: 600; font-size: .875rem; }
 .helper-gallery-shared-prompt .helper-gallery-prompt { margin-top: .75rem; max-height: 16rem; overflow-y: auto; }
 .helper-gallery-comparison-heading { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: 1rem; }
