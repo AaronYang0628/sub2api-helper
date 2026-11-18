@@ -743,6 +743,136 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(group_work["content_bytes"], len(self.result["content"]))
             self.assertEqual(self.gallery.work(item["group_id"], item["work"]["id"])["content"], self.result["content"])
 
+    async def test_feed_has_no_untested_placeholders_and_empty_acl_reads_nothing(self):
+        self.assertEqual(self.gallery.feed(), {"items": [], "next_at": None})
+        self.configure()
+        self.assertEqual(self.gallery.feed(), {"items": [], "next_at": None})
+        statements = []
+        self.store._db.set_trace_callback(statements.append)
+        try:
+            self.assertEqual(self.gallery.feed(allowed=set()), {"items": [], "next_at": None})
+        finally:
+            self.store._db.set_trace_callback(None)
+        self.assertEqual(statements, [])
+
+    async def test_feed_prioritizes_latest_per_group_then_recent_history_without_duplicates(self):
+        self.configure(name="First", reasoning_effort="high")
+        self.configure(2, name="Second", reasoning_effort="low")
+        self.configure(3, name="Untested")
+        oldest = await self.complete(1)
+        self.clock.advance(minutes=1)
+        second = await self.complete(2)
+        self.clock.advance(minutes=1)
+        middle = await self.complete(1)
+        self.clock.advance(minutes=1)
+        newest = await self.complete(1)
+        self.configure(name="Renamed first", model="next-model", reasoning_effort="none")
+        before = self.store._db.total_changes
+        feed = self.gallery.feed()
+        self.assertEqual([item["work"]["id"] for item in feed["items"]], [newest["id"], second["id"], middle["id"], oldest["id"]])
+        self.assertEqual(feed["items"][0]["name"], "Renamed first")
+        self.assertEqual((feed["items"][0]["model"], feed["items"][0]["reasoning_effort"]), ("example-model", "high"))
+        self.assertEqual(len({item["work"]["id"] for item in feed["items"]}), 4)
+        self.assertNotIn('"prompt"', json.dumps(feed))
+        self.assertNotIn('"key_id"', json.dumps(feed))
+        self.assertEqual(self.store._db.total_changes, before)
+
+    async def test_feed_filters_hidden_groups_and_uses_only_visible_active_deadlines(self):
+        self.configure(name="Visible", enabled=True, interval_minutes=30)
+        self.configure(2, name="Hidden", model="private-hidden-model", enabled=True, interval_minutes=5)
+        self.configure(3, name="Hidden second", enabled=False)
+        await self.complete(1)
+        await self.complete(2)
+        self.store.set_setting("modules", {"benchmark": True})
+        visible = self.gallery.feed(allowed={1})
+        self.assertEqual([item["group_id"] for item in visible["items"]], [1])
+        self.assertNotIn("private-hidden-model", json.dumps(visible))
+        self.assertEqual(visible["next_at"], (self.clock.now + timedelta(minutes=30)).isoformat())
+        self.assertEqual(self.gallery.feed()["next_at"], (self.clock.now + timedelta(minutes=5)).isoformat())
+        self.gallery.configure_comparison({"group_ids": [2, 3], "enabled": True, "interval_minutes": 10})
+        self.assertEqual(self.gallery.feed(allowed={1})["next_at"], visible["next_at"])
+        self.assertEqual(self.gallery.feed(allowed={2})["next_at"], (self.clock.now + timedelta(minutes=10)).isoformat())
+        self.gallery.pause_comparison()
+        self.assertIsNone(self.gallery.feed(allowed={2})["next_at"], "paused comparison members must not expose a suppressed solo deadline")
+        self.store.set_setting("modules", {"benchmark": False})
+        self.assertIsNone(self.gallery.feed(allowed={1})["next_at"])
+
+    async def test_feed_includes_actual_shared_progress_and_failures_without_empty_jobs(self):
+        for group_id in (1, 2, 3, 4):
+            self.configure(group_id)
+        previous = await self.complete(1)
+        self.clock.advance(minutes=1)
+        self.gallery.configure_comparison({"group_ids": [1, 2, 3]})
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(job):
+            if job["group_id"] == 1:
+                raise RuntimeError("private failure detail")
+            if job["group_id"] == 2:
+                entered.set()
+                await release.wait()
+            return self.result
+
+        self.gallery.generate = generate
+        started = await self.gallery.start_comparison()
+        await entered.wait()
+        feed = self.gallery.feed()
+        latest = {item["group_id"]: item for item in feed["items"][:3]}
+        self.assertEqual({group_id: item["status"] for group_id, item in latest.items()}, {1: "failed", 2: "running", 3: "queued"})
+        self.assertNotIn("work", latest[3])
+        self.assertTrue(all(item["round_id"] == started["round"]["id"] for item in latest.values()))
+        self.assertEqual(feed["items"][-1]["work"]["id"], previous["id"])
+        self.assertNotIn(4, {item["group_id"] for item in feed["items"]})
+        self.assertEqual([item["group_id"] for item in self.gallery.feed(allowed={3})["items"]], [3])
+        release.set()
+        await asyncio.gather(*list(self.gallery._tasks.values()))
+        self.assertEqual(len(self.gallery.feed()["items"]), 4)
+
+    async def test_feed_is_bounded_to_twelve_per_group_and_one_global_preview_budget(self):
+        self.configure()
+        self.configure(2)
+        for group_id in (1, 2):
+            for _ in range(14):
+                self.clock.advance(seconds=1)
+                await self.complete(group_id)
+        with patch.object(self.gallery, "_stats", side_effect=AssertionError("feed must not calculate per-group stats")), patch("helper.gallery.MAX_PREVIEW_BYTES", len(self.result["content"].encode()) * 2):
+            feed = self.gallery.feed()
+        self.assertEqual(len(feed["items"]), 24)
+        self.assertEqual([item["group_id"] for item in feed["items"][:2]], [2, 1])
+        previews = [item["work"].get("preview") for item in feed["items"]]
+        self.assertEqual(previews[:2], [self.result["content"], self.result["content"]])
+        self.assertTrue(all(preview is None for preview in previews[2:]))
+        self.assertTrue(all(len([item for item in feed["items"] if item["group_id"] == group_id]) == 12 for group_id in (1, 2)))
+
+    async def test_feed_read_snapshot_stays_consistent_with_another_database_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "gallery.db")
+            store = Store(path)
+            gallery = Gallery(store, self.generate, clock=self.clock)
+            gallery.configure(1, {"model": "m", "key_id": 1})
+            pending = await gallery.start(1)
+            await asyncio.gather(*list(gallery._tasks.values()))
+            writer = Store(path)
+            original = gallery.work(1, pending["id"])["title"]
+            changed = []
+
+            def concurrent_write(statement):
+                if statement.lstrip().startswith("WITH recent") and not changed:
+                    with writer._lock, writer._db:
+                        writer._db.execute("UPDATE gallery_runs SET title='Concurrent update' WHERE id=?", (pending["id"],))
+                    changed.append(True)
+
+            store._db.set_trace_callback(concurrent_write)
+            try:
+                self.assertEqual(gallery.feed()["items"][0]["work"]["title"], original)
+            finally:
+                store._db.set_trace_callback(None)
+            self.assertEqual(changed, [True])
+            self.assertEqual(gallery.work(1, pending["id"])["title"], "Concurrent update")
+            await gallery.close()
+            writer.close()
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

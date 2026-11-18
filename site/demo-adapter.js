@@ -108,18 +108,21 @@
   function comparisonScene(groupId, variant = 0) {
     return groupId === 1 ? cyclingScene(variant) : groupId === 2 ? posterScene(variant) : groupId === 3 ? blueprintScene(variant) : minimalScene(variant);
   }
-  const galleryDirectory = ['OpenAI', 'Anthropic', 'GLM', 'Kimi', '备用模型', '未绑定 Key'].map((name, i) => ({
+  const galleryDirectory = ['OpenAI', 'Anthropic', 'GLM', 'Kimi', '独立创作', '未绑定 Key', '可新增模型'].map((name, i) => ({
     id: i + 1, name: `${name} · 示例组`, platform: ['openai', 'anthropic', 'zhipu', 'kimi', 'openai', 'openai'][i], status: 'active',
   }));
-  const galleryKeys = galleryDirectory.slice(0, -1).map(group => ({ id: group.id + 10, name: `${group.name} Key`, group_id: group.id, group_name: group.name }));
+  const galleryKeys = galleryDirectory.filter(group => group.id !== 6).map(group => ({ id: group.id + 10, name: `${group.name} Key`, group_id: group.id, group_name: group.name }));
   const galleryGroups = galleryDirectory.slice(0, 4).map((group, i) => ({
     group_id: group.id, name: group.name, model: ['openai-fixture', 'anthropic-fixture', 'glm-fixture', 'kimi-fixture'][i], key_id: group.id + 10,
     api_format: i === 0 ? 'responses' : 'chat', reasoning_effort: ['high', 'medium', 'default', 'default'][i], enabled: false,
     interval_minutes: 60, next_at: null, running: false, last_error: null, prompt: sharedGalleryPrompt, comparison_member: true,
   }));
+  galleryGroups.push({ group_id: 5, name: galleryDirectory[4].name, model: 'independent-fixture', key_id: 15, api_format: 'chat', reasoning_effort: 'low', enabled: true,
+    interval_minutes: 90, next_at: new Date(galleryStart + 18 * 60000).toISOString(), running: false, last_error: null,
+    prompt: '用 SVG 创作一幅河畔晨风中的白鹭与自行车场景。只输出原创作品源码，不引用外部资源或脚本。', comparison_member: false });
   const galleryWorks = new Map(galleryGroups.map(group => [group.group_id, Array.from({ length: 4 }, (_, index) => ({
-    id: group.group_id * 100 + 4 - index, group_id: group.group_id, round_id: index === 0 ? comparisonSequence : null, title: `${['河畔慢骑', '几何微风', '骑行线稿', '轻装上路'][group.group_id - 1]}${index ? ` · 历史 ${index}` : ''}`, model: group.model, reasoning_effort: group.reasoning_effort,
-    created_at: new Date(galleryStart - (index * group.interval_minutes + 12) * 60000).toISOString(), finished_at: new Date(galleryStart - (index * group.interval_minutes + 12) * 60000 + 2200).toISOString(), latency_ms: 1280 + group.group_id * 173 + index * 317, status: 'success', error: null, kind: 'html', content: comparisonScene(group.group_id, index), mime: 'text/html', prompt: sharedGalleryPrompt,
+    id: group.group_id * 100 + 4 - index, group_id: group.group_id, round_id: index === 0 && group.group_id <= 4 ? comparisonSequence : null, title: `${['河畔慢骑', '几何微风', '骑行线稿', '轻装上路', '独立场景 · 河岸晨风'][group.group_id - 1]}${index ? ` · 历史 ${index}` : ''}`, model: group.model, reasoning_effort: group.reasoning_effort,
+    created_at: new Date(galleryStart - (index * group.interval_minutes + (group.group_id === 5 ? 5 : 12)) * 60000).toISOString(), finished_at: new Date(galleryStart - (index * group.interval_minutes + (group.group_id === 5 ? 5 : 12)) * 60000 + 2200).toISOString(), latency_ms: 1280 + group.group_id * 173 + index * 317, status: 'success', error: null, kind: 'html', content: comparisonScene(group.group_id, index), mime: 'text/html', prompt: group.prompt,
   }))]));
   const galleryStats = new Map(galleryGroups.map(group => [group.group_id, { success_24h: 12 + group.group_id, failed_24h: 0, total: 40 + group.group_id * 8 }]));
   let comparisonConfig = { group_ids: [1, 2, 3, 4], prompt: sharedGalleryPrompt, enabled: true, interval_minutes: 60, next_at: new Date(galleryStart + 42 * 60000).toISOString(), running: false };
@@ -215,6 +218,21 @@
   function comparisonDetail() {
     return { config: clone(comparisonConfig), round: clone(comparisonRound), timezone: 'Asia/Shanghai' };
   }
+  function galleryFeed() {
+    const items = galleryGroups.flatMap(group => (galleryWorks.get(group.group_id) || []).map(work => ({
+      group_id: group.group_id, name: group.name, model: work.model, reasoning_effort: work.reasoning_effort,
+      status: work.status, created_at: work.created_at, round_id: work.round_id ?? null, work: workPreview(work),
+    }))).sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.work.id - left.work.id);
+    const seen = new Set(), latest = [], history = [];
+    for (const item of items) {
+      if (seen.has(item.group_id)) history.push(item);
+      else { seen.add(item.group_id); latest.push(item); }
+    }
+    const due = [comparisonConfig?.enabled ? comparisonConfig.next_at : null,
+      ...galleryGroups.filter(group => group.enabled && !comparisonConfig?.group_ids.includes(group.group_id)).map(group => group.next_at)]
+      .filter(value => value && Number.isFinite(Date.parse(value))).sort((left, right) => Date.parse(left) - Date.parse(right));
+    return { items: [...latest, ...history], next_at: due[0] || null, timezone: 'Asia/Shanghai' };
+  }
   function preview(rule) {
     if (rule.type === 'subscription_multiplier') return {
       type: rule.type, actions: [{ action: rule.scope === 'global_group' ? 'set_group_rate' : 'set_user_group_rate', scope: rule.scope, user_id: rule.scope === 'global_group' ? null : 103, group_id: rule.group_id, previous_multiplier: 1, multiplier: rule.multiplier, status: 'ready' }],
@@ -246,6 +264,7 @@
     }
     if (path === '/_helper/api/session/revoke' && method === 'POST') return { ok: true };
     if (path === '/api/connection/disconnect' && method === 'POST') return { ok: true };
+    if (path === '/api/gallery/feed' && method === 'GET') return galleryFeed();
     const shared = path.match(/^\/api\/gallery\/comparison(?:\/(run|pause))?$/);
     if (shared) {
       if (!shared[1] && method === 'GET') return comparisonDetail();

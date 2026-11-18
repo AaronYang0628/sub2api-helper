@@ -204,6 +204,88 @@ class Gallery:
                 raise GalleryError("找不到该分组的作品", 404)
             return self._metadata(row) | {"content": row["content"], "prompt": row["prompt"]}
 
+    def feed(self, allowed=None):
+        """One local snapshot, latest per participant first, without credentials."""
+        if allowed is not None:
+            allowed = {value for value in allowed if type(value) is int and 0 < value < 2**63}
+            if not allowed:
+                return {"items": [], "next_at": None}
+        with self._lock:
+            # A read savepoint also keeps separate SQLite connections from
+            # changing the visible round halfway through this response.
+            self._db.execute("SAVEPOINT gallery_feed")
+            try:
+                return self._feed_snapshot(allowed, self._now())
+            finally:
+                self._db.execute("RELEASE gallery_feed")
+
+    def _feed_snapshot(self, allowed, now):
+        ids = {row[0] for row in self._db.execute("SELECT group_id FROM gallery_jobs")}
+        if allowed is not None:
+            ids.intersection_update(allowed)
+        if not ids:
+            return {"items": [], "next_at": None}
+        placeholders = ",".join("?" for _ in ids)
+        jobs = {row["group_id"]: (json.loads(row["config"]), row["next_at"]) for row in self._db.execute(
+            f"SELECT group_id,config,next_at FROM gallery_jobs WHERE group_id IN ({placeholders})", tuple(ids))}
+        # Rank IDs before projecting metadata, so old prompts and large artwork
+        # bodies never cross SQLite/Python just to select twelve recent rows.
+        rows = self._db.execute(f"""WITH recent AS (
+            SELECT id AS work_id,ROW_NUMBER() OVER(PARTITION BY group_id ORDER BY id DESC) AS position
+            FROM gallery_runs WHERE group_id IN ({placeholders}))
+            SELECT {METADATA_COLUMNS} FROM gallery_runs JOIN recent ON id=recent.work_id WHERE recent.position<=12""", tuple(ids)).fetchall()
+        current = self._db.execute("SELECT id,items,created_at FROM gallery_rounds ORDER BY id DESC LIMIT 1").fetchone()
+        round_items = [item for item in json.loads(current["items"]) if item["group_id"] in ids] if current else []
+        by_work = {item["work_id"]: item for item in round_items if item.get("work_id") is not None}
+        candidates, seen = [], set()
+        for row in rows:
+            shared = by_work.get(row["id"], {}) if current and row["round_id"] == current["id"] else {}
+            item = {"group_id": row["group_id"], "name": shared.get("name", jobs[row["group_id"]][0]["name"]),
+                    "model": row["model"], "reasoning_effort": row["reasoning_effort"], "status": row["status"],
+                    "created_at": row["created_at"], "round_id": row["round_id"], "work": self._metadata(row)}
+            if shared.get("status") == "interrupted" and row["error"] == INTERRUPTED:
+                item["status"] = "interrupted"
+            candidates.append(item)
+            seen.add(row["id"])
+        for item in round_items:
+            if item.get("work_id") in seen or item["status"] == "success":
+                continue
+            candidates.append({"group_id": item["group_id"], "name": item["name"], "model": item["model"],
+                               "reasoning_effort": item.get("reasoning_effort", item.get("config", {}).get("reasoning_effort", "default")),
+                               "status": item["status"], "created_at": current["created_at"], "round_id": current["id"]})
+        candidates.sort(key=lambda item: (item["created_at"], "work" not in item, item.get("work", {}).get("id", 0), item["group_id"]), reverse=True)
+        latest, history, participants = [], [], set()
+        for item in candidates:
+            (history if item["group_id"] in participants else latest).append(item)
+            participants.add(item["group_id"])
+        items = latest + history
+        preview_ids, budget = [], MAX_PREVIEW_BYTES
+        for item in items:
+            work = item.get("work")
+            if not work or work["status"] != "success" or work["kind"] not in {"html", "text", "image"}:
+                continue
+            # SQLite substr counts characters; four bytes per codepoint bounds
+            # the existing 2000-character text preview without loading it yet.
+            size = min(work["content_bytes"], 8000) if work["kind"] == "text" else work["content_bytes"]
+            if 0 < size <= min(128 * 1024, budget):
+                preview_ids.append(work["id"])
+                budget -= size
+        if preview_ids:
+            marks = ",".join("?" for _ in preview_ids)
+            previews = {row["id"]: row["preview"] for row in self._db.execute(
+                f"SELECT id,CASE WHEN kind='text' THEN substr(content,1,2000) ELSE content END AS preview FROM gallery_runs WHERE id IN ({marks})", preview_ids)}
+            for item in items:
+                if item.get("work", {}).get("id") in previews:
+                    item["work"]["preview"] = previews[item["work"]["id"]]
+        deadlines = []
+        if self.store.get_setting("modules", {}).get("benchmark") is True:
+            shared = self._comparison_schedule()
+            members = set(shared["group_ids"]) if shared else set()
+            if shared and shared["enabled"] and ids.intersection(members) and shared["next_at"] > now.timestamp():
+                deadlines.append(shared["next_at"])
+            deadlines.extend(deadline for group_id, (cfg, deadline) in jobs.items() if cfg["enabled"] and group_id not in members and deadline > now.timestamp())
+        return {"items": items, "next_at": datetime.fromtimestamp(min(deadlines), timezone.utc).isoformat() if deadlines else None}
+
     def _record_stat(self, group_id, now, status):
         second = int(now.timestamp())
         bucket, offset = second // 60 * 60, str(second % 60)

@@ -176,8 +176,8 @@
       await state.viewer?.ready;
     }
     async function showPreview(groupID) {
-      previewPanel.open = true; await ensureViewer();
-      if (!state.destroyed) { await state.viewer?.selectGroup?.(groupID); previewPanel.scrollIntoView({ block: 'start' }); }
+      previewPanel.open = true; previewPanel.scrollIntoView({ block: 'start' }); await ensureViewer();
+      if (!state.destroyed) state.viewer?.focusSource?.(groupID);
     }
     function stopPolling() { clearTimeout(state.poll); state.poll = null; state.polls = 0; }
     function destroy() { state.destroyed = true; state.epoch++; comparison.revision++; stopPolling(); clearTimeout(comparison.poll); clearTimeout(attachTimeout); detachObserver.disconnect(); state.viewer?.destroy?.(); }
@@ -363,7 +363,6 @@
     drawComparison();
     async function refreshGallery() {
       await state.viewer?.refresh?.();
-      if (state.saved) await state.viewer?.selectGroup?.(state.groupID);
     }
     function defaultGroup(groupID) {
       const key = liveKeys(groupID)[0];

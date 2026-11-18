@@ -50,6 +50,19 @@ def project_work(work, detail=False):
     return {key: work[key] for key in fields if key in work}
 
 
+def project_feed(data, allowed=None):
+    fields = ("group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id")
+    items = []
+    for item in data["items"]:
+        if allowed is not None and item.get("group_id") not in allowed:
+            continue
+        safe = {key: item.get(key) for key in fields}
+        if isinstance(item.get("work"), dict):
+            safe["work"] = project_work(item["work"])
+        items.append(safe)
+    return {"items": items, "next_at": data.get("next_at")}
+
+
 def project_comparison(data, allowed):
     config = data.get("config")
     visible_config = None
@@ -117,6 +130,10 @@ def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provide
         return {"groups": [{key: row.get(key) for key in ("id", "name", "platform", "status")} for row in groups],
                 "keys": keys, "group_error": group_error, "key_error": key_error}
 
+    @admin_api.get("/gallery/feed", dependencies=[Depends(admin)])
+    async def admin_gallery_feed():
+        return {**project_feed(gallery.feed()), "timezone": config_provider().timezone}
+
     @admin_api.get("/gallery/comparison", dependencies=[Depends(admin)])
     async def get_comparison():
         return {**gallery.comparison(), "timezone": config_provider().timezone}
@@ -179,6 +196,13 @@ def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provide
         return {"groups": [project_group(group) for group in gallery.groups()
                            if allowed is None or group["group_id"] in allowed],
                 "timezone": config_provider().timezone}
+
+    @portal_api.get("/gallery/feed")
+    async def portal_gallery_feed(identity=Depends(portal)):
+        # Resolve current group access once before any artwork or scheduling
+        # reads, so hidden groups cannot affect even the returned next time.
+        allowed = await visible_groups(identity)
+        return {**project_feed(gallery.feed(allowed=allowed), allowed), "timezone": config_provider().timezone}
 
     @portal_api.get("/gallery/comparison")
     async def portal_comparison(identity=Depends(portal)):

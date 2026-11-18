@@ -21,7 +21,7 @@ let comparisonConfig = null, comparisonRound = null, comparisonReads = 0, reject
 const member = groupID => comparisonConfig?.group_ids.includes(groupID) || false;
 function detail(groupID) { return { group: { ...configs.get(groupID), comparison_member: member(groupID) }, stats: { success_24h: 1, failed_24h: 0, total: 1 }, works: [] }; }
 const fixture = `
-window.helperGallery=(container)=>{ window.VIEW_CREATED=true;container.textContent='最近生成的作品';return {ready:Promise.resolve(),refresh(){window.VIEW_REFRESHES=(window.VIEW_REFRESHES||0)+1},selectGroup(id){window.VIEW_GROUP=id},destroy(){window.VIEW_DESTROYED=true}} };
+window.helperGallery=(container)=>{ window.VIEW_CREATED=true;container.textContent='最近生成的作品';return {ready:Promise.resolve(),refresh(){window.VIEW_REFRESHES=(window.VIEW_REFRESHES||0)+1},focusSource(id){window.VIEW_SOURCE=id},destroy(){window.VIEW_DESTROYED=true}} };
 const request=async(path,method='GET',data)=>{const response=await fetch('/_helper/api/admin'+path,{method,headers:{'Content-Type':'application/json'},...(data===undefined?{}:{body:JSON.stringify(data)})});const body=await response.json();if(!response.ok)throw new Error(body.detail);return body};
 window.controller=helperGalleryAdmin(document.getElementById('admin'),{request});
 `;
@@ -127,7 +127,7 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     await page.getByRole('button', { name: '同题生成一轮', exact: true }).click(); await page.getByText('本轮同题对比已结束，可在下方查看各分组的作品。', { exact: true }).waitFor({ timeout: 8000 }); assert.equal(comparisonRound.status, 'partial');
     await page.locator('[name=gallery_comparison_prompt]').fill(commonPrompt+' 保留编辑。'); rejectComparison=true; await page.getByRole('button',{name:'保存同题设置',exact:true}).click(); await page.getByText('同题设置暂时无法保存，请重试。',{exact:true}).waitFor(); assert.equal(await page.locator('[name=gallery_comparison_prompt]').inputValue(),commonPrompt+' 保留编辑。'); rejectComparison=false;
     await page.getByRole('button',{name:'退出同题配置',exact:true}).click(); await page.getByText('已退出同题配置，作品已保留。',{exact:true}).waitFor(); assert.equal(comparisonConfig,null); assert.equal(comparisonRound.items.length,2); assert.match(await row(1).innerText(),/已暂停/);
-    await row(1).getByRole('button',{name:/^查看分组 /}).click(); await page.waitForFunction(()=>window.VIEW_CREATED===true); assert.equal(await page.evaluate(()=>window.VIEW_GROUP),1);
+    await row(1).getByRole('button',{name:/^查看分组 /}).click(); await page.waitForFunction(()=>window.VIEW_CREATED===true && window.VIEW_SOURCE===1);
     await edit(1); await page.locator('[name=gallery_model]').fill('unsaved model retained'); await page.getByRole('button',{name:'刷新分组',exact:true}).click(); assert.equal(await page.locator('[name=gallery_model]').inputValue(),'unsaved model retained'); await close();
     configs.get(2).enabled=true; failOptions=true; await page.getByRole('button',{name:'刷新分组',exact:true}).click(); await page.getByText('分组目录暂不可用：',{exact:false}).waitFor(); assert.equal(await page.locator('[data-gallery-group-id]').count(),3); assert.equal(await page.getByRole('button',{name:'新增分组',exact:true}).isDisabled(),true);
     await row(2).getByRole('button',{name:'暂停',exact:true}).click(); await page.getByText('自动生成已暂停。',{exact:true}).waitFor(); assert.equal(configs.get(2).enabled,false,'options failure cannot prevent stopping an existing job');

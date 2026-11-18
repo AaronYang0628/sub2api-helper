@@ -85,7 +85,7 @@ await writeFile(join(target, 'gallery.html'), `<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>同题作品对比 · sub2api Helper</title>
+  <title>模型作品 · sub2api Helper</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./assets/style.css">
   <link rel="stylesheet" href="./assets/demo.css">

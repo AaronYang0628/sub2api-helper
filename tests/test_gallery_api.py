@@ -584,6 +584,138 @@ class GalleryApiTests(unittest.TestCase):
         self.assertNotIn("fixture-kimi", response.text)
         self.assertNotIn("key_id", response.text)
 
+    def test_feed_literal_routes_require_their_own_auth_and_return_an_empty_snapshot(self):
+        ordinary = self.portal()
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery/feed").status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery/feed", headers=ordinary).status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery/feed", headers={"Authorization": "Bearer " + self.config.sub2api_admin_key}).status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/portal/gallery/feed").status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/portal/gallery/feed", headers=self.auth).status_code, 401)
+        for path, headers in (("/_helper/api/admin/gallery/feed", self.auth), ("/_helper/api/portal/gallery/feed", ordinary)):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers=headers)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json(), {"items": [], "next_at": None, "timezone": self.config.timezone})
+        self.assertEqual(self.upstream.available_calls, ["user-jwt"])
+        self.generator.assert_not_awaited()
+
+    def test_feed_returns_recent_works_together_after_one_current_group_access_check(self):
+        self.configure(3, name="Visible Anthropic", model="visible-claude", reasoning_effort="high")
+        self.configure(4, name="Private Kimi source", model="private-kimi", prompt="Hidden future instructions")
+        first = self.generate_one(3)
+        latest = self.generate_one(3)
+        hidden = self.generate_one(4)
+        ordinary = self.portal()
+        self.upstream.available_calls.clear()
+        with patch.object(self.app.state.gallery, "feed", wraps=self.app.state.gallery.feed) as snapshot:
+            response = self.client.get("/_helper/api/portal/gallery/feed", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        snapshot.assert_called_once_with(allowed={3})
+        self.assertEqual(self.upstream.available_calls, ["user-jwt"], "One aggregate feed must resolve current ACL only once")
+        items = response.json()["items"]
+        self.assertEqual([item["work"]["id"] for item in items], [latest["id"], first["id"]])
+        self.assertTrue(all(item["group_id"] == 3 and item["name"] == "Visible Anthropic" for item in items))
+        self.assertTrue(all(item["reasoning_effort"] == "high" and item["work"]["reasoning_effort"] == "high" for item in items))
+        self.assertTrue(all("preview" in item["work"] for item in items))
+        for private in ("Private Kimi source", "private-kimi", "Hidden future instructions", CONFIG_PROMPT,
+                        "key_id", "api_key", "content_bytes", MODEL_KEY, self.config.sub2api_admin_key):
+            self.assertNotIn(private, response.text)
+        self.assertIsNone(response.json()["next_at"])
+        self.upstream.available_calls.clear()
+        admin = self.client.get("/_helper/api/admin/gallery/feed", headers=self.auth)
+        self.assertEqual(admin.status_code, 200, admin.text)
+        self.assertEqual({item["work"]["id"] for item in admin.json()["items"][:2]}, {latest["id"], hidden["id"]}, "Latest source attempts precede older history")
+        self.assertEqual(self.upstream.available_calls, [], "Management feed does not borrow an ordinary user's group access")
+
+    def test_feed_hides_restricted_schedule_and_rechecks_revoked_group_access(self):
+        self.configure(3, enabled=False)
+        self.configure(4, name="Private scheduled source", enabled=True, interval_minutes=5)
+        self.generate_one(3)
+        ordinary = self.portal()
+        management = self.client.get("/_helper/api/admin/gallery/feed", headers=self.auth)
+        self.assertEqual(management.status_code, 200, management.text)
+        self.assertIsNotNone(management.json()["next_at"])
+        response = self.client.get("/_helper/api/portal/gallery/feed", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["next_at"], "A hidden source must not disclose its upcoming execution time")
+        self.assertNotIn("Private scheduled source", response.text)
+        self.upstream.allowed["user-jwt"] = []
+        self.upstream.available_calls.clear()
+        response = self.client.get("/_helper/api/portal/gallery/feed", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["items"], [])
+        self.assertIsNone(response.json()["next_at"])
+        self.assertEqual(self.upstream.available_calls, ["user-jwt"])
+
+    def test_feed_does_not_invent_placeholders_for_unexecuted_configured_sources(self):
+        self.configure(3)
+        self.configure(4)
+        for path, headers in (("/_helper/api/admin/gallery/feed", self.auth), ("/_helper/api/portal/gallery/feed", self.portal())):
+            response = self.client.get(path, headers=headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["items"], [], "Configuration alone does not prove participation in a generation round")
+        self.generator.assert_not_awaited()
+
+    def test_feed_projection_excludes_future_and_nested_internal_fields(self):
+        ordinary = self.portal()
+        data = {"items": [
+            {"group_id": 3, "name": "Visible source", "model": "visible-model", "reasoning_effort": "xhigh", "status": "success",
+             "created_at": "2026-11-18T00:00:00Z", "round_id": 12, "prompt": "Private future prompt", "key_id": 31,
+             "work": {"id": 123, "group_id": 3, "round_id": 12, "title": "Visible artwork", "model": "visible-model",
+                      "reasoning_effort": "xhigh", "status": "success", "kind": "html", "preview": "<p>Safe preview</p>",
+                      "prompt": "Private executed prompt only belongs in detail", "api_key": MODEL_KEY, "key_id": 31,
+                      "content_bytes": 10, "future_internal": "Do not expose future metadata"}},
+            {"group_id": 4, "name": "Unauthorized source", "model": "unauthorized-model", "status": "queued", "round_id": 12},
+        ], "next_at": None, "config": {"prompt": "Private future prompt"}}
+        with patch.object(self.app.state.gallery, "feed", return_value=data) as snapshot:
+            response = self.client.get("/_helper/api/portal/gallery/feed", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        snapshot.assert_called_once_with(allowed={3})
+        self.assertEqual(set(response.json()), {"items", "next_at", "timezone"})
+        self.assertEqual(len(response.json()["items"]), 1)
+        item = response.json()["items"][0]
+        self.assertEqual(set(item), {"group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id", "work"})
+        self.assertEqual(item["work"]["preview"], "<p>Safe preview</p>")
+        for private in ("Unauthorized source", "unauthorized-model", "Private future prompt", "Private executed prompt", "key_id",
+                        "api_key", "content_bytes", "future_internal", MODEL_KEY):
+            self.assertNotIn(private, response.text)
+
+    def test_feed_rejects_disabled_module_profile_and_acl_errors_before_snapshot_read(self):
+        ordinary = self.portal()
+        with patch.object(self.app.state.gallery, "feed", wraps=self.app.state.gallery.feed) as snapshot:
+            self.store.set_setting("modules", {"benchmark": False})
+            response = self.client.get("/_helper/api/portal/gallery/feed", headers=ordinary)
+            self.assertEqual(response.status_code, 404, response.text)
+            self.assertEqual(self.upstream.available_calls, [])
+            snapshot.assert_not_called()
+            self.store.set_setting("modules", {"benchmark": True})
+            self.upstream.users[0]["status"] = "disabled"
+            response = self.client.get("/_helper/api/portal/gallery/feed", headers=ordinary)
+            self.assertEqual(response.status_code, 403, response.text)
+            self.assertEqual(self.upstream.available_calls, [])
+            snapshot.assert_not_called()
+            self.upstream.users[0]["status"] = "active"
+            self.upstream.allowed["user-jwt"] = UpstreamError("Current group access unavailable", 503)
+            response = self.client.get("/_helper/api/portal/gallery/feed", headers=ordinary)
+            self.assertEqual(response.status_code, 502, response.text)
+            self.assertEqual(self.upstream.available_calls, ["user-jwt"])
+            snapshot.assert_not_called()
+
+    def test_shared_round_feed_exposes_only_visible_participants_and_no_shared_prompt(self):
+        self.configure_comparison()
+        completed = self.generate_comparison()
+        response = self.client.get("/_helper/api/portal/gallery/feed", headers=self.portal())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(response.json()["items"]), 1)
+        item = response.json()["items"][0]
+        self.assertEqual(item["group_id"], 3)
+        self.assertEqual(item["round_id"], completed["id"])
+        self.assertEqual(item["work"]["round_id"], completed["id"])
+        self.assertEqual(item["model"], "fixture-claude")
+        for private in ("Kimi gallery", "fixture-kimi", COMPARISON_PROMPT, "Private Anthropic standalone prompt",
+                        "key_id", "anthropic-key-server-only", "kimi-key-server-only"):
+            self.assertNotIn(private, response.text)
+
 
 if __name__ == "__main__":
     unittest.main()

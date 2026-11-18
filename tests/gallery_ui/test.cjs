@@ -98,10 +98,11 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
   await fs.writeFile(cssInput, await fs.readFile(path.join(root, 'ui/upstream.css'), 'utf8') + '\n' + await fs.readFile(path.join(root, 'ui/adapters.css'), 'utf8'));
   const compiled = spawnSync(process.execPath, [path.join(root, 'ui/node_modules/tailwindcss/lib/cli.js'), '-i', cssInput, '-c', path.join(root, 'ui/tailwind.config.js'), '-o', cssFile, '--minify'], { encoding: 'utf8' });
   assert.equal(compiled.status, 0, compiled.stderr);
-  let empty = false, noWorks = false, fail = false, onlyFirst = false, comparisonUnavailable = false, comparisonEmpty = false, leaks = 0;
+  let empty = false, noWorks = false, fail = false, onlyFirst = false, leaks = 0;
   const calls = [];
   let realBackendOrigin = '', liveIngress = false, realBackend;
-  const groups = [{ group_id: 1, name: '白鹭单车分组', model: 'fixture-html', enabled: true, interval_minutes: 60, reasoning_effort: 'high' }, { group_id: 2, name: '月夜纸船分组', model: 'fixture-svg', enabled: false, interval_minutes: 90, comparison_member: true, comparison_enabled: true, reasoning_effort: 'low' }, { group_id: 3, name: '失败示例分组', model: 'fixture-failed', enabled: true, interval_minutes: 90 }];
+  const fixtureCreatedAt = Date.now();
+  const groups = [{ group_id: 1, name: '白鹭单车分组', model: 'fixture-html', reasoning_effort: 'high' }, { group_id: 2, name: '月夜纸船分组', model: 'fixture-svg', reasoning_effort: 'low' }, { group_id: 3, name: '失败示例分组', model: 'fixture-failed', reasoning_effort: 'default' }, { group_id: 4, name: '等待参与分组', model: 'fixture-queued', reasoning_effort: 'medium' }];
   const sharedPrompt = '请用 HTML 或 SVG 生成一幅自然主题作品。\n<img src=x onerror=alert(1)> 仅为同轮提示词文本';
   const validInlineImage = 'data:image/gif;base64,' + Buffer.from('47494638396101000100800000000000ffffff21ff0b4e45545343415045322e30030100000021f904000a0000002c000000000100010000020244010021f904000a0000002c00000000010001000002024c01003b', 'hex').toString('base64');
   // This carries a PNG signature but is not decodable, exercising the actual
@@ -109,7 +110,12 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
   const corruptInlineImage = 'data:image/png;base64,' + Buffer.from('89504e470d0a1a0a0000', 'hex').toString('base64');
   const html = '<style>@keyframes fly{from{transform:translateX(0)}to{transform:translateX(40px)}}body{background:#ecfeff}.scene{height:100vh;display:grid;place-items:center}#bird{width:70px;height:40px;background:#14b8a6;border-radius:50%;animation:fly .3s linear infinite alternate}</style><main class="scene"><div id="bird"></div></main><script>parent.PWNED=1;fetch("/leak")</script><img src="/leak" onerror="parent.PWNED=2"><img src="/old-asset.png" alt="旧图"><img src="' + corruptInlineImage + '" alt="损坏内嵌图"><picture><source srcset="/old-asset.png"><img id="valid-inline-image" src="' + validInlineImage + '" srcset="/old-asset.png 2x" alt="有效内嵌动图"></picture>';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240"><rect width="320" height="240" fill="#0f172a"/><circle id="moon" cx="230" cy="60" r="30" fill="#fef3c7"/><path id="boat" d="M60 155L155 120L225 155Z" fill="#14b8a6"/><text x="25" y="210" fill="white">月夜纸船</text></svg>';
-  function work(group, n) { return { id: `${group === 1 ? 'html' : 'svg'}-${n}`, title: group === 1 ? `白鹭单车 ${n + 1}` : `月夜纸船 ${n + 1}`, model: groups[group - 1].model, status: 'success', reasoning_effort: groups[group - 1].reasoning_effort || 'default', created_at: new Date(Date.now() - n * 60000).toISOString(), latency_ms: 1200 + n, kind: 'html', content: group === 1 ? n === 0 ? html : '<style>body{background:#ccfbf1}</style><h2>静态作品</h2>' : svg }; }
+  function work(group, n) { return { id: `${group === 1 ? 'html' : group === 2 ? 'svg' : 'failed'}-${n}`, group_id: group, round_id: n ? `past-round-${n}` : 'latest-round', title: group === 1 ? `白鹭单车 ${n + 1}` : group === 2 ? `月夜纸船 ${n + 1}` : '失败作品', model: groups[group - 1].model, status: group === 3 ? 'failed' : 'success', reasoning_effort: groups[group - 1].reasoning_effort, created_at: new Date(fixtureCreatedAt - n * 60000).toISOString(), latency_ms: group === 3 ? null : 1200 + n, kind: 'html', ...(group === 3 ? { error: 'Fixture generation failed.' } : { content: group === 1 ? n === 0 ? html : '<style>body{background:#ccfbf1}</style><h2>静态作品</h2>' : svg }) }; }
+  function feedItem(group, n = 0) {
+    const item = { ...groups[group - 1], status: group === 4 ? 'queued' : group === 3 ? 'failed' : 'success', created_at: new Date(fixtureCreatedAt - n * 60000).toISOString(), round_id: n ? `past-round-${n}` : 'latest-round' };
+    if (group !== 4) { item.work = work(group, n); item.work.preview = item.work.content; delete item.work.content; }
+    return item;
+  }
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/real-menu') {
@@ -137,17 +143,18 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       let value;
       if (url.pathname.endsWith('/session')) value = { session: 'fixture-session', role: input.token === 'fixture-admin-jwt' ? 'admin' : 'user' };
       else if (url.pathname.endsWith('/modules')) value = { benchmark: true };
-      else if (url.pathname === '/_helper/api/portal/gallery') { if (fail) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: '示例服务暂时不可用' })); return; } value = { groups: empty ? [] : onlyFirst ? groups.slice(0, 1) : groups, timezone: 'Asia/Shanghai' }; }
-      else if (url.pathname === '/_helper/api/portal/gallery/comparison') {
-        if (comparisonUnavailable) { res.writeHead(404); res.end(); return; }
-        const available = empty ? [] : onlyFirst ? groups.slice(0, 1) : groups;
-        value = { timezone: 'Asia/Shanghai', config: available.length ? { enabled: true, interval_minutes: 60, group_ids: available.map(group => group.group_id), next_at: new Date(Date.now() + 3600000).toISOString() } : null, round: available.length && !comparisonEmpty ? { id: 'shared-round-1', prompt: sharedPrompt, status: 'partial', created_at: new Date(Date.now()).toISOString(), items: available.map(group => { const item = { group_id: group.group_id, name: group.name, model: group.model, reasoning_effort: group.reasoning_effort || 'default', status: group.group_id === 3 ? 'failed' : 'success' }; if (group.group_id !== 3) { item.work = work(group.group_id, 0); item.work.preview = item.work.content; delete item.work.content; } return item; }) } : null };
+      else if (url.pathname === '/_helper/api/portal/gallery/feed') {
+        if (fail) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: '示例服务暂时不可用' })); return; }
+        const available = empty || noWorks ? [] : onlyFirst ? [1] : [1, 2, 3, 4];
+        const latest = available.map(group => feedItem(group));
+        const history = [1, 2].filter(group => available.includes(group)).flatMap(group => Array.from({ length: group === 1 ? 11 : 3 }, (_, n) => feedItem(group, n + 1))).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+        value = { items: [...latest, ...history], next_at: empty ? null : new Date(Date.now() + 3600000).toISOString(), timezone: 'Asia/Shanghai' };
       }
       else {
         const match = url.pathname.match(/\/gallery\/(\d+)(?:\/works\/([\w-]+))?$/), group = Number(match?.[1]);
         if (!match || !groups[group - 1]) { res.writeHead(404); res.end(); return; }
         if (match[2]) { const n = Number(match[2].split('-').at(-1)); value = { ...work(group, n), prompt: sharedPrompt }; }
-        else value = { group: { ...groups[group - 1], next_at: new Date(Date.now() + 3600000).toISOString(), comparison_next_at: group === 2 ? new Date(Date.now() + 7200000).toISOString() : null }, stats: noWorks ? { success_24h: 0, failed_24h: 0, total: 0 } : { success_24h: 8, failed_24h: 2, total: 31 }, works: noWorks ? [] : Array.from({ length: group === 1 ? 13 : 4 }, (_, n) => { const item = work(group, n); item.preview = item.content; delete item.content; return item; }) };
+        else { res.writeHead(404); res.end(); return; }
       }
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); return;
     }
@@ -163,29 +170,31 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     page.on('console', item => { if (item.type() === 'error' && !/Blocked script execution|Content Security Policy|Failed to load resource|Refused to|violates the following/.test(item.text())) errors.push(item.text()); });
     await page.clock.install();
     await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt&theme=light');
-    await page.waitForFunction(() => document.querySelector('select[aria-label="作品分组"]')?.value === 'comparison');
-    assert.equal(await page.locator('#feature-main h1,.page-head').count(), 0, 'embedded modules leave page titles to sub2api');
-    assert.equal(await page.locator('.helper-gallery-comparison-item').count(), 3, 'same round compares all accessible groups');
-    assert.equal(await page.locator('.helper-gallery-stat.card').count(), 0, 'gallery metrics use a compact inline summary');
-    assert((await page.locator('.helper-gallery-info').textContent()).includes('部分完成'));
-    assert((await page.locator('.helper-gallery-comparison-item[data-group-id="3"]').textContent()).includes('失败'));
-    assert((await page.locator('.helper-gallery-comparison-item[data-group-id="3"]').textContent()).includes('fixture-failed'));
-    await page.getByText('本轮共用提示词', { exact: true }).click(); assert.equal(await page.locator('.helper-gallery-shared-prompt pre').textContent(), sharedPrompt); assert.equal(await page.locator('.helper-gallery-shared-prompt img').count(), 0);
-    assert.equal(calls.filter(value => value === '/_helper/api/portal/gallery/comparison').length, 1); assert.equal(calls.filter(value => /\/gallery\/\d+$/.test(value)).length, 0, 'comparison uses one shared round, no group prefetch');
-    await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByText('生成提示词', { exact: true }).waitFor(); assert.equal(await page.locator('.helper-gallery-dialog .helper-gallery-prompt').textContent(), sharedPrompt); await page.getByRole('button', { name: '关闭', exact: true }).click();
-    await page.screenshot({ path: path.join(directory, 'gallery-comparison.png'), fullPage: true });
-    await page.getByLabel('作品分组', { exact: true }).selectOption('1');
     await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor();
-    assert((await page.locator('.helper-gallery-info').textContent()).includes('思考强度：高'));
-    assert.equal(await page.locator('.helper-gallery-work').count(), 12, 'latest twelve only');
+    assert.equal(await page.locator('#feature-main h1,.page-head,select,[role="tab"],[role="tablist"]').count(), 0, 'embedded feed has no duplicate title, source picker or tabs');
+    assert.equal(await page.locator('.helper-gallery-stat,.helper-gallery-shared-prompt').count(), 0, 'the feed contains works and a next-run line, without summary blocks');
+    assert.equal(await page.locator('.helper-gallery-work').count(), 18, 'latest participants plus bounded recent history are visible together');
+    assert.deepEqual(await page.locator('.helper-gallery-work').evaluateAll(nodes => nodes.slice(0, 4).map(node => node.dataset.groupId)), ['1', '2', '3', '4'], 'latest attempt for every participant is ahead of old history');
+    assert.equal(await page.locator('.helper-gallery-work[data-group-id="1"]').count(), 12);
+    assert.equal(await page.locator('.helper-gallery-work[data-group-id="2"]').count(), 4);
+    assert((await page.locator('.helper-gallery-work[data-group-id="1"]').first().locator('.helper-gallery-source').textContent()).includes('白鹭单车分组'));
+    assert((await page.locator('.helper-gallery-work[data-group-id="1"]').first().locator('.helper-gallery-model').textContent()).includes('思考强度：高'));
+    assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('失败'));
+    assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('fixture-failed'));
+    const queued = page.locator('.helper-gallery-work[data-group-id="4"]');
+    assert.match(await queued.textContent(), /等待|排队/);
+    assert.equal(await queued.evaluate(node => node.tagName), 'ARTICLE', 'an intended participant without a work is a non-clickable queued card');
+    assert.equal(calls.filter(value => value === '/_helper/api/portal/gallery/feed').length, 1, 'initial gallery uses one aggregate feed request');
+    assert.equal(calls.filter(value => value.includes('/works/')).length, 0, 'previews do not prefetch private work details');
+    assert.equal(calls.filter(value => value === '/_helper/api/portal/gallery' || value.endsWith('/gallery/comparison') || /\/gallery\/\d+$/.test(value)).length, 0, 'flat feed does not fan out into legacy group/comparison reads');
     assert.equal(await page.locator('header,aside,.brand,.benchmark-form').count(), 0);
-    assert((await page.locator('.helper-gallery-stats').textContent()).includes('24 小时'));
-    assert.equal(await page.locator('.helper-gallery-stat.card').count(), 0);
     assert.equal(new URL(page.url()).search, '');
-    assert.equal(calls.filter(value => value.includes('/works/')).length, 1, 'no extra detail requests on group render');
-    const artwork = page.locator('.helper-gallery-work iframe').first();
+    await page.screenshot({ path: path.join(directory, 'gallery-feed.png'), fullPage: true });
+
+    const artwork = page.locator('.helper-gallery-work[data-group-id="1"] iframe').first();
     assert.equal(await artwork.getAttribute('sandbox'), ''); assert.equal(await artwork.getAttribute('inert'), ''); assert.equal(await artwork.getAttribute('allow'), null);
-    const frame = await artwork.elementHandle().then(handle => handle.contentFrame()); await frame.locator('#bird').waitFor({ state: 'attached' });
+    const artworkHandle = await artwork.elementHandle();
+    const frame = await artworkHandle.contentFrame(); await frame.locator('#bird').waitFor({ state: 'attached' });
     await frame.getByRole('note').filter({ hasText: '图片无法显示 · 旧图' }).waitFor({ state: 'attached' });
     await frame.getByRole('note').filter({ hasText: '图片无法显示 · 损坏内嵌图' }).waitFor({ state: 'attached' });
     await frame.waitForFunction(() => document.querySelector('#valid-inline-image')?.naturalWidth === 1);
@@ -195,30 +204,41 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await frame.locator('body').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(236, 254, 255)', 'inline model CSS renders under inherited CSP');
     const transforms = new Set(); for (let n = 0; n < 4; n++) { transforms.add(await frame.locator('#bird').evaluate(node => getComputedStyle(node).transform)); await page.waitForTimeout(75); } assert(transforms.size > 1, 'CSS animation remains active');
     assert.equal(await page.evaluate(() => window.PWNED), undefined); assert.equal(leaks, 0, 'model scripts/images cannot contact parent or network');
-    await page.screenshot({ path: path.join(directory, 'gallery-html.png'), fullPage: true });
-    await page.getByLabel('作品分组', { exact: true }).selectOption('2'); await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).waitFor();
-    assert((await page.locator('.helper-gallery-info').textContent()).includes('fixture-svg')); assert.notEqual(await page.locator('.helper-gallery-stats strong').last().textContent(), '已暂停', 'group uses comparison schedule rather than disabled individual schedule');
-    const moonFrame = await page.locator('.helper-gallery-work iframe').first().elementHandle().then(handle => handle.contentFrame()); await moonFrame.locator('#moon').waitFor({ state: 'attached' }); assert.equal(await moonFrame.locator('#moon').evaluate(node => getComputedStyle(node).fill), 'rgb(254, 243, 199)');
-    await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByRole('dialog', { name: '作品详情', exact: true }).waitFor(); await page.getByText('生成提示词', { exact: true }).waitFor(); assert((await page.locator('.helper-gallery-prompt').textContent()).includes('<img')); assert.equal(await page.locator('.helper-gallery-prompt img').count(), 0); assert.equal(calls.filter(value => value.endsWith('/works/svg-0')).length, 2);
+    const moonFrame = await page.locator('.helper-gallery-work[data-group-id="2"] iframe').first().elementHandle().then(handle => handle.contentFrame()); await moonFrame.locator('#moon').waitFor({ state: 'attached' }); assert.equal(await moonFrame.locator('#moon').evaluate(node => getComputedStyle(node).fill), 'rgb(254, 243, 199)');
+    await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click();
+    await page.getByRole('dialog', { name: '作品详情', exact: true }).waitFor();
+    await page.getByText('生成提示词', { exact: true }).waitFor();
+    assert.equal(await page.locator('.helper-gallery-dialog .helper-gallery-prompt').textContent(), sharedPrompt);
+    assert.equal(await page.locator('.helper-gallery-prompt img').count(), 0);
+    assert.equal(calls.filter(value => value.endsWith('/works/svg-0')).length, 1);
     const box = await page.locator('.helper-gallery-dialog').boundingBox(); assert(box.width <= 1152 && box.height <= 1012 && box.y >= 0); await page.screenshot({ path: path.join(directory, 'gallery-detail.png'), fullPage: true }); await page.getByRole('button', { name: '关闭', exact: true }).click();
-    const beforePoll = calls.filter(value => value === '/_helper/api/portal/gallery/2').length; await page.clock.fastForward(30000); await page.waitForFunction(() => document.querySelector('select[aria-label="作品分组"]')?.value === '2'); await page.waitForTimeout(100); assert(calls.filter(value => value === '/_helper/api/portal/gallery/2').length > beforePoll, 'modest poll retains selected group');
-    await page.setViewportSize({ width: 390, height: 844 }); await page.evaluate(() => document.documentElement.classList.add('dark')); await page.waitForTimeout(350); await page.screenshot({ path: path.join(directory, 'gallery-mobile-dark.png'), fullPage: true });
-    await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByText('生成提示词', { exact: true }).waitFor(); onlyFirst = true; await page.clock.fastForward(30000); await page.waitForFunction(() => document.querySelector('select[aria-label="作品分组"]')?.value === '1'); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.locator('dialog').count(), 0, 'revoked group closes stale detail');
+    const beforePoll = calls.filter(value => value === '/_helper/api/portal/gallery/feed').length;
+    await page.clock.fastForward(30000); await page.waitForTimeout(100);
+    assert(calls.filter(value => value === '/_helper/api/portal/gallery/feed').length > beforePoll, 'one aggregate feed refresh replaces per-group polling');
+    assert.equal(await page.locator('.helper-gallery-work').count(), 18);
+    assert.equal(await artworkHandle.evaluate(node => node.isConnected), true, 'unchanged aggregate refresh preserves iframe animation instead of rebuilding thumbnails');
+    await page.setViewportSize({ width: 390, height: 844 }); await page.evaluate(() => document.documentElement.classList.add('dark')); await page.waitForTimeout(350);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'flat feed fits a narrow embedded page');
+    await page.screenshot({ path: path.join(directory, 'gallery-mobile-dark.png'), fullPage: true });
+    await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByText('生成提示词', { exact: true }).waitFor();
+    onlyFirst = true; await page.clock.fastForward(30000);
+    await page.waitForFunction(() => document.querySelectorAll('.helper-gallery-work').length === 12);
+    assert.equal(await page.locator('.helper-gallery-work[data-group-id="2"],.helper-gallery-work[data-group-id="3"],.helper-gallery-work[data-group-id="4"]').count(), 0);
+    assert.equal(await page.locator('dialog').count(), 0, 'revoked source closes its stale detail and disappears on feed refresh');
     await page.evaluate(() => document.querySelector('.helper-gallery').parentElement.remove()); const afterDetach = calls.length; await page.clock.fastForward(60000); await page.waitForTimeout(80); assert.equal(calls.length, afterDetach, 'detached view stops timers/requests');
-    empty = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('当前账号暂无可查看的作品分组。', { exact: true }).waitFor();
-    assert.equal((await page.locator('.helper-gallery-stats').textContent()).trim(), '', 'empty gallery omits zero-valued metric blocks');
+
+    empty = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt');
+    await page.locator('.helper-gallery-empty').waitFor();
+    assert((await page.locator('.helper-gallery-empty').textContent()).trim());
+    assert.equal(await page.locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0);
     assert((await page.locator('.helper-gallery-empty').boundingBox()).height <= 120, 'empty gallery stays compact inside its menu frame');
-    assert.equal(await page.getByRole('link', { name: '配置作品分组', exact: true }).count(), 0, 'ordinary empty gallery must not show admin configuration');
-    await page.goto(origin + '/_helper/features/benchmark?token=fixture-admin-jwt'); await page.getByText('尚未配置作品分组。', { exact: true }).waitFor();
-    assert.equal(await page.getByRole('link', { name: '配置作品分组', exact: true }).getAttribute('href'), '/_helper/setup#analytics', 'fresh admin can enter setup with a visible connection form');
+    assert.equal(await page.getByRole('link', { name: '配置参测来源', exact: true }).count(), 0, 'ordinary empty gallery must not show admin configuration');
+    await page.goto(origin + '/_helper/features/benchmark?token=fixture-admin-jwt');
+    await page.getByRole('link', { name: '配置参测来源', exact: true }).waitFor();
+    assert.equal(await page.getByRole('link', { name: '配置参测来源', exact: true }).getAttribute('href'), '/_helper/setup#analytics', 'fresh admin can enter setup with a visible connection form');
     empty = false; fail = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('示例服务暂时不可用', { exact: true }).waitFor(); fail = false; await page.getByRole('button', { name: '刷新', exact: true }).click(); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor();
-    onlyFirst = false; comparisonEmpty = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt');
-    await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.getByLabel('作品分组', { exact: true }).inputValue(), '1', 'configured comparison without a round defaults to the first real group');
-    assert.equal(await page.locator('select[aria-label="作品分组"] option').count(), 4, 'comparison and every visible group remain selectable');
-    const selectionBox = await page.getByLabel('作品分组', { exact: true }).boundingBox(); assert(selectionBox.x >= 0 && selectionBox.x + selectionBox.width <= 390, 'native group selector fits a narrow menu frame');
-    comparisonUnavailable = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor(); assert.equal(await page.locator('select[aria-label="作品分组"] option[value="comparison"]').count(), 0, 'older servers gracefully keep group gallery');
-    noWorks = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('此分组还没有生成作品。', { exact: true }).waitFor();
-    assert.deepEqual(await page.locator('.helper-gallery-stats dt').allTextContents(), ['下次生成'], 'a new scheduled group keeps only its real next-run time, with zero metrics omitted');
+    onlyFirst = false; noWorks = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.locator('.helper-gallery-empty').waitFor();
+    assert.equal(await page.locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0, 'configured sources without work do not become invented participants or metric blocks');
     assert((await page.locator('.helper-gallery-empty').boundingBox()).height <= 120);
     noWorks = false;
     assert.equal(leaks, 0); assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0); assert.deepEqual(errors, []);
@@ -236,16 +256,17 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     livePage.on('pageerror', error => liveErrors.push(error.message));
     const menu = () => livePage.frameLocator('#feature-menu');
     for (const mode of ['same', 'cross']) {
+      const beforeMenu = traffic.length;
       await livePage.goto(parentOrigin + `/real-menu?mode=${mode}&auth=user`);
-      await menu().getByLabel('作品分组', { exact: true }).waitFor();
       await menu().locator('.helper-gallery-work').first().waitFor();
-      assert.equal(await menu().getByLabel('作品分组', { exact: true }).inputValue(), '3');
-      assert.equal(await menu().locator('select[aria-label="作品分组"] option').count(), 1, 'real portal exposes only the JWT user’s current group');
-      assert((await menu().locator('.helper-gallery-info').textContent()).includes('fixture-loopback-model'));
-      assert((await menu().locator('.helper-gallery-info').textContent()).includes('思考强度：高'));
+      assert.equal(await menu().locator('select,[role="tab"],[role="tablist"]').count(), 0);
+      assert.deepEqual(await menu().locator('.helper-gallery-work').evaluateAll(nodes => [...new Set(nodes.map(node => node.dataset.groupId))]), ['3'], 'real portal exposes only the JWT user’s current group');
+      assert((await menu().locator('.helper-gallery-model').first().textContent()).includes('fixture-loopback-model'));
+      assert((await menu().locator('.helper-gallery-model').first().textContent()).includes('思考强度：高'));
       assert.equal(await menu().locator('#feature-main h1,.page-head').count(), 0);
-      assert.equal(await menu().locator('.helper-gallery-stat.card').count(), 0);
+      assert.equal(await menu().locator('.helper-gallery-stat').count(), 0);
       assert.equal(await menu().getByText('禁止泄露分组', { exact: true }).count(), 0);
+      assert.equal(traffic.slice(beforeMenu).filter(request => new URL(request.url).pathname.endsWith('/gallery/feed')).length, 1);
       const directFrame = await livePage.locator('#feature-menu').elementHandle().then(handle => handle.contentFrame());
       assert.equal(new URL(directFrame.url()).search, '', 'the actual feature page removes query JWT before API calls');
       const storage = await directFrame.evaluate(() => ['localStorage', 'sessionStorage'].map(name => { try { return window[name].length; } catch (error) { if (error.name === 'SecurityError') return 'blocked'; throw error; } }));
@@ -264,11 +285,11 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       assert(!request.headers.referer, 'initial parser asset fetches must not leak the iframe JWT in Referer');
     }
     await livePage.goto(parentOrigin + '/real-menu?mode=cross&auth=empty');
-    await menu().getByText('当前账号暂无可查看的作品分组。', { exact: true }).waitFor();
-    assert.equal((await menu().locator('.helper-gallery-stats').textContent()).trim(), '');
+    await menu().locator('.helper-gallery-empty').waitFor();
+    assert((await menu().locator('.helper-gallery-empty').textContent()).trim());
     assert((await menu().locator('.helper-gallery-empty').boundingBox()).height <= 120);
-    assert.equal(await menu().getByLabel('作品分组', { exact: true }).isDisabled(), true);
-    assert.equal(await menu().getByRole('link', { name: '配置作品分组', exact: true }).count(), 0);
+    assert.equal(await menu().locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0);
+    assert.equal(await menu().getByRole('link', { name: '配置参测来源', exact: true }).count(), 0);
     for (const [feature, expectedTitle, expectedContent] of [
       ['pricing', '模型价格统计', 'sample'], ['ranking', '用户用量排名', '用户 #1']
     ]) {
@@ -300,7 +321,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await menu().locator('#feature-main').count(), 0);
     assert.deepEqual(liveErrors, []);
     await livePage.close();
-    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['same shared round defaults to comparison', 'no-round selects first real group', 'labelled group selector/model/thought display', 'shared prompt plaintext and real detail', 'comparison endpoint gracefully optional', 'HTML CSS renders/animates in sandbox', 'legacy broken images become notes without requests; valid inline GIF remains', 'raw SVG visible', 'scripts/network blocked', 'latest12/no detail prefetch', 'group selection/poll retention', 'compact empty states and zero metrics omitted', 'compact summary replaces metric cards', 'gallery/pricing/ranking frames have no duplicate titles or intro', 'real pricing data and anonymous ranking table', 'empty user/admin configuration entry', 'actual same-origin and loopback cross-origin menu iframe', 'real JWT rejection and current group ACL', 'real CSP rejects unauthorized ancestor', 'all real feature assets load without JWT referrer', 'detached cleanup', 'mobile/dark/no key storage'] }, null, 2));
+    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['single aggregate flat feed without selectors/tabs', 'latest participants ahead of bounded recent history', 'source/model/thought on each card', 'actual queued participant placeholders', 'executed prompt plaintext in on-demand detail', 'HTML CSS renders/animates in sandbox', 'legacy broken images become notes without requests; valid inline GIF remains', 'raw SVG visible', 'scripts/network blocked', 'no detail prefetch or group fanout', 'one aggregate poll with immediate ACL revocation cleanup', 'compact empty state without invented participants', 'gallery/pricing/ranking frames have no duplicate titles or intro', 'real pricing data and anonymous ranking table', 'empty user/admin configuration entry', 'actual same-origin and loopback cross-origin menu iframe', 'real JWT rejection and current group ACL', 'real CSP rejects unauthorized ancestor', 'all real feature assets load without JWT referrer', 'detached cleanup', 'mobile/dark/no key storage'] }, null, 2));
   } finally {
     if (realBackend) {
       realBackend.child.kill('SIGTERM');
