@@ -33,7 +33,7 @@
   window.helperGalleryAdmin = function helperGalleryAdmin(container, { request } = {}) {
     if (!(container instanceof Element) || typeof request !== 'function') throw new TypeError('Gallery administration requires a container and request function');
     const state = { keys: [], optionsGroups: [], groups: [], timezone: 'Asia/Shanghai', groupID: null, saved: null, detail: null,
-      catalogLoaded: false, optionsLoaded: false, groupError: null, keyError: null, editorOpen: false, adding: false,
+      catalogLoaded: false, catalogError: null, optionsLoaded: false, groupError: null, keyError: null, editorOpen: false, adding: false,
       dirty: false, busy: false, pendingEnabled: null, epoch: 0, destroyed: false, poll: null, polls: 0, viewer: null, controls: null };
     const comparison = { data: null, loaded: false, dirty: false, busy: false, pendingEnabled: null, revision: 0, poll: null, polls: 0, controls: null };
     let attached = container.isConnected;
@@ -138,7 +138,7 @@
       return true;
     }
     function openAdd() {
-      if (state.busy || comparison.busy || !state.catalogLoaded || state.groupError || !availableGroups().length || !closeEditor()) return;
+      if (state.busy || comparison.busy || !state.catalogLoaded || state.catalogError || state.groupError || !availableGroups().length || !closeEditor()) return;
       state.editorOpen = true; state.adding = true; editor.hidden = false; picker.hidden = false; editorTitle.textContent = '新增分组';
       select.replaceChildren(el('option', { value: '' }, '选择要添加的分组'), ...availableGroups().map(group => el('option', { value: id(group.id) }, `${group.name || `分组 #${group.id}`} · #${group.id}`)));
       configuration.replaceChildren(el('p', { class: 'caption' }, '选择一个上游分组后，设置该组使用的模型、API Key 与思考强度。'));
@@ -187,14 +187,14 @@
       const busy = state.busy || comparison.busy;
       select.disabled = busy || !select.options.length;
       refresh.disabled = busy;
-      add.disabled = busy || !state.catalogLoaded || !state.optionsLoaded || !!state.groupError || !availableGroups().length;
+      add.disabled = busy || !state.catalogLoaded || !!state.catalogError || !state.optionsLoaded || !!state.groupError || !availableGroups().length;
       editorClose.disabled = busy;
       for (const control of list.querySelectorAll('button')) control.disabled = busy;
       syncComparison();
       if (!controls) return;
       const member = comparisonMember();
       controls.fieldset.disabled = busy;
-      controls.save.disabled = busy || !liveKey(controls.key.value) || (state.adding && state.groups.some(group => id(group.group_id) === state.groupID));
+      controls.save.disabled = busy || !liveKey(controls.key.value) || (state.adding && (!!state.catalogError || state.groups.some(group => id(group.group_id) === state.groupID)));
       controls.run.hidden = member; controls.switch.hidden = member; controls.promptField.hidden = member; controls.intervalField.hidden = member; controls.scheduleNote.hidden = member;
       controls.costNote.textContent = member ? '此处只修改分组的模型与 Key；同题提示词和生成间隔请在上方设置。' : '生成会实际调用所选模型并消耗该分组 Key 的额度。手动生成使用已保存的配置；暂停只停止后续定时生成。';
       controls.run.disabled = busy || member || !state.saved || state.dirty || !!state.saved.running || !liveKey(state.saved.key_id);
@@ -413,6 +413,7 @@
       form.addEventListener('submit', async event => {
         event.preventDefault();
         if (state.busy || !liveKey(key.value)) return;
+        if (state.adding && state.catalogError) { say('暂时无法确认已有配置，请刷新后再新增分组。', 'error'); return; }
         if (state.adding && state.groups.some(item => id(item.group_id) === state.groupID)) { say('此分组已有配置，请关闭新增界面后编辑已保存的记录。', 'error'); return; }
         const payload = { name: name.value.trim(), model: model.value.trim(), key_id: id(key.value), api_format: format.value,
           reasoning_effort: effort.value, interval_minutes: Number(interval.value), enabled: state.saved?.enabled === true, prompt: prompt.value.trim() };
@@ -508,11 +509,12 @@
       const [catalog, options, shared] = results;
       if (catalog.status === 'fulfilled' && Array.isArray(catalog.value?.groups)) {
         state.groups = catalog.value.groups.filter(group => id(group?.group_id));
-        state.catalogLoaded = true;
+        state.catalogLoaded = true; state.catalogError = null;
         state.timezone = typeof catalog.value.timezone === 'string' ? catalog.value.timezone : 'Asia/Shanghai';
         if (!state.editorOpen) feedback.textContent = '';
       } else {
         const message = catalog.status === 'rejected' ? errorText(catalog.reason) : '已保存分组列表响应不兼容。';
+        state.catalogError = message;
         feedback.textContent = message; feedback.className = 'helper-gallery-admin-feedback error';
         if (!state.catalogLoaded) { groupCount.textContent = '暂未读取已保存分组'; list.replaceChildren(el('p', { class: 'caption' }, '无法确认已有配置，请刷新后重试。')); }
       }
