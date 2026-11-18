@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 import secrets
 import time
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,9 @@ from .benchmark import run_benchmark
 from .config import Config
 from .credentials import CredentialVault
 from .engine import Engine
+from .gallery import Gallery, GalleryError
+from .gallery_api import install_gallery_api
+from .gallery_generation import generate_artwork
 from .mailer import Mailer
 from .native_proxy import NativeProxy
 from .native_api import install_native_api
@@ -33,11 +37,11 @@ from .upstream import Upstream, UpstreamError
 
 BASELINE = json.loads((Path(__file__).resolve().parent.parent / "docs/upstream-baseline.json").read_text())["reviewed_commit"]
 STATIC = Path(__file__).parent / "static"
-MODULE_NAMES = {"benchmark": "模型能力自检", "pricing": "模型价格统计", "ranking": "用户用量排名"}
+MODULE_NAMES = {"benchmark": "智商检测", "pricing": "模型价格统计", "ranking": "用户用量排名"}
 ACCOUNT_FIELDS = {"id", "name", "platform", "type", "status", "schedulable", "group_ids"}
 USER_FIELDS = {"id", "username", "email", "role", "status", "last_used_at", "last_active_at", "created_at"}
 HELPER_API_ROOTS = {"status", "connection", "accounts", "schedules", "users", "rules", "modules", "audit", "groups",
-                    "automations", "settlements", "analytics", "benchmark", "portal", "compatibility"}
+                    "automations", "settlements", "analytics", "benchmark", "gallery", "portal", "compatibility"}
 
 
 def create_app(config=None, upstream=None, store=None, mailer=None, background=True, connector=None, native_proxy=None):
@@ -66,11 +70,20 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     benchmark_slots = asyncio.Semaphore(2)
     benchmark_users = set()
 
+    async def generate_gallery_work(job):
+        api_key = await upstream.benchmark_key(job["key_id"], job["group_id"])
+        selection = SimpleNamespace(model=job["model"], api_format=job["api_format"],
+                                    prompt=job["prompt"], api_key=api_key)
+        return await generate_artwork(config, selection)
+
+    gallery = Gallery(store, generate_gallery_work)
+
     @asynccontextmanager
     async def lifespan(app):
         tasks = []
         if background:
-            tasks = [asyncio.create_task(engine.run()), asyncio.create_task(compatibility_loop())]
+            tasks = [asyncio.create_task(engine.run()), asyncio.create_task(compatibility_loop()),
+                     asyncio.create_task(gallery.run())]
         yield
         engine.stop()
         for task in tasks:
@@ -78,6 +91,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         for task in tasks:
             with suppress(asyncio.CancelledError):
                 await task
+        await gallery.close()
         await upstream.close()
         await native_proxy.close()
         store.close()
@@ -86,10 +100,15 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.engine = engine
     app.state.store = store
+    app.state.gallery = gallery
 
     @app.exception_handler(UpstreamError)
     async def upstream_error(request, exc):
         return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @app.exception_handler(GalleryError)
+    async def gallery_error(request, exc):
+        return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -125,8 +144,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         ancestor = f"{source.scheme}://{source.netloc}" if source.hostname else "http: https:"
         benchmark_page = request.url.path in {"/", "/_helper/setup", "/_helper/console", "/features/benchmark"}
         image_sources = "'self' data: https:" if benchmark_page else "'self' data:"
+        # A sandboxed srcdoc inherits its parent CSP. Permit artwork CSS here;
+        # the child also supplies its own policy blocking all external loads.
+        styles = "'self' 'unsafe-inline'" if benchmark_page else "'self'"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            f"default-src 'self'; script-src 'self'; style-src {styles}; "
             f"img-src {image_sources}; "
             "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
             f"frame-ancestors 'self' {ancestor}"
@@ -793,6 +815,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         return await check_compatibility()
 
     install_native_api(app, store, upstream, mailer, engine, lambda: config, native_admin, limit)
+    install_gallery_api(app, gallery, upstream, lambda: config, admin, portal, enabled, limit)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])

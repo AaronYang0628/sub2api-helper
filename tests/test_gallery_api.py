@@ -1,0 +1,318 @@
+"""Group gallery configuration, generation and ordinary-user access contracts."""
+
+from copy import deepcopy
+import tempfile
+import time
+import unittest
+from unittest.mock import AsyncMock, patch
+
+from fastapi.testclient import TestClient
+
+from helper.app import create_app
+from helper.config import Config
+from helper.store import Store
+from helper.upstream import UpstreamError
+try:
+    from tests.test_app import FakeMailer, FakeUpstream
+except ModuleNotFoundError:
+    from test_app import FakeMailer, FakeUpstream
+
+
+MODEL_KEY = "ordinary-model-key-server-only"
+CONFIG_PROMPT = "Private configured prompt: draw a blue clock as a self-contained SVG."
+
+
+class GalleryUpstream(FakeUpstream):
+    def __init__(self):
+        super().__init__()
+        self.keys = [
+            {"id": 31, "name": "Group three key", "group_id": 3, "group_name": "Group three"},
+            {"id": 41, "name": "Group four key", "group_id": 4, "group_name": "Group four"},
+        ]
+        self.key_lookups = []
+        self.key_unavailable = False
+        self.allowed = {"user-jwt": [3], "other-user-jwt": [4]}
+        self.available_calls = []
+
+    async def benchmark_keys(self):
+        return deepcopy(self.keys)
+
+    async def benchmark_key(self, key_id, group_id):
+        self.key_lookups.append((key_id, group_id))
+        if self.key_unavailable or not any(item["id"] == key_id and item["group_id"] == group_id for item in self.keys):
+            raise UpstreamError("Selected model key is unavailable for this group", 403)
+        return MODEL_KEY
+
+    async def available_groups(self, token):
+        self.available_calls.append(token)
+        result = self.allowed.get(token, [])
+        if isinstance(result, Exception):
+            raise result
+        return list(result)
+
+
+class GalleryApiTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.config = Config(sub2api_url="https://sub2api.example.test", sub2api_admin_key="upstream-administrator-secret",
+                             admin_token="local-gallery-administrator-token", native_ui=False,
+                             public_url="https://helper.example.test", db_path=self.temp.name + "/helper.db")
+        self.store = Store(self.config.db_path)
+        self.upstream = GalleryUpstream()
+        self.generated = []
+
+        async def generate(config, selection):
+            self.generated.append({"model": selection.model, "api_format": selection.api_format,
+                                   "prompt": selection.prompt, "api_key": selection.api_key})
+            return {"kind": "html", "content": '<svg xmlns="http://www.w3.org/2000/svg"><text>Fixture artwork</text></svg>',
+                    "mime": "text/html", "latency_ms": 12}
+
+        self.generator = AsyncMock(side_effect=generate)
+        self.generator_patch = patch("helper.app.generate_artwork", new=self.generator)
+        self.generator_patch.start()
+        self.app = create_app(self.config, store=self.store, upstream=self.upstream, mailer=FakeMailer(), background=False)
+        self.client = TestClient(self.app, raise_server_exceptions=False)
+        self.client.__enter__()
+        self.auth = {"Authorization": "Bearer " + self.config.admin_token}
+        self.store.set_setting("modules", {"benchmark": True, "pricing": False, "ranking": False})
+
+    def tearDown(self):
+        try:
+            self.client.__exit__(None, None, None)
+        finally:
+            self.generator_patch.stop()
+            self.temp.cleanup()
+
+    @staticmethod
+    def job(**changes):
+        return {"name": "Group three gallery", "model": "fixture-model", "key_id": 31,
+                "api_format": "chat", "prompt": CONFIG_PROMPT, "interval_minutes": 30, "enabled": False} | changes
+
+    def configure(self, group_id=3, **changes):
+        value = self.job(**changes)
+        if group_id == 4 and "key_id" not in changes:
+            value["key_id"] = 41
+        response = self.client.put(f"/api/gallery/{group_id}", headers=self.auth, json=value)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn(MODEL_KEY, response.text)
+        return response.json()
+
+    def portal(self, jwt="user-jwt"):
+        response = self.client.post("/api/portal/session", json={"token": jwt})
+        self.assertEqual(response.status_code, 200, response.text)
+        return {"X-Portal-Session": response.json()["session"]}
+
+    def admin_view(self, group_id=3):
+        response = self.client.get(f"/api/gallery/{group_id}", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def generate_one(self, group_id=3):
+        previous = len(self.admin_view(group_id)["works"])
+        response = self.client.post(f"/api/gallery/{group_id}/run", headers=self.auth)
+        self.assertEqual(response.status_code, 202, response.text)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            view = self.admin_view(group_id)
+            if len(view["works"]) > previous:
+                latest = view["works"][0]
+                if latest["status"] == "success":
+                    return latest
+                if latest["status"] == "failed":
+                    self.fail("The mocked gallery generation failed: " + str(latest.get("error")))
+            time.sleep(.01)
+        self.fail("The mocked background generation did not persist a work within three seconds")
+
+    def test_gallery_configuration_and_manual_generation_require_management_auth(self):
+        self.configure()
+        ordinary = self.portal()
+        requests = [("GET", "/api/gallery", None), ("GET", "/api/gallery/3", None),
+                    ("PUT", "/api/gallery/3", self.job()), ("POST", "/api/gallery/3/run", None),
+                    ("POST", "/api/gallery/3/pause", None), ("GET", "/api/gallery/3/works/1", None)]
+        for method, path, value in requests:
+            for headers in ({}, ordinary, {"Authorization": "Bearer " + self.config.sub2api_admin_key}):
+                with self.subTest(method=method, path=path, headers=list(headers)):
+                    response = self.client.request(method, path, headers=headers, json=value)
+                    self.assertEqual(response.status_code, 401, response.text)
+        self.generator.assert_not_awaited()
+
+    def test_configuration_checks_owned_key_group_and_defaults_to_paused(self):
+        value = self.job()
+        del value["enabled"]
+        response = self.client.put("/api/gallery/3", headers=self.auth, json=value)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.upstream.key_lookups, [(31, 3)])
+        view = self.admin_view()
+        self.assertEqual(view["group"]["group_id"], 3)
+        self.assertFalse(view["group"]["enabled"])
+        self.assertEqual(view["group"]["prompt"], CONFIG_PROMPT)
+        self.assertEqual(view["group"]["key_id"], 31)
+        response = self.client.get("/api/gallery", headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["groups"][0]["group_id"], 3)
+        self.assertNotIn(MODEL_KEY, response.text)
+        self.generator.assert_not_awaited()
+
+    def test_unusable_or_cross_group_model_key_cannot_replace_existing_config(self):
+        self.configure()
+        before = self.admin_view()["group"]
+        response = self.client.put("/api/gallery/3", headers=self.auth, json=self.job(key_id=41, prompt="wrong group"))
+        self.assertGreaterEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.admin_view()["group"], before)
+        self.upstream.key_unavailable = True
+        response = self.client.put("/api/gallery/3", headers=self.auth, json=self.job(enabled=True))
+        self.assertGreaterEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.admin_view()["group"], before)
+        self.generator.assert_not_awaited()
+
+    def test_invalid_gallery_config_is_rejected_before_key_lookup(self):
+        invalid = [{"name": ""}, {"model": ""}, {"key_id": 0}, {"prompt": ""},
+                   {"api_format": "unsupported"}, {"interval_minutes": 4}, {"interval_minutes": 1441}]
+        for change in invalid:
+            with self.subTest(change=change):
+                response = self.client.put("/api/gallery/3", headers=self.auth, json=self.job(**change))
+                self.assertEqual(response.status_code, 422, response.text)
+        for group_id in (0, -1):
+            response = self.client.put(f"/api/gallery/{group_id}", headers=self.auth, json=self.job())
+            self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.upstream.key_lookups, [])
+        self.assertEqual(self.client.get("/api/gallery", headers=self.auth).json()["groups"], [])
+
+    def test_interval_boundaries_are_supported(self):
+        for interval in (5, 1440):
+            with self.subTest(interval=interval):
+                self.configure(interval_minutes=interval)
+                self.assertEqual(self.admin_view()["group"]["interval_minutes"], interval)
+
+    def test_manual_generation_uses_existing_group_key_and_persists_exact_executed_prompt(self):
+        self.configure(api_format="responses")
+        summary = self.generate_one()
+        self.assertEqual(self.generator.await_count, 1)
+        self.assertEqual(self.generated[0], {"model": "fixture-model", "api_format": "responses",
+                                            "prompt": CONFIG_PROMPT, "api_key": MODEL_KEY})
+        self.assertGreaterEqual(self.upstream.key_lookups.count((31, 3)), 2, "The worker must resolve the key again at execution time")
+        response = self.client.get(f"/api/gallery/3/works/{summary['id']}", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("Fixture artwork", response.text)
+        self.assertEqual(response.json()["prompt"], self.generated[0]["prompt"])
+        for secret in (MODEL_KEY, self.config.sub2api_admin_key):
+            self.assertNotIn(secret, response.text)
+
+    def test_pause_stops_future_generation_even_if_the_selected_key_was_revoked(self):
+        self.configure(enabled=True)
+        self.upstream.key_unavailable = True
+        previous = list(self.upstream.key_lookups)
+        response = self.client.post("/api/gallery/3/pause", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(self.admin_view()["group"]["enabled"])
+        self.assertEqual(self.upstream.key_lookups, previous, "Pausing must not depend on a still-usable billing key")
+        self.generator.assert_not_awaited()
+
+    def test_portal_requires_session_and_enabled_benchmark_module(self):
+        self.configure()
+        self.assertEqual(self.client.get("/api/portal/gallery").status_code, 401)
+        self.assertEqual(self.client.get("/api/portal/gallery/3").status_code, 401)
+        ordinary = self.portal()
+        self.store.set_setting("modules", {"benchmark": False, "pricing": False, "ranking": False})
+        for path in ("/api/portal/gallery", "/api/portal/gallery/3", "/api/portal/gallery/3/works/1"):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers=ordinary)
+                self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(self.upstream.available_calls, [])
+
+    def test_ordinary_list_and_group_config_are_projected_to_current_accessible_groups(self):
+        self.configure()
+        self.configure(4, name="Inaccessible gallery", prompt="Hidden group configuration")
+        ordinary = self.portal()
+        response = self.client.get("/api/portal/gallery", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        groups = response.json()["groups"]
+        self.assertEqual([group["group_id"] for group in groups], [3])
+        self.assertNotIn("key_id", groups[0])
+        self.assertNotIn("prompt", groups[0])
+        self.assertNotIn(CONFIG_PROMPT, response.text)
+        self.assertNotIn("Hidden group configuration", response.text)
+        self.assertNotIn(MODEL_KEY, response.text)
+        response = self.client.get("/api/portal/gallery/3", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("key_id", response.json()["group"])
+        self.assertNotIn("prompt", response.json()["group"])
+        self.assertTrue(self.upstream.available_calls)
+        self.assertTrue(all(token == "user-jwt" for token in self.upstream.available_calls))
+
+    def test_portal_work_detail_contains_executed_prompt_without_exposing_configuration_key(self):
+        self.configure()
+        summary = self.generate_one()
+        ordinary = self.portal()
+        listing = self.client.get("/api/portal/gallery/3", headers=ordinary)
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertNotIn(CONFIG_PROMPT, listing.text)
+        response = self.client.get(f"/api/portal/gallery/3/works/{summary['id']}", headers=ordinary)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["prompt"], self.generated[0]["prompt"])
+        self.assertIn("Fixture artwork", response.text)
+        self.assertNotIn("key_id", response.json())
+        self.assertNotIn(MODEL_KEY, response.text)
+        self.assertNotIn(self.config.sub2api_admin_key, response.text)
+        self.assertIn("application/json", response.headers["content-type"])
+        self.assertIn("script-src 'self'", response.headers["content-security-policy"])
+        self.assertNotIn("'unsafe-inline'", response.headers["content-security-policy"])
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_existing_work_retains_its_executed_prompt_after_configuration_changes(self):
+        self.configure()
+        summary = self.generate_one()
+        executed = self.generated[0]["prompt"]
+        self.configure(prompt="New private configuration for future work only")
+        response = self.client.get(f"/api/portal/gallery/3/works/{summary['id']}", headers=self.portal())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["prompt"], executed)
+        self.assertNotIn("New private configuration for future work only", response.text)
+
+    def test_cross_group_and_work_id_access_cannot_reveal_another_groups_work(self):
+        self.configure()
+        self.configure(4)
+        summary = self.generate_one(4)
+        ordinary = self.portal()
+        for path in ("/api/portal/gallery/4", f"/api/portal/gallery/4/works/{summary['id']}",
+                     f"/api/portal/gallery/3/works/{summary['id']}"):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers=ordinary)
+                self.assertEqual(response.status_code, 404, response.text)
+                self.assertNotIn("Fixture artwork", response.text)
+
+    def test_group_access_is_rechecked_after_a_permission_change(self):
+        self.configure()
+        summary = self.generate_one()
+        ordinary = self.portal()
+        self.assertEqual(self.client.get("/api/portal/gallery/3", headers=ordinary).status_code, 200)
+        self.upstream.allowed["user-jwt"] = []
+        response = self.client.get("/api/portal/gallery", headers=ordinary)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["groups"], [])
+        for path in ("/api/portal/gallery/3", f"/api/portal/gallery/3/works/{summary['id']}"):
+            self.assertEqual(self.client.get(path, headers=ordinary).status_code, 404)
+
+    def test_group_lookup_failure_does_not_fall_back_to_the_admins_all_group_visibility(self):
+        self.configure()
+        ordinary = self.portal()
+        self.upstream.allowed["user-jwt"] = UpstreamError("Group access lookup failed", 503)
+        for path in ("/api/portal/gallery", "/api/portal/gallery/3"):
+            with self.subTest(path=path):
+                response = self.client.get(path, headers=ordinary)
+                self.assertGreaterEqual(response.status_code, 400)
+                self.assertNotIn("Group three gallery", response.text)
+                self.assertNotIn(CONFIG_PROMPT, response.text)
+
+    def test_administrator_portal_can_view_all_configured_groups(self):
+        self.configure()
+        self.configure(4)
+        administrator = self.portal("admin-jwt")
+        response = self.client.get("/api/portal/gallery", headers=administrator)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual({group["group_id"] for group in response.json()["groups"]}, {3, 4})
+        self.assertEqual(self.upstream.available_calls, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

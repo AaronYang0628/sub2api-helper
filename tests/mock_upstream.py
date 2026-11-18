@@ -115,6 +115,10 @@ class Handler(BaseHTTPRequestHandler):
             data = {"version": "0.2.22"}
         elif path == "/api/v1/user/profile":
             data = USERS[0] if self.headers.get("Authorization") == "Bearer fixture-admin-jwt" else USERS[1]
+        elif path == "/api/v1/groups/available":
+            if self.headers.get("Authorization") != "Bearer fixture-user-jwt":
+                return self.reply(401, {})
+            data = [GROUP]
         elif path.endswith("/models"):
             data = {"models": [{"model": "fixture-model", "requests": 10, "input_tokens": 100,
                                 "output_tokens": 20, "total_tokens": 120, "actual_cost": 0.01}]}
@@ -124,6 +128,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path in {"/v1/chat/completions", "/v1/responses"}:
             if self.headers.get("Authorization") != "Bearer fixture-model-key":
                 return self.reply(401, {})
+            if "画廊验证" in json.dumps(body, ensure_ascii=False):
+                artwork = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 40"><title>湖畔</title><rect width="60" height="40" fill="#1b766e"/><script>alert(1)</script></svg>'
+                return self.reply(200, {"choices": [{"message": {"content": artwork}}]})
             prompt = body["messages"][0]["content"] if "messages" in body else body["input"]
             answers = {"计算": "391", "字符串": "6", "所有": "YES", "将列表": "[-1,2,9,11]", "有 3": "7"}
             answer = next(value for prefix, value in answers.items() if prompt.startswith(prefix))

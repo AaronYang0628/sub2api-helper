@@ -355,7 +355,7 @@ async function automationsPage() {
 }
 async function modulesPage() {
   state.modules = await api('/modules');
-  const definitions = [ ['benchmark', 'sparkles', '智商检测', '运行固定题集，检验模型的回答准确率与响应耗时。使用用户已有的分组 API Key，调用会消耗额度。'], ['pricing', 'chartBar', '模型价格统计', '按模型查看请求量、Token 与费用。普通用户仅查看自己的统计数据。'], ['ranking', 'trophy', '用户用量排名', '展示用户消耗与使用量排名。用户端默认匿名展示，保护用户身份。'] ];
+  const definitions = [ ['benchmark', 'sparkles', '智商检测', '按分组展示模型根据提示词生成的 HTML、SVG 等作品。在统计与检测中配置生成任务。'], ['pricing', 'chartBar', '模型价格统计', '按模型查看请求量、Token 与费用。普通用户仅查看自己的统计数据。'], ['ranking', 'trophy', '用户用量排名', '展示用户消耗与使用量排名。用户端默认匿名展示，保护用户身份。'] ];
   return [pageHead('功能与菜单', '启用内置功能，并将对应入口同步到 sub2api 自定义菜单。', button('↻  刷新', () => render())),
     !state.status.public_url ? notice('尚未设置 HELPER_PUBLIC_URL。请配置浏览器可访问的 Helper 地址，菜单才能正确指向这些页面。', 'warning') : notice('开启或关闭功能会同步 sub2api 的自定义菜单。其他已有菜单会保留。用户从菜单进入时，Helper 会校验其 sub2api 登录身份。'),
     el('div', { class: 'module-grid' }, definitions.map(([key, icon, title, desc]) => el('section', { class: 'card module-card' }, el('div', { class: 'module-icon' }, helperIcon(icon)), el('h2', {}, title), el('p', {}, desc),
@@ -437,10 +437,16 @@ function benchmarkForm(endpoint = '/benchmark', caller = api) {
 }
 async function analyticsPage() {
   const [models, ranking] = await Promise.allSettled([api('/analytics/models'), api('/analytics/ranking')]);
-  return [pageHead('统计与检测', '查看模型费用、用户用量，以及运行固定题集检测。'),
+  const gallery = el('div');
+  helperGalleryAdmin(gallery, { request: api });
+  const quiz = el('details', { class: 'card' }, el('summary', { class: 'card-header' }, '固定题自检'));
+  quiz.addEventListener('toggle', () => {
+    if (quiz.open && quiz.childElementCount === 1) quiz.append(...benchmarkForm());
+  });
+  return [pageHead('统计与检测', '管理模型作品画廊，查看模型费用和用户用量。'), gallery,
     card('模型维度价格统计', '显示上游统计接口返回的当前周期数据', models.status === 'fulfilled' ? metricsTable(models.value, 'models') : el('div', { class: 'card-body' }, notice(errorText(models.reason), 'error'))),
     card('用户用量排名', '管理员可查看完整使用量统计', ranking.status === 'fulfilled' ? metricsTable(ranking.value, 'ranking') : el('div', { class: 'card-body' }, notice(errorText(ranking.reason), 'error'))),
-    el('div', { class: 'page-head mt' }, el('div', {}, el('h2', {}, '智商检测'), el('p', {}, '选择调用分组与模型，使用已有 API Key 运行检测题集。'))), ...benchmarkForm()];
+    quiz];
 }
 async function auditPage() {
   const data = await api('/audit'); const rows = Array.isArray(data) ? data : data.items || [];

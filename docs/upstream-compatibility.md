@@ -19,6 +19,7 @@
 | 读取设置 | `GET /api/v1/admin/settings` | `custom_menu_items,session_binding_enabled` |
 | 更新菜单 | `PUT /api/v1/admin/settings` | 仅 `custom_menu_items` |
 | 用户身份 | `GET /api/v1/user/profile` | 使用用户 JWT，验证真实 `id` 和 `role` |
+| 作品画廊分组可见性 | `GET /api/v1/groups/available` | 使用当前用户 JWT，取有效分组 `id`，详情也重新验证 |
 | 管理模型统计 | `GET /api/v1/admin/dashboard/models` | `data.models` |
 | 本人模型统计 | `GET /api/v1/usage/dashboard/models` | 使用用户 JWT，仅本人数据 |
 | 用量排名 | `GET /api/v1/admin/dashboard/users-ranking` | `data.ranking`、总成本、请求数与 token 数 |
@@ -43,7 +44,7 @@
 - 调度只修改账号 `schedulable`，不恢复错误状态、刷新凭证或覆盖账号 `status`。适用于每天跨午夜的免费额度时段。
 - 用户 `last_used_at` 是实际模型使用时间，`last_active_at` 是面板访问活动。上游 `admin_user.go` 在查询最后使用时间失败时可能只写日志、返回空值，因此空值不应自动当作长期未使用。自动禁用应排除管理员并在执行前重新读取用户状态和最后使用时间。
 - 上游没有发送自定义主题和正文的管理邮件接口。`/admin/settings/send-test-email` 使用写死的测试内容；读取 SMTP 设置只返回密码是否已配置。助手需要独立 SMTP 配置，不能凭管理 Key 取得上游 SMTP 密码。
-- 智商检测可用管理员凭证读取其对应管理员已有的普通模型密钥，选择该密钥绑定的确切分组，不创建密钥或更换分组。管理员归属从已确认的合规记录中读取，不从用户列表猜测；仅使用管理员本人、启用、未过期、有剩余额度且绑定分组的密钥。界面仅返回密钥 ID、名称和分组，原始密钥只用于服务器模型请求。检测仍会计入普通模型 Key 的用量、配额和可能的费用；IP 白名单或模型路由限制仍由上游执行。
+- 智商检测作品画廊通过管理员凭证查找其所属账号已有的普通模型密钥，调用配置绑定的确切分组。每轮生成前重新验证密钥有效性，用量和费用记在所选模型 Key 上。浏览器只接收密钥名称和 ID，原始密钥只用于服务端请求。普通用户的画廊列表和作品详情均以当前 JWT 的可用分组为准。固定题自检保留原有调用方式。
 - 内嵌普通用户通过本人 JWT 读取 `/api/v1/keys`，只能选择自己已有有效密钥绑定的分组，不能借用管理员密钥消费。
 - 当前设置更新实现有 `omittedSettingKeys(sentFields)`：省略字段保持原值，因此菜单提交只写 `custom_menu_items`。更旧版本可能是整文档替换，助手不得声称任意旧版安全兼容。
 - 菜单列表最多 20 项，ID 最多 32 字符（字母、数字、`-`、`_`），`visibility` 为 `user` 或 `admin`。助手只管理固定前缀的菜单 ID，保留其他菜单。上游没有 ETag 条件写入，两个管理员同时修改菜单存在最后写入覆盖的竞争窗口。

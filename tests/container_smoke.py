@@ -92,7 +92,7 @@ def main():
         flags = {"benchmark": True, "pricing": True, "ranking": True}
         assert request("/api/modules", "PUT", flags) == flags
         assert b"feature.js" in request("/features/ranking?token=fixture-user-jwt")
-        assert b"benchmark-results.js" in request("/features/benchmark")
+        assert b"gallery-view.js" in request("/features/benchmark")
         opts = request("/api/benchmark/options")
         assert opts["keys"][0]["group_id"] == 3 and "fixture-model-key" not in json.dumps(opts)
         result = request("/api/benchmark", "POST", {"model": "fixture-model", "key_id": 1, "group_id": 3})
@@ -109,6 +109,20 @@ def main():
         first = result["results"][0]
         assert first["answer"] == "391" and first["scored"] is True
         assert first["media"][0]["src"].startswith("data:image/gif;base64,")
+        gallery_job = {"name": "湖畔作品", "model": "fixture-model", "key_id": 1,
+                       "prompt": "画廊验证：用 SVG 画湖畔。", "api_format": "chat"}
+        assert request("/api/gallery/3", "PUT", gallery_job)["group"]["enabled"] is False
+        gallery_run = request("/api/gallery/3/run", "POST", {})
+        work_path = f"/api/portal/gallery/3/works/{gallery_run['id']}"
+        for _ in range(30):
+            artwork = request(work_path, headers=headers)
+            if artwork["status"] != "running":
+                break
+            time.sleep(.1)
+        assert artwork["status"] == "success" and "<svg" in artwork["content"] and "<script" not in artwork["content"]
+        assert artwork["prompt"] == gallery_job["prompt"] and "fixture-model-key" not in json.dumps(artwork)
+        gallery = request("/api/portal/gallery/3", headers=headers)
+        assert gallery["stats"]["total"] == 1 and "key_id" not in gallery["group"]
         assert request("/api/portal/models", headers=headers)["models"][0]["requests"] == 10
         assert request("/api/groups")[0]["id"] == 3
         rate_rule = request("/api/automations", "POST", {"name": "到期倍率测试", "type": "subscription_multiplier",

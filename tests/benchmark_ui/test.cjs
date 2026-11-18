@@ -1,4 +1,4 @@
-/* Portable, offline mixed-media result/portal browser regression. */
+/* Portable, offline mixed-media result and fixed quiz browser regression. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
@@ -31,14 +31,16 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
   const posts = [];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname.startsWith('/api/portal/')) {
+    if (url.pathname.startsWith('/api/')) {
       let body = ''; for await (const chunk of req) body += chunk;
       if (req.method === 'POST') posts.push({ path: url.pathname, body: body ? JSON.parse(body) : {} });
-      const value = url.pathname.endsWith('/session') ? { session: 'fixture-opaque-session' } : url.pathname.endsWith('/modules') ? { benchmark: true } : url.pathname.endsWith('/options') ? { keys: [{ id: 10, group_id: 1, group_name: '示例分组 A', name: '示例 Key A' }, { id: 20, group_id: 2, group_name: '示例分组 B', name: '示例 Key B' }] } : mixed;
+      const value = url.pathname === '/api/gallery' ? { groups: [], timezone: 'Asia/Shanghai' }
+        : url.pathname.endsWith('/options') ? { keys: [{ id: 10, group_id: 1, group_name: '示例分组 A', name: '示例 Key A' }, { id: 20, group_id: 2, group_name: '示例分组 B', name: '示例 Key B' }] }
+        : url.pathname === '/api/benchmark' ? mixed : {};
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); return;
     }
     if (url.pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
-    const content = url.pathname === '/renderer' ? '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/benchmark-results.css"><script src="/static/benchmark-results.js" defer></script></head><body><main id="result" class="feature-shell"></main></body></html>' : await fs.readFile(path.join(root, url.pathname.startsWith('/static/') ? 'helper/static/' + path.basename(url.pathname) : 'helper/static/feature.html'));
+    const content = url.pathname === '/renderer' ? '<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/benchmark-results.css"><script src="/static/benchmark-results.js" defer></script></head><body><main id="result" class="feature-shell"></main></body></html>' : await fs.readFile(path.join(root, url.pathname.startsWith('/static/') ? 'helper/static/' + path.basename(url.pathname) : 'helper/static/index.html'));
     res.writeHead(200, { 'Content-Type': url.pathname.endsWith('.js') ? 'text/javascript' : url.pathname.endsWith('.css') ? 'text/css' : 'text/html', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; object-src 'none'; frame-src 'none'" }); res.end(content);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -49,8 +51,10 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     page.on('pageerror', error => errors.push(error.message)); page.on('console', value => { if (value.type() === 'error' && !/Failed to load resource/.test(value.text())) errors.push(value.text()); }); page.on('dialog', value => value.accept());
     let remoteCalls = 0;
     await page.route('https://media.example.invalid/**', async route => { remoteCalls++; assert.equal(route.request().headers().referer, undefined); assert.equal(route.request().headers().authorization, undefined); await route.fulfill({ contentType: 'image/gif', body: gif, headers: { 'Cache-Control': 'no-store' } }); });
-    await page.goto(origin + '/features/benchmark?token=fixture-jwt&theme=light'); await page.getByRole('button', { name: '开始检测', exact: true }).waitFor();
-    await page.locator('[name=model]').fill('my-model'); await page.locator('[name=group_id]').selectOption('2'); await page.locator('[name=api_format]').selectOption('responses');
+    await page.addInitScript(() => sessionStorage.setItem('helper_session', 'fixture-opaque-session'));
+    await page.goto(origin + '/#analytics'); await page.getByText('固定题自检', { exact: true }).click();
+    const quiz = page.locator('.benchmark-form');
+    await quiz.locator('[name=model]').fill('my-model'); await quiz.locator('[name=group_id]').selectOption('2'); await quiz.locator('[name=api_format]').selectOption('responses');
     await page.getByRole('button', { name: '开始检测', exact: true }).click(); await page.getByRole('heading', { name: '检测结果', exact: true }).waitFor();
     assert.equal(await page.locator('.benchmark-form').isVisible(), false); assert.equal(await page.locator('.helper-benchmark-question').count(), 5);
     await page.getByText('1 / 2', { exact: true }).waitFor(); await page.getByText('5 / 5', { exact: true }).waitFor(); await page.getByText('未判分 2', { exact: true }).waitFor(); await page.getByText('请求失败 1', { exact: true }).waitFor();
@@ -64,8 +68,8 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     await page.getByRole('button', { name: '加载外部图片', exact: true }).click(); await page.getByText('外部图片已加载 · media.example.invalid', { exact: true }).waitFor(); assert.equal(remoteCalls, 1);
     assert.equal(await page.locator('.helper-benchmark-remote img').getAttribute('referrerpolicy'), 'no-referrer'); assert.equal(await page.locator('.helper-benchmark-remote img').getAttribute('crossorigin'), null);
     await page.screenshot({ path: path.join(directory, 'mixed-results.png'), fullPage: true });
-    await page.getByRole('button', { name: '返回配置', exact: true }).click(); assert.equal(await page.locator('.benchmark-form').isVisible(), true); assert.equal(await page.locator('[name=model]').inputValue(), 'my-model'); assert.equal(await page.locator('[name=group_id]').inputValue(), '2'); assert.equal(await page.locator('[name=key_id]').inputValue(), '20'); assert.equal(await page.locator('[name=api_format]').inputValue(), 'responses'); assert.equal(await page.locator('.helper-benchmark-results').count(), 0);
-    assert.equal(new URL(page.url()).search, ''); assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0, 'results/keys never persisted');
+    await page.getByRole('button', { name: '返回配置', exact: true }).click(); assert.equal(await quiz.isVisible(), true); assert.equal(await quiz.locator('[name=model]').inputValue(), 'my-model'); assert.equal(await quiz.locator('[name=group_id]').inputValue(), '2'); assert.equal(await quiz.locator('[name=key_id]').inputValue(), '20'); assert.equal(await quiz.locator('[name=api_format]').inputValue(), 'responses'); assert.equal(await page.locator('.helper-benchmark-results').count(), 0);
+    assert.equal(new URL(page.url()).search, ''); assert.deepEqual(await page.evaluate(() => [Object.keys(localStorage), Object.keys(sessionStorage)]), [[], ['helper_session']], 'only the login session is stored');
     assert.deepEqual(posts.find(value => value.path.endsWith('/benchmark')).body, { model: 'my-model', key_id: 20, group_id: 2, api_format: 'responses' });
     await page.goto(origin + '/renderer'); await page.waitForFunction(() => typeof helperBenchmarkResults === 'function');
     await page.evaluate(data => document.getElementById('result').replaceChildren(helperBenchmarkResults(data)), { total: 1, completed: 1, results: [{ question: '媒体题', answer: '', scored: false, passed: false, media: [{ src: gifURI, mime: 'image/gif' }] }] });

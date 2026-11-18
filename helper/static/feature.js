@@ -48,45 +48,9 @@ function metricTable(data, ranking) {
   }))));
 }
 async function benchmark() {
-  const model = node('input', { name: 'model', type: 'text', required: true, placeholder: '例如 gpt-4.1-mini', maxlength: 150 });
-  const group = node('select', { name: 'group_id', required: true });
-  const key = node('select', { name: 'key_id', required: true });
-  const format = node('select', { name: 'api_format' }, node('option', { value: 'chat' }, 'Chat Completions'), node('option', { value: 'responses' }, 'Responses'));
-  const resultView = node('div', { hidden: true }); let formPane; const error = node('div', { class: 'form-error', role: 'alert' });
-  const submit = node('button', { type: 'submit', class: 'button primary', disabled: true }, '开始检测');
-  let keys = [];
-  function updateKeys() {
-    const matches = keys.filter(item => String(item.group_id) === group.value);
-    key.replaceChildren(...matches.map(item => node('option', { value: item.id }, `${item.name || 'API Key'} · #${item.id}`)));
-    submit.disabled = !matches.length;
-  }
-  group.addEventListener('change', updateKeys);
-  async function loadOptions() {
-    submit.disabled = true; error.textContent = '';
-    try {
-      const options = await request('/benchmark/options');
-      keys = (options.keys || []).filter(item => item.group_id !== undefined && item.group_id !== null);
-      const groups = [...new Map(keys.map(item => [item.group_id, item])).values()];
-      group.replaceChildren(...groups.map(item => node('option', { value: item.group_id }, item.group_name || `分组 #${item.group_id}`)));
-      if (!groups.length) { group.append(node('option', { value: '' }, '暂无可用的分组 API Key')); error.textContent = '你还没有可用的分组 API Key，请先在 sub2api 中创建后再刷新。'; }
-      updateKeys();
-    } catch (err) { error.textContent = err.message; }
-  }
-  const form = node('form', { class: 'benchmark-form', onsubmit: async event => {
-    event.preventDefault(); if (submit.disabled) return; if (!confirm('检测将使用所选分组的 API Key 调用模型并消耗你的额度。确认开始？')) return;
-    submit.disabled = true; error.textContent = ''; formPane.hidden = true; resultView.hidden = false;
-    resultView.replaceChildren(node('div', { class: 'loading' }, node('span', { class: 'spinner' }), '正在运行检测，请稍候…'));
-    try {
-      const data = await request('/benchmark', 'POST', { model: model.value.trim(), key_id: Number(key.value), group_id: Number(group.value), api_format: format.value });
-      const result = helperBenchmarkResults(data, { groupName: group.selectedOptions[0]?.textContent, onBack: () => {
-        resultView.replaceChildren(); resultView.hidden = true; formPane.hidden = false; model.focus();
-      } });
-      resultView.replaceChildren(result); result.querySelector('h2')?.focus();
-    } catch (err) { resultView.replaceChildren(); resultView.hidden = true; formPane.hidden = false; error.textContent = err.message; } finally { submit.disabled = !key.value; }
-  } }, field('模型名称', model), field('接口格式', format), field('检测分组', group), field('调用 API Key', key, '直接使用你已有的分组 Key，密钥内容不会传到浏览器。'), node('div', { class: 'wide button-group' }, submit, node('button', { type: 'button', class: 'button', onclick: loadOptions }, '刷新可用分组'), error));
-  formPane = node('div', {}, note('检测将运行固定题目，实际调用模型并消耗所选 API Key 的额度。成绩仅供参考，不能作为全面的模型能力评估。', 'warning'), card('运行模型检测', '选择分组、模型与接口格式。', node('div', { class: 'card-body' }, form)));
-  featureMain.append(formPane, resultView);
-  await loadOptions();
+  const gallery = node('div'); featureMain.append(gallery);
+  const controller = helperGallery(gallery, { request });
+  await controller.ready;
 }
 async function initialize() {
   document.title = `${titles[feature] || '用户工具'} · sub2api Helper`;
@@ -98,7 +62,7 @@ async function initialize() {
     if (!portalSession) throw new Error('登录身份验证失败，请从 sub2api 菜单重新打开。');
     const modules = await request('/modules');
     if (!modules[feature]) throw new Error('此功能尚未上线，或已被管理员关闭。');
-    featureMain.replaceChildren(node('div', { class: 'page-head' }, node('div', {}, node('h1', {}, titles[feature]), node('p', {}, feature === 'benchmark' ? '让模型用实际回答展示能力。' : feature === 'pricing' ? '查看自己的模型请求、Token 使用量与费用。' : '匿名展示使用情况，不公开用户邮箱和账号身份。'))));
+    featureMain.replaceChildren(node('div', { class: 'page-head' }, node('div', {}, node('h1', {}, titles[feature]), node('p', {}, feature === 'benchmark' ? '按分组查看模型定时生成的最新作品。' : feature === 'pricing' ? '查看自己的模型请求、Token 使用量与费用。' : '匿名展示使用情况，不公开用户邮箱和账号身份。'))));
     if (feature === 'benchmark') { await benchmark(); return; }
     const data = await request(feature === 'pricing' ? '/models' : '/ranking');
     if (feature === 'ranking') featureMain.append(note('用户身份已匿名处理，榜单仅展示排名和用量。'));

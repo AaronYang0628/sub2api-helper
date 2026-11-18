@@ -1,0 +1,23 @@
+/* Layout only; controls and surfaces use sub2api's existing UI classes. */
+.helper-gallery-admin { min-width: 0; }
+.helper-gallery-admin .card-header { flex-wrap: wrap; }
+.helper-gallery-admin .field { min-width: 0; }
+.helper-gallery-admin .input { width: 100%; min-width: 0; }
+.helper-gallery-admin-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.helper-gallery-admin-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 1rem; }
+.helper-gallery-admin-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: .75rem; }
+.helper-gallery-admin-status { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; margin-bottom: 1rem; }
+.helper-gallery-admin-feedback, .helper-gallery-admin-error { margin: 0 0 1rem; font-size: .875rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.helper-gallery-admin-feedback:empty, .helper-gallery-admin-error:empty { display: none; }
+.helper-gallery-admin-feedback.error, .helper-gallery-admin-error { color: #ef4444; }
+.helper-gallery-admin-feedback.success { color: #059669; }
+.dark .helper-gallery-admin-feedback.error, .dark .helper-gallery-admin-error { color: #f87171; }
+.dark .helper-gallery-admin-feedback.success { color: #34d399; }
+.helper-gallery-admin-key-hint { display: block; margin: -.25rem 0 1rem; font-size: .75rem; line-height: 1.5; color: #64748b; overflow-wrap: anywhere; }
+.dark .helper-gallery-admin-key-hint { color: #94a3b8; }
+.helper-gallery-admin-form > .caption { margin-top: .75rem; }
+@media (max-width: 640px) {
+  .helper-gallery-admin-grid { grid-template-columns: 1fr; }
+  .helper-gallery-admin-actions { align-items: flex-start; flex-direction: column; }
+  .helper-gallery-admin-actions > .button-group { width: 100%; }
+}

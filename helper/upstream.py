@@ -307,6 +307,13 @@ class Upstream:
     async def profile(self, token: str) -> dict[str, Any]:
         return await self.request("GET", "/api/v1/user/profile", token=token)
 
+    async def available_groups(self, token: str) -> set[int]:
+        rows = await self.request("GET", "/api/v1/groups/available", token=token)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or type(row.get("id")) is not int
+                                             or row["id"] <= 0 for row in rows):
+            raise UpstreamError("上游可用分组响应不兼容")
+        return {row["id"] for row in rows if row.get("status") == "active"}
+
     async def benchmark_completion(self, api_key: str, model: str, prompt: str) -> dict[str, Any]:
         """One bounded OpenAI-compatible request, authenticated by a user key."""
         return await self.request("POST", "/v1/chat/completions", token=api_key, json={"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 256, "stream": False})

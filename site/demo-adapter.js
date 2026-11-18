@@ -7,6 +7,7 @@
   const base = assetRoot.href.replace(/\/$/, '');
   const nativeDemo = document.body.classList.contains('demo-native');
   const resultDemo = document.body.classList.contains('demo-benchmark');
+  const galleryDemo = document.body.classList.contains('demo-gallery');
   // Small offline fixtures: a 240x96 PNG and a two-frame 64x24 GIF.
   const benchmarkPng = 'data:image/png;base64,' +
     'iVBORw0KGgoAAAANSUhEUgAAAPAAAABgCAYAAAAjM//RAAAB6ElEQVR4nO3TsW0VURBAUTeASFwfJRBSAwU4oQFqoAhCSiBy' +
@@ -77,6 +78,33 @@
     { id: 2, name: '高级订阅分组', status: 'active', subscription_type: 'subscription', rate_multiplier: 1.5, monthly_limit_usd: 200 },
     { id: 3, name: '团队分组', status: 'active', subscription_type: 'standard', rate_multiplier: 1 },
   ];
+  const galleryStart = Date.now();
+  let gallerySequence = 300;
+  // Original offline artwork, made only from HTML/CSS and vector primitives.
+  function cyclingScene(variant = 0) {
+    const skies = ['#dff5ee', '#f8e8d2', '#dfeafa'];
+    return `<style>
+      *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:system-ui,sans-serif;background:${skies[variant % 3]}}main{width:100%;height:100%;position:relative}svg{display:block;width:100%;height:100%;object-fit:cover}.caption{position:absolute;top:7%;left:6%;color:#164e47}.caption small{font-size:10px;letter-spacing:.18em}.caption h1{font-size:clamp(16px,4vw,32px);font-weight:600;margin:6px 0}.cloud{animation:drift 12s ease-in-out infinite alternate}.bird{animation:bob 3s ease-in-out infinite alternate;transform-origin:490px 260px}@keyframes drift{to{transform:translateX(26px)}}@keyframes bob{to{transform:translateY(-3px)}}@media(prefers-reduced-motion:reduce){.cloud,.bird{animation:none}}
+      </style><main><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" role="img" aria-label="原创场景：白鹭与单车经过河畔">
+      <rect width="720" height="420" fill="${skies[variant % 3]}"/><circle cx="591" cy="79" r="38" fill="#f8cf80"/><g class="cloud" fill="#fff" opacity=".75"><ellipse cx="390" cy="103" rx="49" ry="14"/><ellipse cx="365" cy="93" rx="21" ry="19"/><ellipse cx="397" cy="88" rx="27" ry="23"/></g>
+      <path d="M0 244Q160 118 346 242T720 209V420H0Z" fill="#badfd1"/><path d="M0 301Q180 237 361 283T720 280V420H0Z" fill="#85bcb0"/><path d="M0 351Q270 287 720 340V420H0Z" fill="#d5a97c"/><path d="M0 374Q270 312 720 363" stroke="#f5e0b8" stroke-width="5" stroke-dasharray="23 17" fill="none"/>
+      <g fill="none" stroke="#235f66" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><circle cx="255" cy="296" r="51"/><circle cx="413" cy="296" r="51"/><path d="M255 296L301 211 349 296H255L328 237H390L413 296M349 296L379 205H399M301 211L289 199H272"/><path d="M370 205H397" stroke-width="10"/></g><circle cx="349" cy="296" r="9" fill="#e7794c"/><path d="M349 296L371 308" stroke="#e7794c" stroke-width="5" stroke-linecap="round"/>
+      <g class="bird"><ellipse cx="493" cy="260" rx="37" ry="25" fill="#fffdf5"/><path d="M515 251Q541 230 531 210Q524 187 538 177" fill="none" stroke="#fffdf5" stroke-width="19" stroke-linecap="round"/><circle cx="540" cy="174" r="14" fill="#fffdf5"/><path d="M552 173L577 179 552 184Z" fill="#e89f43"/><circle cx="544" cy="170" r="2.7" fill="#24464b"/><path d="M476 258Q489 242 506 262" fill="none" stroke="#dfebde" stroke-width="4"/><path d="M481 281L478 313M499 283L506 313M467 315H483M499 315H516" fill="none" stroke="#bc8343" stroke-width="4" stroke-linecap="round"/></g>
+      <g stroke="#437d67" stroke-width="3" stroke-linecap="round"><path d="M101 332V279M101 303L84 288M101 315L119 297M629 327V284M629 309L612 296"/></g></svg><div class="caption"><small>ORIGINAL SCENE · HTML / CSS</small><h1>沿着风，慢慢骑。</h1></div></main>`;
+  }
+  function moonScene(variant = 0) {
+    const seas = ['#122f49', '#303154', '#174447'];
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 540" role="img" aria-label="原创矢量场景：纸船驶过月光海面"><rect width="720" height="540" fill="${seas[variant % 3]}"/><circle cx="564" cy="97" r="42" fill="#fff0c4"/><circle cx="582" cy="82" r="40" fill="${seas[variant % 3]}"/><g fill="#cee9e7" opacity=".75"><circle cx="92" cy="130" r="2"/><circle cx="204" cy="70" r="3"/><circle cx="348" cy="118" r="2"/><circle cx="443" cy="58" r="2"/><circle cx="638" cy="152" r="3"/><circle cx="300" cy="167" r="2"/><circle cx="155" cy="188" r="2"/></g><path d="M0 259Q120 228 240 263T480 258 720 252V540H0Z" fill="#28566b"/><path d="M0 317Q150 271 310 313T720 307V540H0Z" fill="#3a7582"/><path d="M0 374Q180 333 360 372T720 367V540H0Z" fill="#5d989c"/><g fill="none" stroke="#badbd2" stroke-linecap="round" opacity=".55"><path d="M41 286H118M510 290H603M89 352H182M523 346H674M252 389H383M45 454H172M504 479H657" stroke-width="3"/></g><g stroke="#e3d8b9" stroke-width="2" stroke-linejoin="round"><path d="M262 268L380 190 444 268Z" fill="#fff6d9"/><path d="M380 190V268H332Z" fill="#d8e8da"/><path d="M246 268H465L418 311H292Z" fill="#f6d697"/><path d="M246 268L356 289 465 268M356 289L292 311M356 289L418 311" fill="none"/></g><g fill="#e7f3df" font-family="system-ui,sans-serif"><text x="43" y="51" font-size="11" letter-spacing="3">ORIGINAL VECTOR · SVG</text><text x="43" y="85" font-size="27" font-weight="500">借一束月光，渡过星海。</text></g></svg>`;
+  }
+  const galleryGroups = [
+    { group_id: 1, name: '夜间免费分组', model: 'demo-canvas', key_id: 11, api_format: 'chat', enabled: true, interval_minutes: 60, next_at: new Date(galleryStart + 42 * 60000).toISOString(), running: false, last_error: null, prompt: '创作一幅原创白鹭与自行车的 HTML/CSS 河畔场景。只输出完整 HTML，使用内嵌样式和矢量图形，不使用 JavaScript 或外部资源。' },
+    { group_id: 2, name: '高级订阅分组', model: 'demo-vector', key_id: 12, api_format: 'responses', enabled: true, interval_minutes: 120, next_at: new Date(galleryStart + 88 * 60000).toISOString(), running: false, last_error: null, prompt: '用 SVG 创作原创月光纸船场景。只输出完整 SVG，使用 viewBox，不引用外部资源，不添加脚本。' },
+  ];
+  const galleryWorks = new Map(galleryGroups.map(group => [group.group_id, Array.from({ length: 4 }, (_, index) => ({
+    id: group.group_id * 100 + 4 - index, group_id: group.group_id, title: (group.group_id === 1 ? ['河畔慢骑', '午后微风', '晚霞绕行', '云边一程'] : ['月光纸船', '星海来信', '夜色航行', '静谧海湾'])[index], model: group.model,
+    created_at: new Date(galleryStart - (index * group.interval_minutes + 12) * 60000).toISOString(), latency_ms: 1280 + index * 317, status: 'success', error: null, kind: 'html', content: group.group_id === 1 ? cyclingScene(index) : moonScene(index), mime: 'text/html', prompt: group.prompt,
+  }))]));
+  const galleryStats = new Map([[1, { success_24h: 18, failed_24h: 1, total: 72 }], [2, { success_24h: 9, failed_24h: 0, total: 35 }]]);
   const state = {
     schedules: [
       { id: 1, name: '每天夜间免费时段', owner: 'native-account', native_account_id: 1, account_ids: [1], start: '23:00', end: '09:00', timezone: 'Asia/Shanghai', weekdays: [0, 1, 2, 3, 4, 5, 6], enabled: true },
@@ -141,6 +169,12 @@
     if (includeUnscored) Object.assign(data.results[4], { question: '请用一张动图展示当前进度。', expected: '', answer: '', passed: false, scored: false });
     return data;
   }
+  function galleryDetail(groupId) {
+    const group = galleryGroups.find(item => item.group_id === groupId);
+    if (!group) return bad('示例分组不存在。', 404);
+    const works = galleryWorks.get(groupId).map(({ content, prompt, ...work }) => ({ ...clone(work), preview: content }));
+    return { group: clone(group), stats: clone(galleryStats.get(groupId)), works };
+  }
   function preview(rule) {
     if (rule.type === 'subscription_multiplier') return {
       type: rule.type, actions: [{ action: rule.scope === 'global_group' ? 'set_group_rate' : 'set_user_group_rate', scope: rule.scope, user_id: rule.scope === 'global_group' ? null : 103, group_id: rule.group_id, previous_multiplier: 1, multiplier: rule.multiplier, status: 'ready' }],
@@ -162,6 +196,31 @@
     return null;
   }
   function route(path, method, data) {
+    if (path === '/api/gallery' && method === 'GET') return { groups: clone(galleryGroups), timezone: 'Asia/Shanghai' };
+    let gallery = path.match(/^\/api\/gallery\/(\d+)(?:\/(run|pause)|\/works\/(\d+))?$/);
+    if (gallery) {
+      const groupId = Number(gallery[1]), group = galleryGroups.find(item => item.group_id === groupId);
+      if (!group) return bad('示例分组不存在。', 404);
+      if (gallery[3] && method === 'GET') {
+        const work = galleryWorks.get(groupId).find(item => item.id === Number(gallery[3]));
+        return work ? { ...clone(work), group_name: group.name } : bad('示例作品不存在。', 404);
+      }
+      if (gallery[2] === 'pause' && method === 'POST') { group.enabled = false; group.next_at = null; return galleryDetail(groupId); }
+      if (gallery[2] === 'run' && method === 'POST') {
+        const works = galleryWorks.get(groupId), stats = galleryStats.get(groupId);
+        works.unshift({ ...clone(works[0]), id: ++gallerySequence, title: '本页生成 · 原创场景示例', created_at: new Date().toISOString(), model: group.model, prompt: group.prompt });
+        stats.success_24h++; stats.total++;
+        group.next_at = group.enabled ? new Date(Date.now() + group.interval_minutes * 60000).toISOString() : null;
+        return { queued: true, already_running: false, group_id: groupId, demo: true };
+      }
+      if (!gallery[2] && !gallery[3] && method === 'PUT') {
+        if (!data.model?.trim() || !data.prompt?.trim() || !Number.isInteger(data.interval_minutes) || data.interval_minutes < 5 || data.interval_minutes > 1440) return bad('请填写示例模型、提示词，并将间隔设置为 5～1440 的整数分钟。');
+        Object.assign(group, clone(data), { group_id: groupId, running: false });
+        group.next_at = group.enabled ? new Date(Date.now() + group.interval_minutes * 60000).toISOString() : null;
+        return galleryDetail(groupId);
+      }
+      if (!gallery[2] && !gallery[3] && method === 'GET') return galleryDetail(groupId);
+    }
     if (path === '/_helper/api/status') return { timezone: 'Asia/Shanghai', mail_configured: true };
     if (path === '/_helper/api/session' && method === 'POST') return { session: 'demo-session' };
     let native = path.match(/^\/_helper\/api\/users\/(\d+)(\/email)?$/);
@@ -288,7 +347,18 @@
     const message = '仅使用本页示例数据；未连接任何 sub2api 服务。真实部署请查看上方部署说明。';
     if (feedback.textContent !== message) feedback.textContent = message;
   }
-  if (resultDemo) {
+  if (galleryDemo) {
+    const controller = window.helperGallery(document.getElementById('demo-gallery-main'), {
+      timezone: 'Asia/Shanghai',
+      request: async path => {
+        const result = await fetch('/api' + path, { credentials: 'omit' });
+        const data = await result.json();
+        if (!result.ok) throw new Error(data.detail || '离线示例暂时无法打开。');
+        return data;
+      },
+    });
+    window.addEventListener('pagehide', () => controller.destroy(), { once: true });
+  } else if (resultDemo) {
     const result = window.helperBenchmarkResults(benchmarkSample('demo-model', true), {
       groupName: '离线示例分组',
     });
@@ -299,7 +369,7 @@
     const getItem = Storage.prototype.getItem;
     Storage.prototype.getItem = function (key) { return key === 'auth_token' ? 'demo-native-jwt' : getItem.call(this, key); };
     const selected = /\/admin\/users\/?$/.test(location.pathname) ? 'users' : 'accounts';
-    document.getElementById('demo-benchmark-link').href = new URL('results.html', assetRoot).href;
+    document.getElementById('demo-benchmark-link').href = new URL('gallery.html', assetRoot).href;
     history.replaceState(null, '', new URL('admin/' + selected + '/', assetRoot).pathname);
     renderNative(selected);
     document.getElementById('demo-accounts').addEventListener('click', () => navigate('accounts'));

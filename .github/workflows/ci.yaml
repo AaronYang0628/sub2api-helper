@@ -71,7 +71,7 @@ jobs:
       - run: npm --prefix ui ci && npm --prefix ui run build
       - name: Require the tested generated UI to be committed
         run: git diff --exit-code -- helper/static/style.css
-      - name: Test native rows and benchmark results in Chromium
+      - name: Test native rows, benchmark results and gallery in Chromium
         env:
           HELPER_CHROMIUM_PATH: /usr/bin/google-chrome
           HELPER_PLAYWRIGHT_PATH: ${{ runner.temp }}/helper-browser/node_modules/playwright-core
@@ -79,6 +79,8 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/helper-browser" --no-save --no-package-lock --ignore-scripts playwright-core@1.65.1
           node tests/native_ui/test.cjs
           node tests/benchmark_ui/test.cjs
+          node tests/gallery_ui/test.cjs
+          node tests/gallery_admin/test.cjs
       - name: Build the GitHub Pages demo from the current UI
         run: node site/build.mjs
       - run: docker build -t sub2api-helper:test .
