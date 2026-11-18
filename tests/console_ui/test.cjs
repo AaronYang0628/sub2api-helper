@@ -61,8 +61,22 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     const switches = page.locator('.module-bottom .helper-switch');
     assert.equal(await switches.count(), 3);
     const measureSwitches = async () => {
-      const measured = await switches.evaluateAll(nodes => nodes.map(node => ({ box: node.getBoundingClientRect().toJSON(), caption: node.lastElementChild.getBoundingClientRect().toJSON(), track: node.querySelector('.switch').getBoundingClientRect().toJSON(), font: getComputedStyle(node.lastElementChild).fontSize })));
-      for (const item of measured) { assert.equal(item.font, '14px'); assert(item.caption.width > 25 && item.caption.height < 25, 'switch caption stays on one horizontal line'); assert(Math.abs(item.track.width - 44) < 1 && Math.abs(item.track.height - 24) < 1); assert(item.box.width > item.track.width + item.caption.width); }
+      const measured = await switches.evaluateAll(nodes => nodes.map(node => {
+        const caption = node.lastElementChild;
+        const style = getComputedStyle(caption);
+        return { box: node.getBoundingClientRect().toJSON(), caption: caption.getBoundingClientRect().toJSON(),
+          track: node.querySelector('.switch').getBoundingClientRect().toJSON(), font: style.fontSize,
+          lineHeight: parseFloat(style.lineHeight), writingMode: style.writingMode, whiteSpace: style.whiteSpace };
+      }));
+      for (const item of measured) {
+        assert.equal(item.font, '14px');
+        assert.equal(item.writingMode, 'horizontal-tb');
+        assert.equal(item.whiteSpace, 'nowrap');
+        assert(item.caption.width > 0 && item.caption.height <= item.lineHeight + 1, 'switch caption stays on one horizontal line');
+        assert(item.caption.left > item.track.right, 'switch caption is next to the track');
+        assert(Math.abs(item.track.width - 44) < 1 && Math.abs(item.track.height - 24) < 1);
+        assert(item.box.width > item.track.width + item.caption.width);
+      }
       return measured;
     };
     await measureSwitches();
