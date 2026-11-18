@@ -72,16 +72,21 @@ jobs:
       - name: Require the tested generated UI to be committed
         run: git diff --exit-code -- helper/static/style.css
       - name: Test native rows, benchmark results and gallery in Chromium
+        shell: bash
         env:
           HELPER_CHROMIUM_PATH: /usr/bin/google-chrome
           HELPER_PLAYWRIGHT_PATH: ${{ runner.temp }}/helper-browser/node_modules/playwright-core
+          HELPER_PYTHON_PATH: python
         run: |
           npm install --prefix "$RUNNER_TEMP/helper-browser" --no-save --no-package-lock --ignore-scripts playwright-core@1.65.1
-          node tests/native_ui/test.cjs
-          node tests/benchmark_ui/test.cjs
-          node tests/gallery_ui/test.cjs
-          node tests/gallery_admin/test.cjs
-          node tests/console_ui/test.cjs
+          for suite in native_ui benchmark_ui gallery_ui gallery_admin console_ui; do
+            test_log="$RUNNER_TEMP/$suite.log"
+            if ! node "tests/$suite/test.cjs" 2>&1 | tee "$test_log"; then
+              detail=$(awk '/Error|error/ {print substr($0,1,280); exit}' "$test_log")
+              printf '::error title=Chromium %s::%s\n' "$suite" "${detail//%/%25}"
+              exit 1
+            fi
+          done
       - name: Build the GitHub Pages demo from the current UI
         run: node site/build.mjs
       - run: docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t sub2api-helper:test .
