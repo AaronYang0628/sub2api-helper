@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/upstream.yaml'
+      - '.github/upstream-sync-request'
       - 'scripts/watch_upstream.py'
       - 'scripts/sync_upstream_release.py'
   schedule:
