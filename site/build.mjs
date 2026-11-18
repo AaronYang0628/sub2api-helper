@@ -56,7 +56,7 @@ const nativeHtml = `<!doctype html>
         <button type="button" class="btn btn-secondary" id="demo-accounts" role="tab" aria-selected="true">账号管理</button>
         <button type="button" class="btn btn-ghost" id="demo-users" role="tab" aria-selected="false">用户管理</button>
       </div>
-      <div class="demo-links"><button type="button" class="btn btn-ghost btn-sm" id="demo-theme">深色</button><button type="button" class="btn btn-ghost btn-sm" id="demo-reset">重置演示</button><a class="btn btn-secondary btn-sm" href="https://github.com/AaronYang0628/sub2api-helper#docker-部署" target="_blank" rel="noopener noreferrer">部署说明</a></div>
+      <div class="demo-links"><button type="button" class="btn btn-ghost btn-sm" id="demo-theme">深色</button><button type="button" class="btn btn-ghost btn-sm" id="demo-reset">重置演示</button><a class="btn btn-secondary btn-sm" href="https://github.com/AaronYang0628/sub2api-helper/blob/main/docs/deployment.md" target="_blank" rel="noopener noreferrer">部署说明</a></div>
     </div>
     <p class="demo-native-note">静态示例 · 点击账号行的闹钟设置运行时段，或点击用户行的邮件按钮。操作仅在本页模拟。</p>
     <section id="demo-native-list" aria-label="账号列表"></section>

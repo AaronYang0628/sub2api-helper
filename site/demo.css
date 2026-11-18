@@ -1,4 +1,4 @@
-/* Demo-only layout; colors and controls come from the unchanged native UI CSS. */
+/* Demo-only layout; native controls stay unchanged outside the accents below. */
 .demo-notice { align-items: center; flex-wrap: wrap; gap: 12px 24px; }
 .demo-description { flex: 1 1 360px; min-width: 0; }
 .demo-description strong { font-weight: 600; }
@@ -8,7 +8,7 @@
 #connection-key:disabled { cursor: default; }
 #connect:disabled { cursor: default; opacity: 1; }
 
-/* Native list demonstration: layout only; controls and colors are upstream. */
+/* Native list layout. Row-action accents below are limited to this demo. */
 .demo-native-shell { max-width: 1440px; margin: 0 auto; padding: 28px; }
 .demo-native-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .demo-native-tabs { display: flex; align-items: center; gap: 6px; }
@@ -21,6 +21,18 @@
 .demo-native-table .sticky-col-right::before { content: ''; position: absolute; inset: 0 auto 0 -9px; width: 9px; pointer-events: none; background: linear-gradient(to left, rgb(15 23 42 / .04), transparent); }
 .demo-native-table svg { width: 20px; height: 20px; }
 .demo-native-table button { min-width: 34px; }
+
+/* Only the two added row actions receive color in the static Pages demo. */
+.demo-native [data-helper-native-action="accounts"] { color: #0f766e; background-color: #f0fdfa; }
+.demo-native [data-helper-native-action="accounts"]:hover { color: #115e59; background-color: #ccfbf1; }
+.demo-native [data-helper-native-action="users"] { color: #4338ca; background-color: #eef2ff; }
+.demo-native [data-helper-native-action="users"]:hover { color: #3730a3; background-color: #e0e7ff; }
+.demo-native [data-helper-native-action="accounts"]:focus-visible,
+.demo-native [data-helper-native-action="users"]:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.dark .demo-native [data-helper-native-action="accounts"] { color: #5eead4; background-color: #042f2e; }
+.dark .demo-native [data-helper-native-action="accounts"]:hover { color: #99f6e4; background-color: #134e4a; }
+.dark .demo-native [data-helper-native-action="users"] { color: #a5b4fc; background-color: #1e1b4b; }
+.dark .demo-native [data-helper-native-action="users"]:hover { color: #c7d2fe; background-color: #312e81; }
 @media (max-width: 640px) {
   .demo-native-shell { padding: 14px; }
   .demo-native-toolbar { align-items: flex-start; }

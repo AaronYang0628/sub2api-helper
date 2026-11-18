@@ -25,7 +25,10 @@ COMPOSE_IMAGE = re.compile(
     rf"^(?P<prefix>[ \t]+image:[ \t]*)(?P<quote>[\"']?)(?P<image>sub2api-helper:(?P<version>{VERSION_PATTERN}))(?P=quote)(?P<suffix>[ \t]*(?:#[^\r\n]*)?)$",
     re.MULTILINE,
 )
-README_IMAGE = re.compile(rf"(?<![A-Za-z0-9_./-])sub2api-helper:(?P<version>{VERSION_PATTERN})(?![A-Za-z0-9_.+-])")
+README_IMAGE = re.compile(
+    rf"(?<![A-Za-z0-9_./-])(?P<image>(?:ghcr\.io/[a-z0-9_.-]+/)?sub2api-helper):"
+    rf"(?P<version>{VERSION_PATTERN})(?![A-Za-z0-9_.+-])"
+)
 README_CURRENT_SECTIONS = frozenset(("Docker 部署", "本地开发与验证"))
 
 
@@ -79,7 +82,7 @@ def _readme_versions(text: str) -> list[str]:
 def _readme_with_version(text: str, version: str) -> str:
     if not _readme_versions(text):
         raise ValueError("README.md has no current sub2api-helper image examples in the Docker/development sections")
-    return "".join(README_IMAGE.sub(lambda match: "sub2api-helper:" + version, line) if current else line
+    return "".join(README_IMAGE.sub(lambda match: match["image"] + ":" + version, line) if current else line
                    for line, current in _readme_sections(text))
 
 

@@ -39,7 +39,8 @@ class VersionTests(unittest.TestCase):
         (self.root / "README.md").write_text(
             "# Helper\n\nUpstream reviewed version: 0.2.22\n\n"
             "## Docker 部署\n\n```sh\ndocker build -t sub2api-helper:1.2.3 .\n"
-            "docker run sub2api-helper:1.2.3\n```\n\n"
+            "docker run sub2api-helper:1.2.3\n"
+            "docker pull ghcr.io/example/sub2api-helper:1.2.3\n```\n\n"
             "## Compatibility history\n\nPrevious image: sub2api-helper:1.2.3\n\n"
             "## 本地开发与验证\n\n```sh\npython tests/container_smoke.py sub2api-helper:1.2.3\n```\n\n"
             "## Changelog\n\nHistorical command: docker run sub2api-helper:1.2.3\n"
@@ -76,6 +77,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(lock, expected_lock)
         readme = (self.root / "README.md").read_text()
         self.assertIn("docker build -t sub2api-helper:0.2.22 .", readme)
+        self.assertIn("docker pull ghcr.io/example/sub2api-helper:0.2.22", readme)
         self.assertIn("python tests/container_smoke.py sub2api-helper:0.2.22", readme)
         self.assertIn("Previous image: sub2api-helper:1.2.3", readme)
         self.assertIn("Historical command: docker run sub2api-helper:1.2.3", readme)
