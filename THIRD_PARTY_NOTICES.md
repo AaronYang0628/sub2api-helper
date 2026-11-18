@@ -9,7 +9,8 @@ Upstream files: `frontend/src/style.css`, `frontend/tailwind.config.js`, and
 GNU LGPL version 3 or later; see [the retained license](LICENSES/sub2api-LGPL-3.0.txt).
 The LGPL incorporates the GPL version 3; its text is retained alongside it.
 Upstream attribution and original source are retained in `ui/` and in the copied
-icon module. Helper-specific layout adapters do not include sub2api's outer app
+icon module. `helper/static/native.js` also reuses native control classes and a
+small subset of these SVG paths. Helper-specific layout adapters do not include sub2api's outer app
 header or sidebar. Rebuild instructions and dependency lockfile are in `ui/`.
 
 The generated stylesheet is included in the Docker image with the corresponding

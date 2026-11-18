@@ -34,6 +34,7 @@ class Config:
     smtp_password: str = field(default="", repr=False)
     smtp_from_addr: str = ""
     smtp_tls: str = "starttls"
+    native_ui: bool = False
 
     @classmethod
     def from_env(cls):
@@ -76,4 +77,5 @@ class Config:
             smtp_password=os.environ.get("SMTP_PASSWORD", ""),
             smtp_from_addr=smtp_from,
             smtp_tls=tls,
+            native_ui=os.environ.get("HELPER_NATIVE_UI", "true").lower() in {"true", "1", "yes"},
         )

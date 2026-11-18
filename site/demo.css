@@ -7,3 +7,24 @@
 #disconnect { display: none !important; }
 #connection-key:disabled { cursor: default; }
 #connect:disabled { cursor: default; opacity: 1; }
+
+/* Native list demonstration: layout only; controls and colors are upstream. */
+.demo-native-shell { max-width: 1440px; margin: 0 auto; padding: 28px; }
+.demo-native-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.demo-native-tabs { display: flex; align-items: center; gap: 6px; }
+.demo-native-note, .demo-native-footnote, .demo-native-message { font-size: 13px; line-height: 1.75; opacity: .7; }
+.demo-native-note { margin: 14px 0 22px; }
+.demo-native-footnote { margin-top: 20px; }
+.demo-native-message { min-height: 24px; margin: 12px 2px 0; }
+.demo-native-table { border: 1px solid rgb(148 163 184 / .24); border-radius: 14px; }
+.demo-native-table .sticky-col-right { position: sticky; right: 0; z-index: 1; }
+.demo-native-table .sticky-col-right::before { content: ''; position: absolute; inset: 0 auto 0 -9px; width: 9px; pointer-events: none; background: linear-gradient(to left, rgb(15 23 42 / .04), transparent); }
+.demo-native-table svg { width: 20px; height: 20px; }
+.demo-native-table button { min-width: 34px; }
+@media (max-width: 640px) {
+  .demo-native-shell { padding: 14px; }
+  .demo-native-toolbar { align-items: flex-start; }
+  .demo-native-toolbar .demo-links { gap: 2px; }
+  .demo-native-tabs .btn { padding: 8px 12px; }
+  .demo-native-table td, .demo-native-table th { padding: 14px 12px; }
+}

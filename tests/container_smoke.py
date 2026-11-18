@@ -17,7 +17,7 @@ import uuid
 def main():
     image = sys.argv[1] if len(sys.argv) > 1 else "sub2api-helper:" + (Path(__file__).resolve().parents[1] / "helper/VERSION").read_text(encoding="ascii").strip()
     suffix = uuid.uuid4().hex[:10]
-    network, mock, app = [f"helper-smoke-{kind}-{suffix}" for kind in ("net", "upstream", "app")]
+    network, mock, app, native = [f"helper-smoke-{kind}-{suffix}" for kind in ("net", "upstream", "app", "native")]
     token = ""
     fixture = str(Path(__file__).with_name("mock_upstream.py").resolve())
 
@@ -32,6 +32,7 @@ def main():
                "-e", "NO_PROXY=" + os.environ.get("NO_PROXY", "") + ",upstream",
                "-e", "no_proxy=" + os.environ.get("no_proxy", "") + ",upstream",
                "-e", "SUB2API_URL=http://upstream:8000", "-e", "SUB2API_PUBLIC_URL=https://sub2api.example.invalid",
+               "-e", "HELPER_NATIVE_UI=false",
                "-e", "HELPER_PUBLIC_URL=https://helper.example.invalid", image)
         port = json.loads(docker("inspect", app))[0]["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostPort"]
         base = "http://127.0.0.1:" + port
@@ -137,13 +138,42 @@ def main():
         cloned = request("/api/automations", "POST", rewards)
         assert request(f"/api/automations/{cloned['id']}/run", "POST")["executed"] == 0
         assert "fixture-user-jwt" not in docker("logs", app), "JWT leaked to access log"
+        docker("stop", app)
+        docker("run", "-d", "--name", native, "--network", network, "-p", "127.0.0.1::8080",
+               "-e", "NO_PROXY=" + os.environ.get("NO_PROXY", "") + ",upstream",
+               "-e", "no_proxy=" + os.environ.get("no_proxy", os.environ.get("NO_PROXY", "")) + ",upstream",
+               "-e", "SUB2API_URL=http://upstream:8000", "-e", "SUB2API_ADMIN_KEY=fixture-admin-key",
+               "-e", "SUB2API_PUBLIC_URL=https://sub2api.example.invalid", image)
+        port = json.loads(docker("inspect", native))[0]["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostPort"]
+        base = "http://127.0.0.1:" + port
+        token = "fixture-admin-jwt"
+        ready()
+        page = request("/")
+        assert b"Original upstream page" in page and b"/_helper/native.js" in page
+        assert urllib.request.urlopen(base).headers["Content-Security-Policy"] == "default-src 'self'; script-src 'self'; style-src 'self'"
+        assert b"__sub2apiHelperNative" in request("/_helper/native.js")
+        assert request("/_helper/api/accounts/1/schedule")["managed"] is False
+        payload = {"mode": "window", "start": (now + timedelta(hours=2)).strftime("%H:%M"),
+                   "end": (now + timedelta(hours=3)).strftime("%H:%M"), "timezone": "UTC", "weekdays": list(range(7))}
+        saved = request("/_helper/api/accounts/1/schedule", "PUT", payload)
+        assert saved["managed"] is True and saved["schedulable"] is False
+        saved = request("/_helper/api/accounts/1/schedule", "PUT", {"mode": "all_day"})
+        assert saved["managed"] is False and saved["schedulable"] is True
+        try:
+            request("/_helper/api/status", headers={"Authorization": "Bearer fixture-user-jwt"})
+            raise AssertionError("Ordinary user accessed native admin actions")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403
+        opaque = request("/_helper/api/session", "POST", {})["session"]
+        assert request("/api/status", headers={"Authorization": "Bearer " + opaque})["version"] == expected_version
+        assert "fixture-admin-jwt" not in docker("logs", native), "Native JWT leaked to access log"
         print("Container smoke passed: auth, restart schedule, menu sync, private stats, model keys, chat/responses, subscription multiplier restoration, monthly top3 awards and duplicate prevention across rule recreation.")
     except Exception:
-        for name in (app, mock):
+        for name in (app, mock, native):
             print(name, docker("logs", name))
         raise
     finally:
-        for container in (app, mock):
+        for container in (app, mock, native):
             subprocess.run(["docker", "rm", "-fv", container], capture_output=True)
         subprocess.run(["docker", "network", "rm", network], capture_output=True)
 

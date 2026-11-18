@@ -4,5 +4,6 @@ import { fileURLToPath } from 'node:url';
 
 export default {
   ...upstream,
-  content: [fileURLToPath(new URL('../helper/static/*.{html,js}', import.meta.url))]
+  content: [fileURLToPath(new URL('../helper/static/*.{html,js}', import.meta.url)),
+    fileURLToPath(new URL('../site/*.{js,mjs,html}', import.meta.url))]
 };

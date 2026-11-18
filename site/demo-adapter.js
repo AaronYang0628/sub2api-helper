@@ -3,7 +3,9 @@
  */
 'use strict';
 (() => {
-  const base = new URL('./', location.href).href.replace(/\/$/, '');
+  const assetRoot = new URL('../', document.currentScript.src);
+  const base = assetRoot.href.replace(/\/$/, '');
+  const nativeDemo = document.body.classList.contains('demo-native');
   const fixtureUrl = 'https://sub2api.example.invalid';
   let sequence = 20;
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -30,7 +32,7 @@
   ];
   const state = {
     schedules: [
-      { id: 1, name: '每天夜间免费时段', account_ids: [1, 2], start: '23:00', end: '09:00', timezone: 'Asia/Shanghai', weekdays: [0, 1, 2, 3, 4, 5, 6], enabled: true },
+      { id: 1, name: '每天夜间免费时段', owner: 'native-account', native_account_id: 1, account_ids: [1], start: '23:00', end: '09:00', timezone: 'Asia/Shanghai', weekdays: [0, 1, 2, 3, 4, 5, 6], enabled: true },
       { id: 2, name: '工作日团队时段', account_ids: [6], start: '09:00', end: '18:00', timezone: 'Asia/Shanghai', weekdays: [0, 1, 2, 3, 4], enabled: false },
     ],
     rules: [{ id: 1, name: '30 天未使用提醒', days: 30, enabled: false, subject: '账户长期未使用提醒', body: '您好 {username}，您的账户已有 {days} 天未使用，请及时查看。', disable_after_email: false }],
@@ -62,7 +64,7 @@
     ],
   };
   let compatibility = {
-    checked_at: '2026-11-17T09:20:00+08:00', upstream_commit: '15871f904056f548dd874a1d069ffc6cdf777b78', latest_commit: '15871f904056f548dd874a1d069ffc6cdf777b78', update_available: false,
+    checked_at: '2026-11-17T09:20:00+08:00', upstream_commit: 'b0fa9f3e6eeab1968a53e1289b69daa4bb40ca2b', latest_commit: 'b0fa9f3e6eeab1968a53e1289b69daa4bb40ca2b', update_available: false,
     checks: [
       { name: '账号调度字段', ok: true, detail: '示例：id / schedulable 字段存在。' },
       { name: '用户实际使用时间', ok: true, detail: '示例：last_used_at 字段存在。' },
@@ -96,6 +98,48 @@
     return null;
   }
   function route(path, method, data) {
+    if (path === '/_helper/api/status') return { timezone: 'Asia/Shanghai', mail_configured: true };
+    if (path === '/_helper/api/session' && method === 'POST') return { session: 'demo-session' };
+    let native = path.match(/^\/_helper\/api\/users\/(\d+)(\/email)?$/);
+    if (native) {
+      const user = users.find(item => item.id === Number(native[1]));
+      if (!user) return bad('示例用户不存在。', 404);
+      if (!native[2] && method === 'GET') return clone(user);
+      if (native[2] && method === 'POST') {
+        if (!data.subject?.trim() || !data.body?.trim()) return bad('请填写邮件标题和正文。');
+        log('email.demo', user.id, '仅模拟发送邮件，没有连接 SMTP 或外部服务。');
+        return { ok: true, demo: true };
+      }
+    }
+    native = path.match(/^\/_helper\/api\/accounts\/(\d+)\/schedule$/);
+    if (native) {
+      const id = Number(native[1]), account = accounts.find(item => item.id === id);
+      if (!account) return bad('示例账号不存在。', 404);
+      let plan = state.schedules.find(item => item.owner === 'native-account' && item.native_account_id === id);
+      const conflict = state.schedules.find(item => item.enabled && item.account_ids.includes(id) && item !== plan);
+      if (method === 'PUT') {
+        if (conflict) return bad('此账号由其他计划管理，请先在原计划中停用。', 409);
+        if (data.mode === 'window') {
+          if (!/^\d{2}:\d{2}$/.test(data.start || '') || !/^\d{2}:\d{2}$/.test(data.end || '') || data.start === data.end || !data.weekdays?.length) return bad('请填写有效时间，并至少选择一天。');
+          try { new Intl.DateTimeFormat('en', { timeZone: data.timezone }).format(new Date()); } catch (_) { return bad('无效时区。'); }
+          const saved = { ...clone(data), id: plan?.id || ++sequence, name: account.name + ' · 运行时段', owner: 'native-account', native_account_id: id, account_ids: [id], enabled: true };
+          if (plan) state.schedules.splice(state.schedules.indexOf(plan), 1, saved); else state.schedules.push(saved);
+          plan = saved;
+          const parts = new Intl.DateTimeFormat('en-GB', { timeZone: plan.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' }).formatToParts(new Date());
+          const part = kind => parts.find(item => item.type === kind)?.value;
+          const day = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(part('weekday'));
+          const clock = part('hour') + ':' + part('minute');
+          account.schedulable = plan.start < plan.end ? plan.weekdays.includes(day) && clock >= plan.start && clock < plan.end : (clock >= plan.start && plan.weekdays.includes(day)) || (clock < plan.end && plan.weekdays.includes((day + 6) % 7));
+        } else if (data.mode === 'all_day') {
+          account.schedulable = true;
+          if (plan) state.schedules.splice(state.schedules.indexOf(plan), 1);
+          plan = undefined;
+        } else return bad('请选择全天或指定时段。');
+        log('schedule.demo', id);
+        updateStatusCells();
+      }
+      return { account_id: id, account_name: account.name, schedulable: account.schedulable, mode: plan ? 'window' : 'all_day', managed: !!plan, read_only: !!conflict, conflict: conflict ? '此账号由其他计划管理，请先在原计划中停用。' : null, start: plan?.start || '23:00', end: plan?.end || '09:00', timezone: plan?.timezone || 'Asia/Shanghai', weekdays: plan?.weekdays || [0, 1, 2, 3, 4, 5, 6], last_error: null };
+    }
     if (path === '/api/connection') return { upstream_url: fixtureUrl, configured: true, public_url: base, timezone: 'Asia/Shanghai', session: 'demo-session' };
     if (path === '/api/status') return { upstream_url: fixtureUrl, timezone: 'Asia/Shanghai', mail_configured: true, public_url: base, version: '演示', engine: { running: true, last_tick_at: '2026-11-17T09:20:00+08:00', last_error: null } };
     if (path === '/api/accounts' && method === 'GET') return accounts;
@@ -167,7 +211,7 @@
   window.__DEMO_REQUESTS__ = [];
   window.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === 'string' ? input : input.url, location.href);
-    if (url.origin !== location.origin || !url.pathname.startsWith('/api/')) throw new Error('静态演示禁止外发请求。');
+    if (url.origin !== location.origin || !(/^\/(api\/|_helper\/api\/)/).test(url.pathname)) throw new Error('静态演示禁止外发请求。');
     const method = (init.method || 'GET').toUpperCase();
     window.__DEMO_REQUESTS__.push({ path: url.pathname, method });
     let data = {};
@@ -188,13 +232,75 @@
     const message = '仅使用本页示例数据；未连接任何 sub2api 服务。真实部署请查看上方部署说明。';
     if (feedback.textContent !== message) feedback.textContent = message;
   }
-  const observer = new MutationObserver(pinDemoControls);
-  observer.observe(document.querySelector('.connection-card'), { attributes: true, childList: true, subtree: true });
-  pinDemoControls();
-  document.getElementById('connection-form').addEventListener('submit', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
-  document.getElementById('demo-reset').addEventListener('click', () => location.reload());
+  if (nativeDemo) {
+    // Return a fixed fixture JWT to the real extension without reading or
+    // writing any browser credential. This adapter is never served by Helper.
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (key) { return key === 'auth_token' ? 'demo-native-jwt' : getItem.call(this, key); };
+    const selected = /\/admin\/users\/?$/.test(location.pathname) ? 'users' : 'accounts';
+    history.replaceState(null, '', new URL('admin/' + selected + '/', assetRoot).pathname);
+    renderNative(selected);
+    document.getElementById('demo-accounts').addEventListener('click', () => navigate('accounts'));
+    document.getElementById('demo-users').addEventListener('click', () => navigate('users'));
+    window.addEventListener('popstate', () => renderNative(/\/admin\/users\/?$/.test(location.pathname) ? 'users' : 'accounts'));
+  } else {
+    const observer = new MutationObserver(pinDemoControls);
+    observer.observe(document.querySelector('.connection-card'), { attributes: true, childList: true, subtree: true });
+    pinDemoControls();
+    document.getElementById('connection-form').addEventListener('submit', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
+  }
+  document.getElementById('demo-reset')?.addEventListener('click', () => location.reload());
   const theme = document.getElementById('demo-theme');
-  function themeLabel() { theme.textContent = document.documentElement.classList.contains('dark') ? '浅色' : '深色'; }
-  theme.addEventListener('click', () => { const dark = !document.documentElement.classList.contains('dark'); document.documentElement.classList.toggle('dark', dark); document.documentElement.dataset.theme = dark ? 'dark' : 'light'; themeLabel(); });
+  function themeLabel() { if (theme) theme.textContent = document.documentElement.classList.contains('dark') ? '浅色' : '深色'; }
+  theme?.addEventListener('click', () => { const dark = !document.documentElement.classList.contains('dark'); document.documentElement.classList.toggle('dark', dark); document.documentElement.dataset.theme = dark ? 'dark' : 'light'; themeLabel(); });
   document.addEventListener('DOMContentLoaded', themeLabel);
+
+  function node(tag, attrs = {}, ...children) {
+    const element = document.createElement(tag);
+    for (const [name, value] of Object.entries(attrs)) {
+      if (name === 'class') element.className = value;
+      else element.setAttribute(name, String(value));
+    }
+    for (const child of children.flat()) element.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    return element;
+  }
+  function action(label, icon) {
+    const svg = helperIcon(icon);
+    if (icon === 'more') svg.querySelector('path').setAttribute('d', 'M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0z');
+    if (icon === 'ban') svg.querySelector('path').setAttribute('d', 'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636');
+    const button = node('button', { type: 'button', class: 'flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400', title: label }, svg, node('span', { class: 'text-xs' }, label));
+    button.addEventListener('click', () => { const message = document.getElementById('demo-native-message'); message.textContent = '这是 sub2api 原有的“' + label + '”操作。此演示展示新增的邮件与闹钟功能。'; });
+    return button;
+  }
+  function navigate(kind) {
+    history.pushState(null, '', new URL('admin/' + kind + '/', assetRoot).pathname);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
+  function updateStatusCells() {
+    for (const cell of document.querySelectorAll('[data-demo-account-status]')) {
+      const account = accounts.find(item => item.id === Number(cell.dataset.demoAccountStatus));
+      cell.textContent = account.schedulable ? '可调度' : '暂停调度';
+      cell.className = 'badge ' + (account.schedulable ? 'badge-success' : 'badge-gray');
+    }
+  }
+  function renderNative(kind) {
+    const isAccount = kind === 'accounts';
+    for (const value of ['accounts', 'users']) {
+      const button = document.getElementById('demo-' + value), selected = value === kind;
+      button.setAttribute('aria-selected', String(selected));
+      button.className = 'btn ' + (selected ? 'btn-secondary' : 'btn-ghost');
+    }
+    const headings = isAccount ? ['ID', '账号名称', '平台 / 类型', '分组', '调度状态', '操作'] : ['ID', '邮箱', '用户名', '角色', '状态', '操作'];
+    const rows = (isAccount ? accounts : users).map(item => {
+      const status = node('span', { class: 'badge ' + (item.status === 'active' ? 'badge-success' : 'badge-gray') }, item.status === 'active' ? '启用' : '禁用');
+      const values = isAccount ? ['#' + item.id, node('div', { class: 'flex flex-col' }, node('span', { class: 'font-medium text-gray-900 dark:text-white' }, item.name), node('span', { class: 'text-xs text-gray-500' }, 'demo-account-' + item.id + '@example.invalid')), node('span', { class: 'badge badge-gray' }, item.platform + ' / OAuth'), groups.find(group => group.id === item.group_ids[0]).name, node('span', { 'data-demo-account-status': item.id }, '')] : ['#' + item.id, node('span', { class: 'font-medium text-gray-900 dark:text-white' }, item.email), item.username, node('span', { class: 'badge ' + (item.role === 'admin' ? 'badge-purple' : 'badge-gray') }, item.role === 'admin' ? '管理员' : '用户'), status];
+      values.push(node('div', { class: 'flex items-center gap-1' }, action('编辑', 'edit'), action(isAccount ? '删除' : item.status === 'active' ? '禁用' : '启用', isAccount ? 'trash' : item.status === 'active' ? 'ban' : 'checkCircle'), action('更多', 'more')));
+      return node('tr', { 'data-row-id': item.id, class: 'hover:bg-gray-50 dark:hover:bg-dark-800' }, values.map((value, index) => node('td', { class: 'whitespace-nowrap px-5 py-4 text-sm text-gray-900 dark:text-gray-100' + (index === values.length - 1 ? ' sticky-col sticky-col-right bg-white dark:bg-dark-900' : '') }, value)));
+    });
+    const table = node('table', { class: 'w-full min-w-max divide-y divide-gray-200 dark:divide-dark-700' }, node('thead', { class: 'table-header bg-gray-50 dark:bg-dark-800' }, node('tr', {}, headings.map((text, index) => node('th', { scope: 'col', class: 'px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400' + (index === headings.length - 1 ? ' sticky-col sticky-col-right bg-gray-50 dark:bg-dark-800' : '') }, text)))), node('tbody', { class: 'divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-900' }, rows));
+    const target = document.getElementById('demo-native-list');
+    target.setAttribute('aria-label', isAccount ? '账号列表' : '用户列表');
+    target.replaceChildren(node('div', { class: 'table-page-layout' }, node('div', { class: 'table-scroll-container' }, node('div', { class: 'table-wrapper demo-native-table' }, table))), node('p', { id: 'demo-native-message', class: 'demo-native-message', role: 'status' }, isAccount ? '首个账号展示 23:00–09:00 时段，其余账号默认未接管。' : '点击行末新增的邮件图标，向选中的示例用户发信。'));
+    updateStatusCells();
+  }
 })();

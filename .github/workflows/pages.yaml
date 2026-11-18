@@ -29,10 +29,19 @@ jobs:
           node-version: '24'
       - name: Build the static, fixture-only demo
         run: node site/build.mjs
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+      # Package the Pages artifact directly: upload-pages-artifact is composite
+      # and currently references a floating nested action, blocked by this repo.
+      - name: Package the Pages artifact
+        run: |
+          tar --dereference --hard-dereference \
+            --directory _site --exclude=.git --exclude=.github \
+            -cf "$RUNNER_TEMP/artifact.tar" .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          path: _site
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
           retention-days: 7
+          if-no-files-found: error
 
   deploy:
     if: github.ref == 'refs/heads/main'

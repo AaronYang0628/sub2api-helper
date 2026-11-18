@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Static Pages demo: reuse the reviewed app UI, never its backend or credentials.
+// Static Pages demo: native row extensions use only in-memory example data.
 import { readFile, writeFile, mkdir, cp, rm } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,8 +16,7 @@ html = html.replace('<head>', '<head>\n  <link rel="icon" href="data:,">').repla
   .replace('<meta name="referrer" content="no-referrer">', '<meta name="referrer" content="no-referrer">\n  <meta http-equiv="Content-Security-Policy" content="default-src \'self\'; script-src \'self\'; style-src \'self\'; img-src \'self\' data:; connect-src \'none\'; object-src \'none\'; base-uri \'none\'; form-action \'none\'">')
   .replace('<script src="/static/icons.js"', '<script src="./assets/demo-adapter.js" defer></script>\n  <script src="/static/icons.js"')
   .replaceAll('"/static/', '"./assets/')
-  .replace('<link rel="stylesheet" href="./assets/style.css">', '<link rel="stylesheet" href="./assets/style.css">\n  <link rel="stylesheet" href="./assets/demo.css">')
-  .replace('<div class="embed-shell">', '<div class="embed-shell">\n' + await readFile(join(source, 'notice.html'), 'utf8'))
+  .replace('<link rel="stylesheet" href="./assets/style.css">', '<link rel="stylesheet" href="./assets/style.css">\n  <link rel="stylesheet" href="./assets/demo.css">\n  <link rel="stylesheet" href="./assets/native-console.css">')
   .replace('<span>管理员 API Key</span>', '<span>演示凭据（固定示例）</span>')
   .replace('id="connection-url" name="url"', 'id="connection-url" readonly name="url"')
   .replace('id="connection-key" name="admin_key"', 'id="connection-key" disabled name="admin_key"')
@@ -26,9 +25,50 @@ let app = appSource.replace('let token = readSession();', "let token = 'demo-ses
   .replace('function toast(message, error = false) {', "function toast(message, error = false) {\n  message = '演示：' + message;")
   .replace('检测将使用所选分组的 API Key 调用模型并消耗额度，确认开始？', '演示将展示固定示例结果，不会调用模型或消耗额度，确认开始？')
   .replace('该检测会实际调用模型并消耗所选 Key 的额度。固定题集只反映本次回答表现，不代表全面的模型能力。', '演示检测使用固定示例结果，不会调用模型或消耗额度。实际部署后会通过用户自己的 Key 调用模型。');
-await writeFile(join(target, 'index.html'), html);
+await writeFile(join(target, 'advanced.html'), html);
 await writeFile(join(assets, 'app.js'), app);
-for (const name of ['icons.js', 'style.css']) await cp(join(root, 'helper/static', name), join(assets, name));
+for (const name of ['icons.js', 'style.css', 'native.css', 'native-console.css']) await cp(join(root, 'helper/static', name), join(assets, name));
+const nativeSource = await readFile(join(root, 'helper/static/native.js'), 'utf8');
+const consoleSource = "new URL('/_helper/console', location.origin)";
+if (!nativeSource.includes(consoleSource)) throw new Error('Native advanced-console path changed; update the Pages-only URL rewrite.');
+await writeFile(join(assets, 'native.js'), nativeSource.replace(consoleSource, "new URL('../../advanced.html', location.href)"));
 for (const name of ['demo-adapter.js', 'demo.css']) await cp(join(source, name), join(assets, name));
+const nativeHtml = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'self'">
+  <title>sub2api Helper · 原生列表演示</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./assets/style.css">
+  <link rel="stylesheet" href="./assets/demo.css">
+  <link rel="stylesheet" href="./assets/native.css">
+  <script src="./assets/icons.js" defer></script>
+  <script src="./assets/demo-adapter.js" defer></script>
+  <script src="./assets/native.js" defer></script>
+</head>
+<body class="demo-native">
+  <main class="demo-native-shell">
+    <div class="demo-native-toolbar">
+      <div class="demo-native-tabs" role="tablist" aria-label="原生列表演示">
+        <button type="button" class="btn btn-secondary" id="demo-accounts" role="tab" aria-selected="true">账号管理</button>
+        <button type="button" class="btn btn-ghost" id="demo-users" role="tab" aria-selected="false">用户管理</button>
+      </div>
+      <div class="demo-links"><button type="button" class="btn btn-ghost btn-sm" id="demo-theme">深色</button><button type="button" class="btn btn-ghost btn-sm" id="demo-reset">重置演示</button><a class="btn btn-secondary btn-sm" href="https://github.com/AaronYang0628/sub2api-helper#docker-部署" target="_blank" rel="noopener noreferrer">部署说明</a></div>
+    </div>
+    <p class="demo-native-note">静态示例 · 点击账号行的闹钟设置运行时段，或点击用户行的邮件按钮。操作仅在本页模拟。</p>
+    <section id="demo-native-list" aria-label="账号列表"></section>
+    <p class="demo-native-footnote">实际使用时，按钮直接出现在 sub2api 原生列表中。未设置时段的账号保持原有调度状态。</p>
+  </main>
+</body>
+</html>`;
+await writeFile(join(target, 'index.html'), nativeHtml);
+for (const page of ['accounts', 'users']) {
+  const path = join(target, 'admin', page);
+  await mkdir(path, { recursive: true });
+  await writeFile(join(path, 'index.html'), nativeHtml.replaceAll('./assets/', '../../assets/'));
+}
 await writeFile(join(target, '.nojekyll'), '');
-console.log('Built _site/: native helper UI + local-only interactive sample data.');
+console.log('Built _site/: native account/user row actions with local-only sample data.');

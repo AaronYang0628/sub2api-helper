@@ -6,6 +6,10 @@
 
 管理请求使用 `x-api-key`，普通用户请求使用 `Authorization: Bearer <JWT>`。模型请求使用普通用户 API Key；管理员 API Key 不能用来代替模型密钥。成功响应要求 `code: 0` 与 `data`。列表响应要求 `data.items`、`total`、`page`，助手完整读取所有页，检测重复对象、数量变化和提前结束，避免悄悄遗漏对象。
 
+原生列表增强依赖 `frontend/src/components/common/DataTable.vue` 的 `tr[data-row-id]`，以及 `views/admin/UsersView.vue`、`AccountsView.vue` 的 `row-key="id"` 和操作单元格。脚本只在 `/admin/users` 与 `/admin/accounts` 插入按钮，点击时重新读取当前行的数字 ID，兼容虚拟列表复用行节点。移动端没有可靠 ID 时不添加操作，不按姓名或顺序推断。上游目前没有可用的全局自定义脚本或行扩展接口，所以通过同源网页代理注入外部脚本与样式，保留上游 CSP，不修改官方镜像。
+
+代理独立于管理 API 客户端，浏览器请求不会附加服务端管理 Key。HTTP 请求和 SSE 响应保持流式，WebSocket 只接收同源浏览器 Origin（无 Origin 的非浏览器客户端仍交由上游验证）。代理删除传入的客户端 IP 与转发头，HTTPS 协议提示仅从已配置的公网地址生成。上游看到 Helper 的网络来源，因此 IP 统计及按 IP 限流会受到影响；模型网关也可在外层代理中直接路由到原 sub2api。原生身份验证要求 `session_binding_enabled` 明确为 `false`，并且验证每次请求的启用管理员身份。
+
 | 功能 | 方法及路径 | 关键字段 |
 | --- | --- | --- |
 | 账号列表 | `GET /api/v1/admin/accounts?lite=true` | `id,name,status,schedulable,platform` |

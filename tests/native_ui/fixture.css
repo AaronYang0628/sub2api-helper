@@ -1,0 +1,6 @@
+/* Test-only layout. Row/action markup follows v0.2.22 DataTable/admin views. */
+.fixture-mobile { display: none; }
+.fixture-mobile-card { padding: 16px; }
+.fixture-id, .fixture-name { display: flex; justify-content: space-between; }
+.fixture-mobile-actions > div { display: flex; gap: 4px; }
+@media (max-width: 767px) { .fixture-desktop { display: none; } .fixture-mobile { display: block; } }

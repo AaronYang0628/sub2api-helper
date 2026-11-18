@@ -1,0 +1,43 @@
+/* Layout only. Native sub2api .btn/.input/.modal-* supply controls and theme. */
+dialog.helper-native-dialog { width: min(42rem, calc(100vw - 2rem)); max-height: 90vh; margin: auto; padding: 0; overflow: hidden; }
+dialog.helper-native-dialog:not([open]) { display: none; }
+dialog.helper-native-dialog::backdrop { background: rgba(0,0,0,.5); backdrop-filter: blur(4px); }
+.helper-native-dialog .modal-header { flex-shrink: 0; }
+.helper-native-dialog .modal-title { min-width: 0; overflow-wrap: anywhere; }
+.helper-native-dialog .helper-native-body { min-height: 0; overflow-y: auto; max-height: calc(90vh - 10rem); }
+.helper-native-dialog .helper-native-footer { flex-wrap: wrap; align-items: center; flex-shrink: 0; }
+.helper-native-form { display: grid; gap: 1rem; }
+.helper-native-field { display: grid; gap: .375rem; min-width: 0; }
+.helper-native-field > .input-label { margin-bottom: 0; }
+.helper-native-two { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1rem; }
+.helper-native-mode { display: flex; flex-wrap: wrap; gap: 1rem; }
+.helper-native-mode label, .helper-native-weekdays label { display: inline-flex; align-items: center; gap: .5rem; font-size: .875rem; }
+.helper-native-mode input, .helper-native-weekdays input { width: 1rem; height: 1rem; accent-color: #0d9488; }
+.helper-native-window { display: grid; gap: 1rem; }
+.helper-native-window[hidden] { display: none; }
+.helper-native-weekdays { display: flex; gap: .75rem; flex-wrap: wrap; }
+.helper-native-message { margin: 0; font-size: .875rem; line-height: 1.6; color: #64748b; overflow-wrap: anywhere; }
+.dark .helper-native-message { color: #94a3b8; }
+.helper-native-message.error { color: #ef4444; }
+.helper-native-message.warning { color: #b45309; }
+.dark .helper-native-message.warning { color: #fcd34d; }
+.helper-native-message.success { color: #059669; }
+.dark .helper-native-message.success { color: #34d399; }
+.helper-native-message[hidden] { display: none; }
+.helper-native-recipient { display: grid; gap: .25rem; overflow-wrap: anywhere; }
+.helper-native-recipient > span { font-size: .75rem; color: #64748b; }
+.dark .helper-native-recipient > span { color: #94a3b8; }
+.helper-native-submit { display: flex; justify-content: flex-end; }
+.helper-native-unavailable { max-width: 7rem; font-size: .75rem; color: #64748b; }
+.dark .helper-native-unavailable { color: #94a3b8; }
+.helper-native-advanced { margin-right: auto; font-size: .875rem; min-width: 0; }
+.helper-native-advanced > summary { cursor: pointer; }
+.helper-native-advanced-row { display: flex; align-items: center; gap: .5rem; margin-top: .5rem; }
+.helper-native-advanced-row select { min-width: 8rem; }
+dialog.helper-native-wide { width: min(80rem, calc(100vw - 2rem)); height: 90vh; }
+.helper-native-wide .helper-native-body { display: flex; flex: 1; max-height: none; padding: 0; }
+.helper-native-console { display: block; width: 100%; height: 100%; min-height: 0; flex: 1; border: 0; }
+@media (max-width: 640px) {
+  .helper-native-two { grid-template-columns: 1fr; }
+  .helper-native-dialog .modal-header, .helper-native-dialog .modal-body, .helper-native-dialog .modal-footer { padding-left: 1rem; padding-right: 1rem; }
+}

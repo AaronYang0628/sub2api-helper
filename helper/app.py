@@ -13,8 +13,8 @@ import time
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Path as ApiPath
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, Path as ApiPath
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 import httpx
@@ -25,6 +25,8 @@ from .config import Config
 from .credentials import CredentialVault
 from .engine import Engine
 from .mailer import Mailer
+from .native_proxy import NativeProxy
+from .native_api import install_native_api
 from .schemas import Automation, Benchmark, BenchmarkSelection, Connection, Email, Modules, Rule, Schedule, Session, Toggle, UserStatus
 from .store import Store
 from .upstream import Upstream, UpstreamError
@@ -34,9 +36,11 @@ STATIC = Path(__file__).parent / "static"
 MODULE_NAMES = {"benchmark": "模型能力自检", "pricing": "模型价格统计", "ranking": "用户用量排名"}
 ACCOUNT_FIELDS = {"id", "name", "platform", "type", "status", "schedulable", "group_ids"}
 USER_FIELDS = {"id", "username", "email", "role", "status", "last_used_at", "last_active_at", "created_at"}
+HELPER_API_ROOTS = {"status", "connection", "accounts", "schedules", "users", "rules", "modules", "audit", "groups",
+                    "automations", "settlements", "analytics", "benchmark", "portal", "compatibility"}
 
 
-def create_app(config=None, upstream=None, store=None, mailer=None, background=True, connector=None):
+def create_app(config=None, upstream=None, store=None, mailer=None, background=True, connector=None, native_proxy=None):
     config = config or Config.from_env()
     store = store or Store(config.db_path)
     vault = CredentialVault(store, config.db_path)
@@ -51,8 +55,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     upstream = upstream or Upstream(config)
     mailer = mailer or Mailer(config)
     engine = Engine(store, upstream, mailer)
+    native_proxy = native_proxy or NativeProxy(lambda: config.sub2api_url,
+                                              public_url_provider=lambda: config.sub2api_public_url or config.public_url)
     sessions = {}
     admin_sessions = {}
+    native_sessions = {}
     last_admin_verification = [0.0]
     requests_by_ip = defaultdict(deque)
     mutations = engine._tick_lock
@@ -72,6 +79,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             with suppress(asyncio.CancelledError):
                 await task
         await upstream.close()
+        await native_proxy.close()
         store.close()
 
     app = FastAPI(title="sub2api helper", version=__version__, lifespan=lifespan,
@@ -92,13 +100,27 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
 
     @app.middleware("http")
     async def security_headers(request, call_next):
-        if request.method in {"POST", "PUT", "DELETE", "PATCH"}:
+        path_parts = request.url.path.split("/")
+        helper_path = (request.url.path.startswith("/_helper/api/") or
+                       (len(path_parts) >= 3 and path_parts[1] == "api" and path_parts[2] in HELPER_API_ROOTS))
+        if helper_path and request.method in {"POST", "PUT", "DELETE", "PATCH"}:
             try:
                 if int(request.headers.get("content-length", "0")) > 65536:
                     return JSONResponse(status_code=413, content={"detail": "请求过大"})
             except ValueError:
                 return JSONResponse(status_code=400, content={"detail": "无效请求长度"})
+            chunks, length = [], 0
+            async for chunk in request.stream():
+                length += len(chunk)
+                if length > 65536:
+                    return JSONResponse(status_code=413, content={"detail": "请求过大"})
+                chunks.append(chunk)
+            # Starlette's wrapped request replays a cached body to the route.
+            # Buffer only helper JSON; upstream uploads and streams stay untouched.
+            request._body = b"".join(chunks)
         response = await call_next(request)
+        if getattr(request.state, "helper_proxied", False):
+            return response
         source = urlsplit(config.sub2api_public_url or config.sub2api_url)
         ancestor = f"{source.scheme}://{source.netloc}" if source.hostname else "http: https:"
         response.headers["Content-Security-Policy"] = (
@@ -111,11 +133,25 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    async def admin(authorization: str = Header(default="")):
+    async def admin(request: Request, authorization: str = Header(default="")):
         expected = "Bearer " + config.admin_token
         if hmac.compare_digest(authorization.encode(), expected.encode()):
             return
         token = authorization.removeprefix("Bearer ")
+        native_entry = native_sessions.get(token)
+        if native_entry:
+            if (native_entry["expires"] <= time.monotonic() or
+                    native_entry["user_agent"] != request.headers.get("user-agent", "")):
+                native_sessions.pop(token, None)
+                raise HTTPException(401, "请重新打开原生列表中的助手操作")
+            try:
+                profile = await verify_native(native_entry["jwt"], native_entry["user_agent"])
+                if profile["id"] != native_entry["actor"]:
+                    raise HTTPException(401, "管理员身份已改变，请重新打开操作")
+            except (HTTPException, UpstreamError):
+                native_sessions.pop(token, None)
+                raise
+            return
         if admin_sessions.get(token, 0) > time.monotonic():
             if time.monotonic() - last_admin_verification[0] >= 30:
                 try:
@@ -152,6 +188,34 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         if profile["status"] != "active":
             raise HTTPException(403, "用户已停用")
         return profile
+
+    async def verify_native(token, user_agent):
+        if not config.native_ui:
+            raise HTTPException(404, "原生列表增强未启用")
+        if not config.sub2api_url or not config.sub2api_admin_key:
+            raise HTTPException(503, "请先在 /_helper/setup 绑定服务地址和管理员 Key")
+        if not token or len(token) > 8192:
+            raise HTTPException(401, "请先登录 sub2api 管理员账号")
+        # A profile request from another IP can revoke a bound upstream session.
+        # Require an explicit false before attempting to use the browser JWT.
+        settings = await upstream.settings()
+        if settings.get("session_binding_enabled") is not False:
+            raise HTTPException(409, "上游会话绑定已启用或状态未知，原生助手操作暂不可用")
+        try:
+            profile = validate_profile(await native_proxy.profile(token, user_agent))
+        except UpstreamError as exc:
+            if exc.status in (401, 403):
+                raise HTTPException(exc.status, "sub2api 登录已失效或没有管理权限") from None
+            raise
+        if profile["role"] != "admin":
+            raise HTTPException(403, "仅 sub2api 管理员可以使用此操作")
+        return profile
+
+    async def native_admin(request: Request, authorization: str = Header(default="")):
+        limit(request, "native.auth", 300)
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(401, "请先登录 sub2api 管理员账号")
+        return await verify_native(authorization[7:], request.headers.get("user-agent", ""))
 
     async def portal(x_portal_session: str = Header(default="")):
         entry = sessions.get(x_portal_session)
@@ -205,8 +269,47 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         return {"status": "ok", "version": __version__}
 
     @app.get("/")
-    async def index():
+    async def index(request: Request):
+        if config.native_ui and config.sub2api_url:
+            return await native_proxy.forward(request, "")
         return FileResponse(STATIC / "index.html")
+
+    @app.get("/_helper/setup")
+    async def native_setup():
+        return FileResponse(STATIC / "index.html")
+
+    @app.get("/_helper/console")
+    async def native_console():
+        html = (STATIC / "index.html").read_text()
+        html = html.replace('</head>', '<link rel="stylesheet" href="/_helper/console.css"></head>')
+        return HTMLResponse(html)
+
+    @app.get("/_helper/console.css")
+    async def native_console_css():
+        return FileResponse(STATIC / "native-console.css")
+
+    @app.get("/_helper/native.js")
+    async def native_script():
+        return FileResponse(STATIC / "native.js", media_type="application/javascript")
+
+    @app.get("/_helper/native.css")
+    async def native_styles():
+        return FileResponse(STATIC / "native.css", media_type="text/css")
+
+    @app.post("/_helper/api/session")
+    async def native_session(request: Request, profile=Depends(native_admin)):
+        limit(request, "native.session", 20)
+        now = time.monotonic()
+        for old in list(native_sessions):
+            if native_sessions[old]["expires"] <= now:
+                del native_sessions[old]
+        if len(native_sessions) >= 256:
+            native_sessions.pop(next(iter(native_sessions)))
+        token = secrets.token_urlsafe(32)
+        native_sessions[token] = {"jwt": request.headers["authorization"][7:],
+                                  "user_agent": request.headers.get("user-agent", ""),
+                                  "actor": profile["id"], "expires": now + 15 * 60}
+        return {"session": token}
 
     @app.get("/features/{module}")
     async def feature(module: str):
@@ -264,6 +367,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                     store.set_setting("public_url", newconfig.public_url)
                 if config.sub2api_admin_key != value.admin_key:
                     admin_sessions.clear()
+                    native_sessions.clear()
                     sessions.clear()
                 upstream.base_url = value.url
                 upstream.admin_key = value.admin_key
@@ -285,6 +389,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     @app.post("/api/connection/disconnect")
     async def disconnect(authorization: str = Header(default="")):
         admin_sessions.pop(authorization.removeprefix("Bearer "), None)
+        native_sessions.pop(authorization.removeprefix("Bearer "), None)
         return {"ok": True}
 
     @app.get("/api/accounts", dependencies=[Depends(admin)])
@@ -684,5 +789,26 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         limit(request, "compatibility", 2)
         return await check_compatibility()
 
+    install_native_api(app, store, upstream, mailer, engine, lambda: config, native_admin, limit)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    @app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+    async def native_forward(request: Request, path: str):
+        if not config.native_ui or not config.sub2api_url or path.startswith("_helper/"):
+            raise HTTPException(404)
+        if path == "api/v1/auth/logout" and request.method == "POST":
+            authorization = request.headers.get("authorization", "")
+            if authorization.startswith("Bearer "):
+                jwt = authorization[7:]
+                for token, entry in list(native_sessions.items()):
+                    if hmac.compare_digest(entry["jwt"].encode(), jwt.encode()):
+                        native_sessions.pop(token, None)
+        return await native_proxy.forward(request, path)
+
+    @app.websocket("/{path:path}")
+    async def native_websocket(websocket: WebSocket, path: str):
+        if not config.native_ui or not config.sub2api_url or path.startswith("_helper/"):
+            await websocket.close(code=1008)
+            return
+        await native_proxy.websocket(websocket, path)
     return app

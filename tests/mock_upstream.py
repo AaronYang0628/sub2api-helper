@@ -41,6 +41,15 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         query = parse_qs(urlsplit(self.path).query)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or "{}")
+        if path == "/":
+            output = b'<!doctype html><html><head><title>sub2api fixture</title></head><body>Original upstream page</body></html>'
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'")
+            self.send_header("Content-Length", str(len(output)))
+            self.end_headers()
+            self.wfile.write(output)
+            return
         if path.startswith("/api/v1/admin/"):
             if self.headers.get("x-api-key") != "fixture-admin-key":
                 return self.reply(401, {})
