@@ -11,7 +11,7 @@ import httpx
 from helper.config import Config
 from helper.gallery_generation import (
     ARTWORK_CSP, GalleryGenerationError, MAX_HTML_BYTES, MAX_RESPONSE_BYTES,
-    MAX_TEXT_BYTES, generate_artwork, sanitize_artwork,
+    MAX_TEXT_BYTES, REASONING_EFFORTS, UnsupportedReasoningEffort, generate_artwork, sanitize_artwork,
 )
 
 
@@ -181,6 +181,82 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
 
         result = await self.run_with(handler)
         self.assertEqual(result["content"], '<div style="color:gold">海</div>')
+
+    async def test_missing_and_default_effort_preserve_original_request_shape(self):
+        for api_format in ("chat", "responses"):
+            for explicit_default in (False, True):
+                self.request.api_format = api_format
+                if explicit_default:
+                    self.request.reasoning_effort = "default"
+                elif hasattr(self.request, "reasoning_effort"):
+                    del self.request.reasoning_effort
+
+                def handler(request):
+                    payload = json.loads(request.content)
+                    self.assertNotIn("reasoning_effort", payload)
+                    self.assertNotIn("reasoning", payload)
+                    self.assertNotIn("thinking", payload)
+                    return httpx.Response(200, json={"choices": [{"message": {"content": "完成"}}]} if api_format == "chat" else {"output": [{"type": "message", "content": [{"type": "output_text", "text": "完成"}]}]})
+
+                await self.run_with(handler)
+
+    async def test_effort_uses_exact_protocol_field_without_provider_or_model_rewrites(self):
+        for api_format in ("chat", "responses"):
+            for effort in sorted(REASONING_EFFORTS - {"default"}):
+                self.request.api_format = api_format
+                self.request.reasoning_effort = effort
+                self.request.model = "provider-alias/glm-5.3"
+
+                def handler(request):
+                    payload = json.loads(request.content)
+                    self.assertEqual(payload["model"], self.request.model)
+                    self.assertNotIn("thinking", payload)
+                    self.assertNotIn("output_config", payload)
+                    if api_format == "chat":
+                        self.assertEqual(payload["reasoning_effort"], effort)
+                        self.assertNotIn("reasoning", payload)
+                        return httpx.Response(200, json={"choices": [{"message": {"content": "完成"}}]})
+                    self.assertEqual(payload["reasoning"], {"effort": effort})
+                    self.assertNotIn("reasoning_effort", payload)
+                    return httpx.Response(200, json={"output": [{"type": "message", "content": [{"type": "output_text", "text": "完成"}]}]})
+
+                await self.run_with(handler)
+
+    async def test_invalid_effort_is_rejected_before_network(self):
+        calls = []
+        for invalid in (None, True, [], {}, "", "HIGH", "ultra", "none\nsecret"):
+            self.request.reasoning_effort = invalid
+            with self.assertRaises(GalleryGenerationError):
+                await self.run_with(lambda request: calls.append(request))
+        self.assertEqual(calls, [])
+
+    async def test_rejected_explicit_effort_is_safe_closed_and_never_retried(self):
+        self.request.reasoning_effort = "xhigh"
+        for status in (400, 422):
+            calls = []
+            stream = Stream([b'{"error":"ordinary-key upstream secret details"}'])
+
+            def handler(request):
+                calls.append(request)
+                return httpx.Response(status, stream=stream, headers={"Content-Type": "application/json"})
+
+            with self.assertRaises(UnsupportedReasoningEffort) as rejected:
+                await self.run_with(handler)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(json.loads(calls[0].content)["reasoning_effort"], "xhigh")
+            self.assertIn("不会自动重试", str(rejected.exception))
+            self.assertNotIn("ordinary-key", str(rejected.exception))
+            self.assertNotIn("secret", str(rejected.exception))
+            self.assertEqual(stream.consumed, 0)
+            self.assertTrue(stream.closed)
+
+    async def test_default_rejection_and_permission_failure_do_not_claim_effort_error(self):
+        for effort, status in (("default", 400), ("high", 403), ("high", 500)):
+            self.request.reasoning_effort = effort
+            with self.assertRaises(GalleryGenerationError) as failed:
+                await self.run_with(lambda request: httpx.Response(status, json={"error": "upstream secret"}))
+            self.assertNotIsInstance(failed.exception, UnsupportedReasoningEffort)
+            self.assertNotIn("upstream secret", str(failed.exception))
 
     async def test_optional_title_uses_plain_document_title_or_first_heading(self):
         for source, expected in (

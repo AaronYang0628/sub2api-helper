@@ -21,8 +21,6 @@ function node(tag, attrs = {}, ...children) {
   children.flat(Infinity).forEach(child => { if (child !== undefined && child !== null && child !== false) result.append(child instanceof Node ? child : document.createTextNode(String(child))); });
   return result;
 }
-function note(text, kind = '') { return node('div', { class: `notice ${kind}` }, helperIcon('infoCircle', 'notice-icon'), node('span', {}, text)); }
-function field(label, input, help) { return node('label', { class: 'field' }, node('span', {}, label), input, help ? node('small', {}, help) : null); }
 async function request(endpoint, method = 'GET', data) {
   const response = await fetch(`/_helper/api/portal${endpoint}`, { method, credentials: 'omit', redirect: 'error', headers: { ...(portalSession ? { 'X-Portal-Session': portalSession } : {}), ...(data !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(data !== undefined ? { body: JSON.stringify(data) } : {}) });
   let body; try { body = await response.json(); } catch (_) { body = null; }
@@ -47,9 +45,9 @@ function metricTable(data, ranking) {
     return node('td', {}, typeof value === 'number' ? /cost/.test(key) ? `$${value.toFixed(4)}` : value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : value ?? '—');
   }))));
 }
-async function benchmark() {
+async function benchmark(role) {
   const gallery = node('div'); featureMain.append(gallery);
-  const controller = helperGallery(gallery, { request });
+  const controller = helperGallery(gallery, { request, settingsUrl: role === 'admin' ? '/_helper/setup#analytics' : undefined });
   await controller.ready;
 }
 async function initialize() {
@@ -62,10 +60,11 @@ async function initialize() {
     if (!portalSession) throw new Error('登录身份验证失败，请从 sub2api 菜单重新打开。');
     const modules = await request('/modules');
     if (!modules[feature]) throw new Error('此功能尚未上线，或已被管理员关闭。');
-    featureMain.replaceChildren(node('div', { class: 'page-head' }, node('div', {}, node('h1', {}, titles[feature]), node('p', {}, feature === 'benchmark' ? '按分组查看模型定时生成的最新作品。' : feature === 'pricing' ? '查看自己的模型请求、Token 使用量与费用。' : '匿名展示使用情况，不公开用户邮箱和账号身份。'))));
-    if (feature === 'benchmark') { await benchmark(); return; }
+    const anonymous = session.role !== 'admin';
+    const subtitle = feature === 'benchmark' ? null : feature === 'pricing' ? '查看模型请求、Token 使用量与费用。' : anonymous ? '匿名展示用户用量。' : '按用户查看用量与费用。';
+    featureMain.replaceChildren(node('div', { class: 'page-head' }, node('div', {}, node('h1', {}, titles[feature]), subtitle ? node('p', {}, subtitle) : null)));
+    if (feature === 'benchmark') { await benchmark(session.role); return; }
     const data = await request(feature === 'pricing' ? '/models' : '/ranking');
-    if (feature === 'ranking') featureMain.append(note('用户身份已匿名处理，榜单仅展示排名和用量。'));
     featureMain.append(card(feature === 'pricing' ? '我的模型使用统计' : '用户用量榜单', data.start_date && data.end_date ? `${data.start_date} — ${data.end_date}` : '当前统计周期', metricTable(data, feature === 'ranking')));
   } catch (err) {
     loginToken = ''; featureMain.replaceChildren(node('section', { class: 'card feature-login' }, node('h1', {}, '暂时无法打开此功能'), node('p', {}, err.message), node('p', { class: 'tiny' }, '如果刚刚登录或更新配置，请回到 sub2api 后重新打开菜单。')));

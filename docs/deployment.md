@@ -91,6 +91,10 @@ sudo systemctl reload nginx
 
 访问 `https://sub2api.example.com/_helper/setup` 绑定 Key，再打开 `/_helper/console`。先对测试账号保存计划、向受控邮箱发测试邮件，再启用规则。管理 Key 权限决定可用操作，当前适配推荐 FullAccess 或原有全权限 Key；上游运营确认在原站完成。
 
+在「功能与菜单」确认或填写浏览器访问原 sub2api 的地址，例如 `https://sub2api.example.com`。先保存地址，再同步已启用菜单，旧地址与图标会一并更新。宿主机的 `127.0.0.1:18080` 用于 Nginx 转发，浏览器应通过原站的 `/_helper/` 路由访问。同步后刷新 sub2api，分别用普通用户和管理员打开菜单，确认登录与分组权限。
+
+已保存的菜单地址优先于 `HELPER_PUBLIC_URL`。两者都为空时，使用配置的 `SUB2API_PUBLIC_URL` 或可公开访问的 `SUB2API_URL`。启用 IP/UA 会话绑定时，菜单的登录验证暂不可用。
+
 ## 4. 可选 Beta：网页注入
 
 原生邮件与定时按钮需要两个开关：Helper 的 `HELPER_NATIVE_UI=true`，以及 Nginx 的 `set $helper_injection_enabled 1;`。更改环境变量后重建 Helper 并保留数据卷。默认两者均关闭，原站不依赖 Helper。

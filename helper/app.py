@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
 import hmac
 import hashlib
+import ipaddress
 import json
 import re
 from pathlib import Path
@@ -19,6 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 import httpx
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .benchmark import run_benchmark
@@ -41,21 +43,108 @@ MODULE_NAMES = {"benchmark": "智商检测", "pricing": "模型价格统计", "r
 ACCOUNT_FIELDS = {"id", "name", "platform", "type", "status", "schedulable", "group_ids"}
 USER_FIELDS = {"id", "username", "email", "role", "status", "last_used_at", "last_active_at", "created_at"}
 HELPER_API_ROOTS = {"status", "connection", "accounts", "schedules", "users", "rules", "modules", "audit", "groups",
-                    "automations", "settlements", "analytics", "benchmark", "gallery", "portal", "compatibility"}
+                    "automations", "settlements", "analytics", "benchmark", "gallery", "portal", "compatibility", "menu-settings"}
+
+# Trusted SVG geometry from the already vendored upstream Icon.vue (LGPL-3.0).
+MENU_ICONS = {'benchmark': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+              'stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 '
+              '18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 '
+              '2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 '
+              '9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 '
+              '002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 '
+              '00-2.456 2.456z"/></svg>',
+ 'pricing': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+            'stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 '
+            '00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 '
+            '0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>',
+ 'ranking': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+            'stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 18.75h-9m9 0a3 '
+            '3 0 013 3h-15a3 3 0 013-3m9 0v-4.5A3.375 3.375 0 0012.75 11.25h-1.5A3.375 3.375 0 008.25 '
+            '14.25v4.5m8.25-12V6.75a.75.75 0 00-.75-.75h-1.5a.75.75 0 00-.75.75v1.5m0 0V9a.75.75 0 '
+            '01-.75.75H9.75A.75.75 0 019 9V8.25m0 0V6.75a.75.75 0 00-.75-.75h-1.5a.75.75 0 00-.75.75v1.5m12 '
+            '0h.008v.008h-.008V8.25zm-12 0h.008v.008H5.25V8.25z"/></svg>'}
+
+
+class MenuOrigin(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    public_origin: str = Field(min_length=1, max_length=2048)
+
+
+def _http_origin(value, *, allow_path=False):
+    """Normalize an HTTP origin without accepting URL credentials or hints."""
+    if not isinstance(value, str):
+        raise ValueError("公开地址必须是完整的 HTTP(S) 根地址")
+    value = value.strip()
+    if not value:
+        raise ValueError("请先填写用户浏览器可访问的公开根地址")
+    if ("\\" in value or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise ValueError("公开地址不能包含空白或控制字符")
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None
+                or parsed.password is not None or parsed.query or parsed.fragment
+                or (not allow_path and parsed.path not in {"", "/"})):
+            raise ValueError
+        hostname = parsed.hostname.rstrip(".")
+        if not hostname or "%" in hostname:
+            raise ValueError
+        try:
+            address = ipaddress.ip_address(hostname)
+            hostname = "[" + address.compressed + "]" if address.version == 6 else address.compressed
+        except ValueError:
+            if re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)(?:\.(?:0[xX][0-9a-fA-F]+|[0-9]+))*", hostname):
+                raise ValueError
+            hostname = hostname.encode("idna").decode("ascii").lower()
+            if len(hostname) > 253 or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in hostname.split(".")):
+                raise ValueError
+        port = parsed.port
+        if port is not None and port not in range(1, 65536):
+            raise ValueError
+        suffix = f":{port}" if port is not None and port != (443 if parsed.scheme == "https" else 80) else ""
+        return f"{parsed.scheme}://{hostname}{suffix}"
+    except (ValueError, UnicodeError):
+        raise ValueError("请填写不含路径、凭据、参数的完整 HTTP(S) 根地址") from None
+
+
+def _internal_origin(origin):
+    hostname = urlsplit(origin).hostname
+    try:
+        return not ipaddress.ip_address(hostname).is_global
+    except ValueError:
+        return ("." not in hostname or hostname.endswith((".localhost", ".local", ".localdomain", ".internal", ".svc", ".cluster.local", ".lan", ".home.arpa")))
+
+
+def _default_public_origin(candidate):
+    for value, authoritative in ((candidate.sub2api_public_url, True), (candidate.sub2api_url, False)):
+        if not value:
+            continue
+        try:
+            origin = _http_origin(value, allow_path=True)
+            if authoritative or not _internal_origin(origin):
+                return origin
+        except ValueError:
+            pass
+    return ""
 
 
 def create_app(config=None, upstream=None, store=None, mailer=None, background=True, connector=None, native_proxy=None):
     config = config or Config.from_env()
+    environment_public_origin = config.public_url
     store = store or Store(config.db_path)
     vault = CredentialVault(store, config.db_path)
     binding = vault.read()
-    if not config.public_url:
-        config = replace(config, public_url=store.get_setting("public_url", ""))
+    saved_public_origin = store.get_setting("public_url", "")
+    if saved_public_origin:
+        # An explicit UI edit must survive restart even if the deployment kept
+        # its original HELPER_PUBLIC_URL bootstrap default.
+        config = replace(config, public_url=saved_public_origin)
     if binding:
         if config.sub2api_url and config.sub2api_url != binding["url"]:
             raise RuntimeError("SUB2API_URL 与已绑定实例不符，请保留原地址或使用新的数据卷")
         config = replace(config, sub2api_url=binding["url"],
                          sub2api_admin_key=config.sub2api_admin_key or binding["admin_key"])
+    if not config.public_url:
+        config = replace(config, public_url=_default_public_origin(config))
     upstream = upstream or Upstream(config)
     mailer = mailer or Mailer(config)
     engine = Engine(store, upstream, mailer)
@@ -73,7 +162,8 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     async def generate_gallery_work(job):
         api_key = await upstream.benchmark_key(job["key_id"], job["group_id"])
         selection = SimpleNamespace(model=job["model"], api_format=job["api_format"],
-                                    prompt=job["prompt"], api_key=api_key)
+                                    prompt=job["prompt"], api_key=api_key,
+                                    reasoning_effort=job.get("reasoning_effort", "default"))
         return await generate_artwork(config, selection)
 
     gallery = Gallery(store, generate_gallery_work)
@@ -143,8 +233,8 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         response = await call_next(request)
         if getattr(request.state, "helper_proxied", False):
             return response
-        source = urlsplit(config.sub2api_public_url or config.sub2api_url)
-        ancestor = f"{source.scheme}://{source.netloc}" if source.hostname else "http: https:"
+        ancestor = menu_parent_origin()
+        ancestors = "'self'" + (" " + ancestor if ancestor else "")
         benchmark_page = request.url.path in {"/_helper/setup", "/_helper/console", "/_helper/features/benchmark"}
         if config.legacy_routes and request.url.path in {"/", "/features/benchmark"}:
             benchmark_page = True
@@ -156,7 +246,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             f"default-src 'self'; script-src 'self'; style-src {styles}; "
             f"img-src {image_sources}; "
             "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
-            f"frame-ancestors 'self' {ancestor}"
+            f"frame-ancestors {ancestors}"
         )
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -254,14 +344,118 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             raise HTTPException(401, "请从 sub2api 自定义菜单重新打开此页面")
         # Check session-binding before profile: changing IP/UA could revoke a bound JWT.
         settings = await upstream.settings()
-        if settings.get("session_binding_enabled"):
-            raise HTTPException(409, "上游启用了会话绑定，暂不支持通过助手验证用户身份")
+        if settings.get("session_binding_enabled") is not False:
+            raise HTTPException(409, "上游会话绑定已启用或状态未知，暂不支持通过助手验证用户身份")
         profile = validate_profile(await upstream.profile(entry["token"]))
         return {"profile": profile, "token": entry["token"]}
 
     def enabled(module):
         if not store.get_setting("modules", {}).get(module, False):
             raise HTTPException(404, "该功能尚未上线")
+
+    def menu_parent_origin(candidate=None):
+        candidate = candidate or config
+        try:
+            if candidate.sub2api_public_url:
+                return _http_origin(candidate.sub2api_public_url, allow_path=True)
+            if candidate.sub2api_url:
+                origin = _http_origin(candidate.sub2api_url, allow_path=True)
+                if not _internal_origin(origin):
+                    return origin
+        except ValueError:
+            pass
+        return ""
+
+    def browser_origin(request):
+        # A browser's own Origin is a validation hint, never an authority for
+        # widening frame-ancestors or setting an upstream address.
+        try:
+            return _http_origin(request.headers.get("origin") or str(request.base_url))
+        except ValueError:
+            return ""
+
+    def menu_origin(value, request, candidate=None):
+        candidate = candidate or config
+        origin = _http_origin(value)
+        parent = menu_parent_origin(candidate)
+        if _internal_origin(origin):
+            direct = ""
+            try:
+                direct = _http_origin(candidate.sub2api_url, allow_path=True)
+            except ValueError:
+                pass
+            explicit_local_site = bool(candidate.sub2api_public_url and parent and _internal_origin(parent)
+                                       and browser_origin(request) == origin)
+            direct_same_site = bool(not candidate.sub2api_public_url and origin == direct and browser_origin(request) == origin)
+            if origin != parent and not explicit_local_site and not direct_same_site:
+                raise ValueError("该地址是 localhost 或内网地址，不能写入远端用户的菜单；请填写浏览器可访问的公开根地址，局域网站点需配置 SUB2API_PUBLIC_URL")
+        if parent.startswith("https://") and origin.startswith("http://"):
+            raise ValueError("sub2api 使用 HTTPS，菜单公开地址也必须使用 HTTPS")
+        return origin
+
+    def menu_previews(flags, origin):
+        return [{"key": key, "id": "sub2api-helper-" + key, "label": label, "icon_svg": MENU_ICONS[key],
+                 "url": origin + "/_helper/features/" + key if origin else "", "enabled": bool(flags.get(key)),
+                 "visibility": "user", "sort_order": 100 + index, "hide_open_button": True}
+                for index, (key, label) in enumerate(MODULE_NAMES.items())]
+
+    def menu_plan(flags, origin, settings):
+        current = settings.get("custom_menu_items")
+        if not isinstance(current, list) or not all(isinstance(item, dict) for item in current):
+            raise HTTPException(502, "上游菜单格式不兼容")
+        owned = {"sub2api-helper-" + key for key in MODULE_NAMES}
+        merged = [item for item in current if item.get("id") not in owned]
+        merged.extend({key: value for key, value in item.items() if key not in {"key", "enabled"}}
+                      for item in menu_previews(flags, origin) if item["enabled"])
+        if len(merged) > 20:
+            raise HTTPException(409, "上游最多支持 20 个菜单，请先移除部分菜单")
+        return current, merged
+
+    async def menu_settings_view(request, settings=None):
+        settings = settings if settings is not None else await upstream.settings()
+        flags = Modules(**store.get_setting("modules", {})).model_dump()
+        problems = []
+        try:
+            origin = menu_origin(config.public_url, request)
+        except ValueError as exc:
+            problems.append(str(exc))
+            try:
+                origin = _http_origin(config.public_url)
+            except ValueError:
+                origin = ""
+        if settings.get("session_binding_enabled") is not False:
+            problems.append("上游会话绑定已启用或状态未知，Helper 无法安全验证菜单用户；请先在 sub2api 设置中处理")
+        try:
+            current, merged = menu_plan(flags, origin, settings)
+            in_sync = current == merged
+        except HTTPException as exc:
+            problems.append(str(exc.detail)); in_sync = False
+        return {"public_origin": config.public_url, "origin_source": "saved" if store.get_setting("public_url", "") else "environment" if environment_public_origin else "sub2api" if config.public_url else "unset",
+                "sub2api_public_origin": menu_parent_origin(), "modules": flags,
+                "menus": menu_previews(flags, origin), "ready": not problems, "problems": problems, "in_sync": in_sync}
+
+    async def sync_menu_modules(value, request):
+        flags = value.model_dump()
+        try:
+            origin = menu_origin(config.public_url, request) if any(flags.values()) else ""
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        settings = await upstream.settings()
+        if any(flags.values()) and settings.get("session_binding_enabled") is not False:
+            raise HTTPException(409, "上游会话绑定已启用或状态未知，菜单尚未同步；请先在 sub2api 设置中处理")
+        current, merged = menu_plan(flags, origin, settings)
+        changed = current != merged
+        if changed:
+            await upstream.update_menus(merged)
+            try:
+                settings = await upstream.settings()
+            except UpstreamError:
+                raise HTTPException(502, "菜单写入结果尚未确认，请刷新后重试；本地功能状态未更改") from None
+            if settings.get("custom_menu_items") != merged:
+                raise HTTPException(502, "菜单写入未确认，请刷新后重试；本地功能状态未更改")
+        store.set_setting("modules", flags)
+        store.audit("modules.sync", "menus", detail=str(flags))
+        return settings, changed
 
     def dates(start_date=None, end_date=None):
         today = datetime.now(ZoneInfo(config.timezone)).date()
@@ -397,13 +591,22 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             # never allow an unrelated server to mint local management sessions.
             if config.sub2api_url and value.url != config.sub2api_url:
                 raise HTTPException(409, "此助手已限定到一个 sub2api 实例，不能通过登录切换服务地址")
-            newconfig = replace(config, sub2api_url=value.url, sub2api_admin_key=value.admin_key,
-                                public_url=config.public_url or value.helper_url)
+            newconfig = replace(config, sub2api_url=value.url, sub2api_admin_key=value.admin_key)
             candidate = (connector or Upstream)(newconfig)
             try:
                 warning = await verify_connection(candidate)
+                discovered = False
+                if not newconfig.public_url and value.helper_url:
+                    try:
+                        origin = menu_origin(value.helper_url, request, newconfig)
+                        newconfig = replace(newconfig, public_url=origin)
+                        discovered = True
+                    except ValueError:
+                        warning = "；".join(filter(None, (warning, "管理员 Key 已验证，请在功能菜单填写用户可访问的公开根地址")))
+                if not newconfig.public_url:
+                    newconfig = replace(newconfig, public_url=_default_public_origin(newconfig))
                 vault.write(value.url, value.admin_key)
-                if newconfig.public_url:
+                if discovered:
                     store.set_setting("public_url", newconfig.public_url)
                 if config.sub2api_admin_key != value.admin_key:
                     admin_sessions.clear()
@@ -422,7 +625,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                 admin_sessions[token] = now + 8 * 3600
                 last_admin_verification[0] = now
                 store.audit("connection.validated", "upstream", detail="管理员凭证已验证并加密保存")
-                return {"session": token, "upstream_url": config.sub2api_url, "warning": warning}
+                return {"session": token, "upstream_url": config.sub2api_url, "public_url": config.public_url, "warning": warning}
             finally:
                 await candidate.close()
 
@@ -544,31 +747,38 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     async def modules():
         return Modules(**store.get_setting("modules", {})).model_dump()
 
-    @admin_api.put("/modules", dependencies=[Depends(admin)])
-    async def module_update(value: Modules):
+    @admin_api.get("/menu-settings", dependencies=[Depends(admin)])
+    async def menu_settings(request: Request):
+        return await menu_settings_view(request)
+
+    @admin_api.put("/menu-settings", dependencies=[Depends(admin)])
+    async def save_menu_settings(value: MenuOrigin, request: Request):
+        nonlocal config
+        limit(request, "menu.origin", 20)
         async with mutations:
-            if any(value.model_dump().values()) and not config.public_url:
-                raise HTTPException(409, "请设置 HELPER_PUBLIC_URL 为用户浏览器可访问的 HTTPS 地址")
+            try:
+                origin = menu_origin(value.public_origin, request)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+            # Read first: an unavailable upstream must not produce an apparent
+            # failed save after local state was already changed.
             settings = await upstream.settings()
-            current = settings.get("custom_menu_items", [])
-            if not isinstance(current, list) or not all(isinstance(item, dict) for item in current):
-                raise HTTPException(502, "上游菜单格式不兼容")
-            managed = {"sub2api-helper-" + key for key in MODULE_NAMES}
-            merged = [item for item in current if item.get("id") not in managed]
-            for i, (name, label) in enumerate(MODULE_NAMES.items()):
-                if getattr(value, name):
-                    merged.append({"id": "sub2api-helper-" + name, "label": label, "icon_svg": "",
-                                   "url": config.public_url.rstrip("/") + "/_helper/features/" + name,
-                                   "visibility": "user", "sort_order": 100 + i, "hide_open_button": True})
-            if len(merged) > 20:
-                raise HTTPException(409, "上游最多支持 20 个菜单，请先移除部分菜单")
-            await upstream.update_menus(merged)
-            # Verify upstream actually applied the change before persisting local visibility.
-            applied = await upstream.settings()
-            if applied.get("custom_menu_items") != merged:
-                raise HTTPException(502, "菜单写入未确认，请刷新后重试；本地功能状态未改变")
-            store.set_setting("modules", value.model_dump())
-            store.audit("modules.sync", "menus", detail=str(value.model_dump()))
+            store.set_setting("public_url", origin)
+            config = replace(config, public_url=origin)
+            store.audit("menus.origin", "public", detail="菜单公开根地址已保存，尚未自动同步上游")
+            return await menu_settings_view(request, settings)
+
+    @admin_api.post("/menu-settings/sync", dependencies=[Depends(admin)])
+    async def resync_menu_settings(request: Request):
+        limit(request, "menu.sync", 10)
+        async with mutations:
+            settings, changed = await sync_menu_modules(Modules(**store.get_setting("modules", {})), request)
+            return {**await menu_settings_view(request, settings), "sync_status": "verified", "changed": changed}
+
+    @admin_api.put("/modules", dependencies=[Depends(admin)])
+    async def module_update(value: Modules, request: Request):
+        async with mutations:
+            await sync_menu_modules(value, request)
             return value.model_dump()
 
     @admin_api.get("/audit", dependencies=[Depends(admin)])
@@ -712,8 +922,8 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     async def portal_session(value: Session, request: Request):
         limit(request, "login", 20)
         settings = await upstream.settings()
-        if settings.get("session_binding_enabled"):
-            raise HTTPException(409, "上游启用了会话绑定，助手不能安全代理验证；请使用管理端功能")
+        if settings.get("session_binding_enabled") is not False:
+            raise HTTPException(409, "上游会话绑定已启用或状态未知，助手不能安全代理验证；请先检查 sub2api 设置")
         profile = validate_profile(await upstream.profile(value.token))
         now = time.monotonic()
         for key in list(sessions):

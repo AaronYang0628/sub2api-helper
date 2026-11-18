@@ -1,11 +1,13 @@
 """Administrator configuration and access to generated works in a user's groups."""
 
+import asyncio
 from typing import Literal
 
 from fastapi import Depends, HTTPException, Path, Request
 from pydantic import Field, field_validator
 
 from .schemas import Input
+from .upstream import UpstreamError
 
 
 class GalleryJob(Input):
@@ -14,6 +16,7 @@ class GalleryJob(Input):
     key_id: int = Field(gt=0)
     prompt: str = Field(min_length=1, max_length=8000)
     api_format: Literal["chat", "responses"] = "chat"
+    reasoning_effort: Literal["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"] = "default"
     interval_minutes: int = Field(default=30, ge=5, le=1440)
     enabled: bool = False
 
@@ -32,9 +35,9 @@ class GalleryComparison(Input):
         return values
 
 
-PUBLIC_GROUP = ("group_id", "name", "model", "enabled", "interval_minutes", "next_at", "running",
+PUBLIC_GROUP = ("group_id", "name", "model", "reasoning_effort", "enabled", "interval_minutes", "next_at", "running",
                 "comparison_member", "comparison_enabled", "comparison_next_at")
-PUBLIC_WORK = ("id", "group_id", "round_id", "title", "model", "created_at", "finished_at", "latency_ms",
+PUBLIC_WORK = ("id", "group_id", "round_id", "title", "model", "reasoning_effort", "created_at", "finished_at", "latency_ms",
                "status", "kind", "preview", "content", "mime", "error")
 
 
@@ -62,7 +65,7 @@ def project_comparison(data, allowed):
         for item in source["items"]:
             if allowed is not None and item["group_id"] not in allowed:
                 continue
-            safe = {key: item.get(key) for key in ("group_id", "name", "model", "status")}
+            safe = {key: item.get(key) for key in ("group_id", "name", "model", "reasoning_effort", "status")}
             if isinstance(item.get("work"), dict):
                 safe["work"] = project_work(item["work"])
             items.append(safe)
@@ -98,6 +101,21 @@ def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provide
     @admin_api.get("/gallery", dependencies=[Depends(admin)])
     async def list_gallery_jobs():
         return {"groups": gallery.groups(), "timezone": config_provider().timezone}
+
+    @admin_api.get("/gallery/options", dependencies=[Depends(admin)])
+    async def gallery_options():
+        # Keep the group directory visible even when the admin has not created
+        # model keys yet or a scoped management key cannot read one catalog.
+        async def catalog(reader):
+            try:
+                return await reader(), None
+            except UpstreamError as failure:
+                return [], failure.detail
+
+        (groups, group_error), (keys, key_error) = await asyncio.gather(
+            catalog(upstream.list_groups), catalog(upstream.benchmark_keys))
+        return {"groups": [{key: row.get(key) for key in ("id", "name", "platform", "status")} for row in groups],
+                "keys": keys, "group_error": group_error, "key_error": key_error}
 
     @admin_api.get("/gallery/comparison", dependencies=[Depends(admin)])
     async def get_comparison():

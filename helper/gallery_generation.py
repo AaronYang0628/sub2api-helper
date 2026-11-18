@@ -22,6 +22,7 @@ MAX_TEXT_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_PROMPT_BYTES = 32_000
 GENERATION_TIMEOUT = 240
+REASONING_EFFORTS = frozenset({"default", "none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 # The caller must put this policy on the surrounding srcdoc document, before
 # the fragment. An empty iframe sandbox is an additional independent boundary.
@@ -96,6 +97,13 @@ ANIMATION_FIELDS = {"attributename", "attributetype", "from", "to", "by", "value
 
 class GalleryGenerationError(RuntimeError):
     """A safe public error, without upstream bodies, URLs, or credentials."""
+
+
+class UnsupportedReasoningEffort(GalleryGenerationError):
+    """A fixed error for a rejected explicit effort request, never auto-retried."""
+
+    def __init__(self):
+        super().__init__("带思考力度设置的请求被模型或网关拒绝，请改用默认或检查接口，本次不会自动重试")
 
 
 def _safe_css_value(value):
@@ -429,13 +437,18 @@ async def generate_artwork(config, request, client=None):
     """Generate one artwork. No retries, redirects, tools, or external fetches.
 
     request supplies model, api_format (chat/responses), api_key and prompt.
+    Optional reasoning_effort uses the standard gateway field for that protocol.
+    The provider may map, ignore or reject explicit values. Default omits it.
     Neither the management key nor the helper session is used for model calls.
     """
     prompt, model, api_format, key = request.prompt, request.model, request.api_format, request.api_key
+    effort = getattr(request, "reasoning_effort", "default")
     if (not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES
             or not isinstance(model, str) or not model.strip() or len(model) > 256
-            or api_format not in {"chat", "responses"} or not isinstance(key, str) or not key.strip()):
+            or not isinstance(api_format, str) or api_format not in {"chat", "responses"} or not isinstance(key, str) or not key.strip()):
         raise GalleryGenerationError("作品提示词或模型配置无效")
+    if not isinstance(effort, str) or effort not in REASONING_EFFORTS:
+        raise GalleryGenerationError("思考力度配置无效")
     own = client is None
     client = client or httpx.AsyncClient(timeout=GENERATION_TIMEOUT, follow_redirects=False)
     started, response = time.monotonic(), None
@@ -443,15 +456,21 @@ async def generate_artwork(config, request, client=None):
     if api_format == "chat":
         path = "/v1/chat/completions"
         body.update(messages=[{"role": "user", "content": prompt}], max_tokens=8192)
+        if effort != "default":
+            body["reasoning_effort"] = effort
     else:
         path = "/v1/responses"
         body.update(input=prompt, max_output_tokens=8192)
+        if effort != "default":
+            body["reasoning"] = {"effort": effort}
     try:
         async with asyncio.timeout(GENERATION_TIMEOUT):
             outgoing = httpx.Request("POST", config.sub2api_url.rstrip("/") + path,
                 headers={"Authorization": "Bearer " + key, "Accept": "application/json", "Accept-Encoding": "identity"},
                 json=body, extensions={"timeout": {"connect": 10, "read": GENERATION_TIMEOUT, "write": 15, "pool": 10}})
             response = await client.send(outgoing, stream=True, auth=None, follow_redirects=False)
+            if effort != "default" and response.status_code in {400, 422}:
+                raise UnsupportedReasoningEffort()
             response.raise_for_status()
             if response.headers.get("content-encoding", "").strip().lower() not in {"", "identity"}:
                 raise ValueError("Compressed model responses are unsupported")

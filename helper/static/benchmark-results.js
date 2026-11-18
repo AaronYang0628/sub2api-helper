@@ -58,7 +58,9 @@
   function mediaView(source) {
     const content = el('div', { class: 'helper-benchmark-image' });
     const caption = el('figcaption', {}, source.alt, source.mime === 'image/gif' ? el('span', { class: 'helper-benchmark-format' }, 'GIF 动图') : null);
-    if (!source.remote) content.append(image(source));
+    if (!source.remote) content.append(image(source, undefined, () => {
+      content.replaceChildren(el('p', { class: 'helper-benchmark-media-status', role: 'status' }, '图片无法显示。'));
+    }));
     else {
       const status = el('p', { class: 'helper-benchmark-media-status', role: 'status' }, `外部图片 · ${source.host}。点击后才会向图片地址发起请求。`);
       const load = el('button', { type: 'button', class: 'btn btn-secondary btn-sm' }, '加载外部图片');

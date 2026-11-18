@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from helper.gallery import FAILED, INTERRUPTED, Gallery, GalleryError
+from helper.gallery_generation import GalleryGenerationError, UnsupportedReasoningEffort
 from helper.store import Store
 
 
@@ -366,8 +367,8 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(member.exception.status, 409)
 
     async def test_same_round_uses_shared_prompt_and_frozen_model_key_per_group(self):
-        self.configure(key_id=11, model="anthropic", prompt="本地 Prompt A")
-        self.configure(2, key_id=22, model="kimi", api_format="responses", prompt="本地 Prompt B")
+        self.configure(key_id=11, model="anthropic", reasoning_effort="low", prompt="本地 Prompt A")
+        self.configure(2, key_id=22, model="kimi", api_format="responses", reasoning_effort="high", prompt="本地 Prompt B")
         self.gallery.configure_comparison({"group_ids": [1, 2], "prompt": "生成相同的海洋世界"})
         entered, release = asyncio.Event(), asyncio.Event()
 
@@ -383,7 +384,7 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         round_id = initial["round"]["id"]
         self.assertEqual([item["status"] for item in initial["round"]["items"]], ["queued", "queued"])
         await entered.wait()
-        self.configure(2, key_id=99, model="changed", api_format="chat", prompt="新的本地 Prompt")
+        self.configure(2, key_id=99, model="changed", api_format="chat", reasoning_effort="none", prompt="新的本地 Prompt")
         self.gallery.configure_comparison({"prompt": "下一轮的题目"})
         release.set()
         await asyncio.gather(*list(self.gallery._tasks.values()))
@@ -391,13 +392,74 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current["round"]["status"], "success")
         self.assertEqual(current["round"]["prompt"], "生成相同的海洋世界")
         self.assertEqual([(job["model"], job["key_id"], job["api_format"]) for job in self.calls], [("anthropic", 11, "chat"), ("kimi", 22, "responses")])
+        self.assertEqual([job["reasoning_effort"] for job in self.calls], ["low", "high"])
         self.assertEqual({job["prompt"] for job in self.calls}, {"生成相同的海洋世界"})
         for item in current["round"]["items"]:
             work = self.gallery.work(item["group_id"], item["work"]["id"])
             self.assertEqual((work["round_id"], work["prompt"]), (round_id, current["round"]["prompt"]))
+            self.assertEqual(work["reasoning_effort"], item["reasoning_effort"])
             self.assertNotIn("key_id", item)
             self.assertNotIn("config", item)
         self.assertEqual(current["config"]["prompt"], "下一轮的题目")
+
+    async def test_effort_validation_and_work_snapshot_survive_group_edit(self):
+        for invalid in (None, True, [], "", "HIGH", "ultra"):
+            with self.assertRaises(GalleryError):
+                self.configure(reasoning_effort=invalid)
+        self.configure(reasoning_effort="xhigh")
+        work = await self.complete()
+        self.configure(reasoning_effort="none")
+        self.assertEqual(self.gallery.view(1)["group"]["reasoning_effort"], "none")
+        self.assertEqual(self.gallery.work(1, work["id"])["reasoning_effort"], "xhigh")
+        self.assertEqual(self.gallery.groups()[0]["latest_work"]["reasoning_effort"], "xhigh")
+
+    async def test_old_database_defaults_effort_without_replaying_or_changing_schedule(self):
+        self.configure(enabled=True)
+        self.configure(2)
+        self.gallery.configure_comparison({"group_ids": [1, 2]})
+        await self.gallery.start_comparison()
+        await asyncio.gather(*list(self.gallery._tasks.values()))
+        old_work = self.gallery.view(1)["works"][0]
+        deadline = self.store._db.execute("SELECT next_at FROM gallery_jobs WHERE group_id=1").fetchone()[0]
+        await self.gallery.close()
+        with self.store._lock, self.store._db:
+            self.store._db.execute("ALTER TABLE gallery_runs DROP COLUMN reasoning_effort")
+            for row in self.store._db.execute("SELECT group_id,config FROM gallery_jobs").fetchall():
+                cfg = json.loads(row["config"])
+                cfg.pop("reasoning_effort")
+                self.store._db.execute("UPDATE gallery_jobs SET config=? WHERE group_id=?", (json.dumps(cfg), row["group_id"]))
+            row = self.store._db.execute("SELECT items FROM gallery_rounds").fetchone()
+            items = json.loads(row[0])
+            for item in items:
+                item.pop("reasoning_effort")
+                item["config"].pop("reasoning_effort")
+            self.store._db.execute("UPDATE gallery_rounds SET items=?", (json.dumps(items),))
+        self.gallery = Gallery(self.store, self.generate, clock=self.clock)
+        self.assertEqual(self.gallery.view(1)["group"]["reasoning_effort"], "default")
+        self.assertEqual(self.gallery.work(1, old_work["id"])["reasoning_effort"], "default")
+        self.assertTrue(all(item["reasoning_effort"] == "default" for item in self.gallery.comparison()["round"]["items"]))
+        self.assertEqual(self.store._db.execute("SELECT next_at FROM gallery_jobs WHERE group_id=1").fetchone()[0], deadline)
+        self.assertEqual(len(self.calls), 2)
+
+    async def test_only_fixed_effort_rejection_is_public_and_round_continues(self):
+        self.configure(reasoning_effort="high")
+        self.configure(2, reasoning_effort="default")
+        self.gallery.configure_comparison({"group_ids": [1, 2]})
+
+        async def generate(job):
+            self.calls.append(job)
+            if job["group_id"] == 1:
+                raise UnsupportedReasoningEffort()
+            raise GalleryGenerationError("secret model key from an arbitrary error")
+
+        self.gallery.generate = generate
+        await self.gallery.start_comparison()
+        await asyncio.gather(*list(self.gallery._tasks.values()))
+        first, second = self.gallery.comparison()["round"]["items"]
+        self.assertEqual(first["work"]["error"], str(UnsupportedReasoningEffort()))
+        self.assertEqual(second["work"]["error"], FAILED)
+        self.assertNotIn("secret model key", json.dumps(self.gallery.comparison()))
+        self.assertEqual(len(self.calls), 2)
 
     async def test_comparison_failure_continues_next_and_all_failures_are_visible(self):
         self.configure()

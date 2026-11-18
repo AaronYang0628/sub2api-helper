@@ -78,13 +78,13 @@ function nameCell(name, secondary) { return el('div', {}, el('span', { class: 'n
 function switcher(checked, action, label = '') {
   const caption = el('span', {}, label);
   const values = ['已启用', '已暂停'].includes(label) ? ['已暂停', '已启用'] : ['开启', '关闭'].includes(label) ? ['关闭', '开启'] : label === '启用' ? ['启用', '已启用'] : null;
-  const input = el('input', { type: 'checkbox', checked, 'aria-label': label || '启用', onchange: async event => {
+  const input = el('input', { type: 'checkbox', class: 'helper-switch-input', checked, 'aria-label': label || '启用', onchange: async event => {
     input.disabled = true;
     try { await action(event.target.checked); if (values) { caption.textContent = values[Number(input.checked)]; input.setAttribute('aria-label', caption.textContent); } }
     catch (error) { input.checked = !input.checked; toast(errorText(error), true); }
     finally { input.disabled = false; }
   } });
-  return el('label', { class: 'switch' }, input, caption);
+  return el('label', { class: 'helper-switch' }, input, el('span', { class: 'switch', 'aria-hidden': 'true' }, el('span', { class: 'switch-thumb' })), caption);
 }
 function field(label, input, help) { return el('label', { class: 'field' }, el('span', {}, label), input, help ? el('small', {}, help) : null); }
 function input(name, value = '', type = 'text', extra = {}) { return el('input', { name, value, type, ...extra }); }
@@ -356,15 +356,81 @@ async function automationsPage() {
 }
 async function modulesPage() {
   state.modules = await api('/modules');
+  let settings = null, settingsError = '', syncUncertain = false, busy = false;
+  try { settings = await api('/menu-settings'); } catch (error) { settingsError = errorText(error); }
+  let savedOrigin = settings ? settings.public_origin || '' : state.status.public_url || '';
+  const browserOrigin = /^https?:\/\//.test(location.origin) ? location.origin : '';
+  const detectedOrigin = () => settings?.sub2api_public_origin || browserOrigin;
+  const origin = input('public_origin', savedOrigin || detectedOrigin(), 'url', { id: 'menu-public-origin', required: true, autocomplete: 'url', spellcheck: 'false', placeholder: 'https://sub2api.example.com' });
+  const feedback = el('p', { class: 'connection-feedback', role: 'status', 'aria-live': 'polite' });
+  const status = el('div', { class: 'menu-settings-status' });
+  const previewLabel = el('p', { class: 'caption menu-preview-caption' });
+  const previews = new Map(), switches = [];
+  const form = el('form', { class: 'menu-origin-form' });
+  const save = el('button', { type: 'submit', class: 'button primary' }, '保存域名');
+  const detect = button('使用当前域名', () => { if (!detectedOrigin()) return; origin.value = detectedOrigin(); paint(); setFeedback(settings?.sub2api_public_origin ? '已填入 sub2api 的用户访问地址，保存后生效。' : '已填入当前浏览器域名，保存后生效。'); });
+  const sync = button('同步菜单', async () => {
+    busy = true; paint(); setFeedback('正在同步菜单并核对上游结果…');
+    try {
+      const data = await api('/menu-settings/sync', 'POST', {});
+      if (data?.sync_status !== 'verified') throw new Error('菜单同步结果尚未确认，请刷新核对。');
+      accept(data); setFeedback(data.changed ? '菜单已同步，并通过上游回读确认。' : '上游菜单已与当前配置一致。');
+    } catch (error) { syncUncertain = true; setFeedback(`菜单同步未确认：${errorText(error)}。请刷新核对后再重试。`, true); }
+    finally { busy = false; paint(); }
+  });
+  function setFeedback(text, failed = false) { feedback.textContent = text; feedback.className = `connection-feedback${failed ? ' error' : ''}`; }
+  function draftOrigin() {
+    const value = origin.value.trim();
+    try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash && url.pathname === '/' ? url.origin : ''; } catch (_) { return ''; }
+  }
+  function dirty() { return origin.value.trim().replace(/\/+$/, '') !== savedOrigin.replace(/\/+$/, ''); }
+  function accept(data) { settings = data; savedOrigin = data.public_origin || ''; origin.value = savedOrigin; state.status.public_url = savedOrigin; settingsError = ''; syncUncertain = false; }
+  function paint() {
+    const changed = dirty(), previewOrigin = draftOrigin();
+    origin.disabled = busy; save.disabled = busy || (!changed && Boolean(settings)); detect.disabled = busy || !detectedOrigin(); detect.textContent = settings?.sub2api_public_origin ? '使用 sub2api 地址' : '使用当前域名';
+    sync.disabled = busy || changed || !settings?.ready;
+    for (const { control, key } of switches) control.disabled = busy || changed || (!settings?.ready && !state.modules[key]);
+    status.replaceChildren(syncUncertain ? notice('上次同步未得到确认。当前菜单状态未知，请先刷新核对。', 'warning') : settingsError ? notice(`菜单状态读取失败：${settingsError}`, 'warning') : settings?.in_sync ? notice('上游菜单与已保存的配置一致。', 'success') : notice('菜单尚未同步到已保存的配置。', 'warning'), ...(settings?.problems || []).map(problem => notice(String(problem), 'warning')));
+    previewLabel.textContent = changed ? '以下为未保存的菜单地址预览。先保存域名，再同步菜单。' : '以下为已保存配置的菜单地址预览；同步结果以上方核对状态为准。';
+    for (const [key, target] of previews) target.textContent = previewOrigin ? `${previewOrigin}/_helper/features/${key}` : '填写有效访问域名后显示预览地址';
+  }
+  async function refreshSettings() {
+    busy = true; paint();
+    try {
+      const edited = origin.value;
+      const changed = dirty();
+      settings = await api('/menu-settings'); savedOrigin = settings.public_origin || ''; state.status.public_url = savedOrigin;
+      if (!changed) origin.value = savedOrigin || detectedOrigin(); else origin.value = edited;
+      settingsError = ''; syncUncertain = false; setFeedback('已重新读取上游菜单状态。');
+    } catch (error) { settingsError = errorText(error); setFeedback(`菜单状态读取失败：${settingsError}`, true); }
+    finally { busy = false; paint(); }
+  }
+  origin.addEventListener('input', () => { setFeedback(''); paint(); });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const value = draftOrigin();
+    if (!value) { setFeedback('请填写完整源地址，例如 https://api.example.com，不含路径、查询参数或账号密码。', true); return; }
+    busy = true; paint(); setFeedback('正在保存访问域名…');
+    try { accept(await api('/menu-settings', 'PUT', { public_origin: value })); setFeedback(settings.in_sync ? '访问域名已保存，当前菜单与配置一致。' : '访问域名已保存。点击“同步菜单”后才会更新上游入口。'); }
+    catch (error) { setFeedback(`访问域名保存失败：${errorText(error)}`, true); }
+    finally { busy = false; paint(); }
+  });
+  form.append(field('用户访问域名', origin, '填写用户浏览器访问 sub2api 的域名与协议，不含 /_helper 路径。'), el('div', { class: 'button-group' }, detect, save, sync), feedback, status);
   const definitions = [ ['benchmark', 'sparkles', '智商检测', '按分组展示模型根据提示词生成的 HTML、SVG 等作品。在统计与检测中配置生成任务。'], ['pricing', 'chartBar', '模型价格统计', '按模型查看请求量、Token 与费用。普通用户仅查看自己的统计数据。'], ['ranking', 'trophy', '用户用量排名', '展示用户消耗与使用量排名。用户端默认匿名展示，保护用户身份。'] ];
-  return [pageHead('功能与菜单', '启用内置功能，并将对应入口同步到 sub2api 自定义菜单。', button('↻  刷新', () => render())),
-    !state.status.public_url ? notice('尚未设置 HELPER_PUBLIC_URL。请配置浏览器可访问的 Helper 地址，菜单才能正确指向这些页面。', 'warning') : notice('开启或关闭功能会同步 sub2api 的自定义菜单。其他已有菜单会保留。用户从菜单进入时，Helper 会校验其 sub2api 登录身份。'),
-    el('div', { class: 'module-grid' }, definitions.map(([key, icon, title, desc]) => el('section', { class: 'card module-card' }, el('div', { class: 'module-icon' }, helperIcon(icon)), el('h2', {}, title), el('p', {}, desc),
-      el('div', { class: 'module-bottom' }, pill(state.modules[key] ? '已上线' : '未上线', state.modules[key] ? 'green' : ''), switcher(state.modules[key], async value => {
+  const cards = el('div', { class: 'module-grid' }, definitions.map(([key, icon, title, desc]) => {
+    const toggle = switcher(state.modules[key], async value => {
         if (!confirm(`确认${value ? '上线' : '下线'}「${title}」并同步上游菜单？`)) throw new Error('已取消操作');
-        state.modules = await api('/modules', 'PUT', { ...state.modules, [key]: value }); toast('功能与自定义菜单已同步'); await render();
-      }, state.modules[key] ? '已启用' : '启用')),
-      el('div', { class: 'module-url' }, `${(state.status.public_url || 'HELPER_PUBLIC_URL').replace(/\/+$/, '')}/_helper/features/${key}`))))];
+        busy = true; paint(); setFeedback('正在更新功能并核对上游菜单…');
+        try { state.modules = await api('/modules', 'PUT', { ...state.modules, [key]: value }); toast('功能状态与上游菜单已确认同步'); await render(); }
+        catch (error) { syncUncertain = true; paint(); throw error; }
+        finally { busy = false; paint(); }
+      }, state.modules[key] ? '已启用' : '启用');
+    switches.push({ control: toggle.querySelector('input'), key });
+    const url = el('div', { class: 'module-url' }); previews.set(key, url);
+    return el('section', { class: 'card module-card' }, el('div', { class: 'module-icon' }, helperIcon(icon)), el('h2', {}, title), el('p', {}, desc), el('div', { class: 'module-bottom' }, pill(state.modules[key] ? '功能已启用' : '功能已关闭', state.modules[key] ? 'green' : ''), toggle), url);
+  }));
+  paint();
+  return [pageHead('功能与菜单', '设置用户访问域名，并核对 sub2api 自定义菜单。', button('↻  刷新核对', refreshSettings)), card('菜单访问地址', '修改域名只保存配置；点击同步后才会更新上游菜单。', el('div', { class: 'card-body' }, form)), previewLabel, cards];
 }
 function extractRows(data, keys) {
   if (Array.isArray(data)) return data;
@@ -437,16 +503,21 @@ function benchmarkForm(endpoint = '/benchmark', caller = api) {
   return [configuration, results];
 }
 async function analyticsPage() {
-  const [models, ranking] = await Promise.allSettled([api('/analytics/models'), api('/analytics/ranking')]);
+  const version = generation;
   const gallery = el('div');
   helperGalleryAdmin(gallery, { request: api });
+  function metricCard(title, description, path, kind) {
+    const body = el('div', {}, el('div', { class: 'loading' }, el('span', { class: 'spinner' }), '正在读取统计数据…'));
+    api(path).then(data => { if (version === generation && token) body.replaceChildren(metricsTable(data, kind)); }).catch(error => { if (version !== generation) return; if (!token) { render(); return; } body.replaceChildren(el('div', { class: 'card-body' }, notice(errorText(error), 'error'))); });
+    return card(title, description, body);
+  }
   const quiz = el('details', { class: 'card' }, el('summary', { class: 'card-header' }, '固定题自检'));
   quiz.addEventListener('toggle', () => {
     if (quiz.open && quiz.childElementCount === 1) quiz.append(...benchmarkForm());
   });
   return [pageHead('统计与检测', '管理模型作品画廊，查看模型费用和用户用量。'), gallery,
-    card('模型维度价格统计', '显示上游统计接口返回的当前周期数据', models.status === 'fulfilled' ? metricsTable(models.value, 'models') : el('div', { class: 'card-body' }, notice(errorText(models.reason), 'error'))),
-    card('用户用量排名', '管理员可查看完整使用量统计', ranking.status === 'fulfilled' ? metricsTable(ranking.value, 'ranking') : el('div', { class: 'card-body' }, notice(errorText(ranking.reason), 'error'))),
+    metricCard('模型维度价格统计', '显示上游统计接口返回的当前周期数据', '/analytics/models', 'models'),
+    metricCard('用户用量排名', '管理员可查看完整使用量统计', '/analytics/ranking', 'ranking'),
     quiz];
 }
 async function auditPage() {

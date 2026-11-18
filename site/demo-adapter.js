@@ -108,16 +108,24 @@
   function comparisonScene(groupId, variant = 0) {
     return groupId === 1 ? cyclingScene(variant) : groupId === 2 ? posterScene(variant) : groupId === 3 ? blueprintScene(variant) : minimalScene(variant);
   }
-  const galleryGroups = [
-    ...['OpenAI', 'Anthropic', 'GLM', 'Kimi'].map((name, index) => ({ group_id: index + 1, name: `${name} · 示例组`, model: `${name.toLowerCase()}-fixture`, key_id: index + 11, api_format: index === 0 ? 'responses' : 'chat', enabled: false, interval_minutes: 60, next_at: null, running: false, last_error: null, prompt: sharedGalleryPrompt, comparison_member: true })),
-  ];
+  const galleryDirectory = ['OpenAI', 'Anthropic', 'GLM', 'Kimi', '备用模型', '未绑定 Key'].map((name, i) => ({
+    id: i + 1, name: `${name} · 示例组`, platform: ['openai', 'anthropic', 'zhipu', 'kimi', 'openai', 'openai'][i], status: 'active',
+  }));
+  const galleryKeys = galleryDirectory.slice(0, -1).map(group => ({ id: group.id + 10, name: `${group.name} Key`, group_id: group.id, group_name: group.name }));
+  const galleryGroups = galleryDirectory.slice(0, 4).map((group, i) => ({
+    group_id: group.id, name: group.name, model: ['openai-fixture', 'anthropic-fixture', 'glm-fixture', 'kimi-fixture'][i], key_id: group.id + 10,
+    api_format: i === 0 ? 'responses' : 'chat', reasoning_effort: ['high', 'medium', 'default', 'default'][i], enabled: false,
+    interval_minutes: 60, next_at: null, running: false, last_error: null, prompt: sharedGalleryPrompt, comparison_member: true,
+  }));
   const galleryWorks = new Map(galleryGroups.map(group => [group.group_id, Array.from({ length: 4 }, (_, index) => ({
-    id: group.group_id * 100 + 4 - index, group_id: group.group_id, round_id: index === 0 ? comparisonSequence : null, title: `${['河畔慢骑', '几何微风', '骑行线稿', '轻装上路'][group.group_id - 1]}${index ? ` · 历史 ${index}` : ''}`, model: group.model,
+    id: group.group_id * 100 + 4 - index, group_id: group.group_id, round_id: index === 0 ? comparisonSequence : null, title: `${['河畔慢骑', '几何微风', '骑行线稿', '轻装上路'][group.group_id - 1]}${index ? ` · 历史 ${index}` : ''}`, model: group.model, reasoning_effort: group.reasoning_effort,
     created_at: new Date(galleryStart - (index * group.interval_minutes + 12) * 60000).toISOString(), finished_at: new Date(galleryStart - (index * group.interval_minutes + 12) * 60000 + 2200).toISOString(), latency_ms: 1280 + group.group_id * 173 + index * 317, status: 'success', error: null, kind: 'html', content: comparisonScene(group.group_id, index), mime: 'text/html', prompt: sharedGalleryPrompt,
   }))]));
   const galleryStats = new Map(galleryGroups.map(group => [group.group_id, { success_24h: 12 + group.group_id, failed_24h: 0, total: 40 + group.group_id * 8 }]));
   let comparisonConfig = { group_ids: [1, 2, 3, 4], prompt: sharedGalleryPrompt, enabled: true, interval_minutes: 60, next_at: new Date(galleryStart + 42 * 60000).toISOString(), running: false };
   let comparisonRound = savedComparisonRound(comparisonSequence);
+  let menuOrigin = 'https://sub2api.example.test';
+  let syncedMenuOrigin = '';
   const state = {
     schedules: [
       { id: 1, name: '每天夜间免费时段', owner: 'native-account', native_account_id: 1, account_ids: [1], start: '23:00', end: '09:00', timezone: 'Asia/Shanghai', weekdays: [0, 1, 2, 3, 4, 5, 6], enabled: true },
@@ -199,7 +207,7 @@
   function savedComparisonRound(roundId) {
     const items = comparisonConfig.group_ids.map(groupId => {
       const group = galleryGroups.find(item => item.group_id === groupId), work = galleryWorks.get(groupId)[0];
-      return { group_id: groupId, name: group.name, model: work.model, status: work.status, work: workPreview(work) };
+      return { group_id: groupId, name: group.name, model: work.model, reasoning_effort: work.reasoning_effort, status: work.status, work: workPreview(work) };
     });
     return { id: roundId, prompt: comparisonConfig.prompt, status: 'success', created_at: items[0].work.created_at,
       finished_at: items.map(item => item.work.finished_at).sort().at(-1), items };
@@ -258,7 +266,7 @@
         const roundId = ++comparisonSequence, created = new Date().toISOString();
         for (const groupId of comparisonConfig.group_ids) {
           const group = galleryGroups.find(item => item.group_id === groupId), stats = galleryStats.get(groupId), latency = 1200 + groupId * 193;
-          galleryWorks.get(groupId).unshift({ id: ++gallerySequence, group_id: groupId, round_id: roundId, title: `同题示例 · ${group.name}`, model: group.model, created_at: created,
+          galleryWorks.get(groupId).unshift({ id: ++gallerySequence, group_id: groupId, round_id: roundId, title: `同题示例 · ${group.name}`, model: group.model, reasoning_effort: group.reasoning_effort, created_at: created,
             finished_at: new Date(Date.parse(created) + latency).toISOString(), latency_ms: latency, status: 'success', error: null, kind: 'html', content: comparisonScene(groupId, 0), mime: 'text/html', prompt: comparisonConfig.prompt });
           stats.success_24h++; stats.total++;
         }
@@ -267,11 +275,26 @@
         return { queued: true, already_running: false, round_id: roundId, demo: true };
       }
     }
+    if (path === '/api/gallery/options' && method === 'GET') return { groups: galleryDirectory, keys: galleryKeys, group_error: null, key_error: null };
     if (path === '/api/gallery' && method === 'GET') return { groups: galleryGroups.map(galleryGroup), timezone: 'Asia/Shanghai' };
     let gallery = path.match(/^\/api\/gallery\/(\d+)(?:\/(run|pause)|\/works\/(\d+))?$/);
     if (gallery) {
-      const groupId = Number(gallery[1]), group = galleryGroups.find(item => item.group_id === groupId);
-      if (!group) return bad('示例分组不存在。', 404);
+      const groupId = Number(gallery[1]);
+      let group = galleryGroups.find(item => item.group_id === groupId);
+      if (!gallery[2] && !gallery[3] && method === 'PUT') {
+        if (!galleryKeys.some(key => key.id === data.key_id && key.group_id === groupId)) return bad('请为该示例分组选择有效 Key。');
+        if (!data.model?.trim() || !data.prompt?.trim() || !Number.isInteger(data.interval_minutes) || data.interval_minutes < 5 || data.interval_minutes > 1440) return bad('请输入示例模型、提示词和有效分钟数。');
+        if (!group) {
+          group = { group_id: groupId };
+          galleryGroups.push(group);
+          galleryWorks.set(groupId, []);
+          galleryStats.set(groupId, { success_24h: 0, failed_24h: 0, total: 0 });
+        }
+        Object.assign(group, clone(data), { group_id: groupId, running: false });
+        group.next_at = group.enabled ? new Date(Date.now() + group.interval_minutes * 60000).toISOString() : null;
+        return galleryDetail(groupId);
+      }
+      if (!group) return bad('示例分组尚未配置。', 404);
       if (gallery[3] && method === 'GET') {
         const work = galleryWorks.get(groupId).find(item => item.id === Number(gallery[3]));
         return work ? { ...clone(work), group_name: group.name } : bad('示例作品不存在。', 404);
@@ -280,16 +303,12 @@
       if (gallery[2] === 'run' && method === 'POST') {
         if (comparisonConfig?.group_ids.includes(groupId)) return bad('此分组由共享同题计划管理，请从共享计划生成一轮。', 409);
         const works = galleryWorks.get(groupId), stats = galleryStats.get(groupId);
-        works.unshift({ ...clone(works[0]), id: ++gallerySequence, title: '本页生成 · 原创场景示例', created_at: new Date().toISOString(), model: group.model, prompt: group.prompt });
+        const created = new Date().toISOString();
+        works.unshift({ id: ++gallerySequence, group_id: groupId, title: '本页生成 · 原创场景示例', model: group.model, reasoning_effort: group.reasoning_effort,
+          created_at: created, finished_at: created, latency_ms: 1350, status: 'success', kind: 'html', content: comparisonScene(groupId, 0), mime: 'text/html', prompt: group.prompt });
         stats.success_24h++; stats.total++;
         group.next_at = group.enabled ? new Date(Date.now() + group.interval_minutes * 60000).toISOString() : null;
         return { queued: true, already_running: false, group_id: groupId, demo: true };
-      }
-      if (!gallery[2] && !gallery[3] && method === 'PUT') {
-        if (!data.model?.trim() || !data.prompt?.trim() || !Number.isInteger(data.interval_minutes) || data.interval_minutes < 5 || data.interval_minutes > 1440) return bad('请填写示例模型、提示词，并将间隔设置为 5～1440 的整数分钟。');
-        Object.assign(group, clone(data), { group_id: groupId, running: false });
-        group.next_at = group.enabled ? new Date(Date.now() + group.interval_minutes * 60000).toISOString() : null;
-        return galleryDetail(groupId);
       }
       if (!gallery[2] && !gallery[3] && method === 'GET') return galleryDetail(groupId);
     }
@@ -342,14 +361,21 @@
     if (path === '/api/groups') return groups;
     if (path === '/api/settlements') return state.settlements;
     if (path === '/api/audit') return state.audit;
+    if (path === '/api/menu-settings' || path === '/api/menu-settings/sync') {
+      if (method === 'PUT') menuOrigin = data.public_origin;
+      const changed = syncedMenuOrigin !== menuOrigin;
+      if (method === 'POST') syncedMenuOrigin = menuOrigin;
+      return { public_origin: menuOrigin, ready: true, problems: [], in_sync: syncedMenuOrigin === menuOrigin,
+        ...(method === 'POST' ? { sync_status: 'verified', changed } : {}) };
+    }
     if (path === '/api/modules') {
-      if (method === 'PUT') { state.modules = { benchmark: !!data.benchmark, pricing: !!data.pricing, ranking: !!data.ranking }; log('modules.sync', '示例菜单'); }
+      if (method === 'PUT') { state.modules = { benchmark: !!data.benchmark, pricing: !!data.pricing, ranking: !!data.ranking }; syncedMenuOrigin = menuOrigin; log('modules.sync', '示例菜单'); }
       return state.modules;
     }
     if (path === '/api/analytics/models') return { models: metrics.models };
     if (path === '/api/analytics/ranking') return { ranking: metrics.ranking };
     if (path === '/api/compatibility' || path === '/api/compatibility/check') { if (method === 'POST') compatibility.checked_at = new Date().toISOString(); return compatibility; }
-    if (path === '/api/benchmark/options') return { keys: galleryGroups.map(group => ({ id: group.key_id, name: `${group.name} Key（不存在真实密钥）`, group_id: group.group_id, group_name: group.name })) };
+    if (path === '/api/benchmark/options') return { keys: galleryKeys };
     if (path === '/api/benchmark' && method === 'POST') {
       log('benchmark.demo', data.model, '示例检测结果，无模型调用或费用。');
       return benchmarkSample(data.model);

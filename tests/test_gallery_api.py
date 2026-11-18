@@ -34,12 +34,26 @@ class GalleryUpstream(FakeUpstream):
         self.key_options_reads = 0
         self.key_material = {31: MODEL_KEY, 41: MODEL_KEY}
         self.key_unavailable = False
+        self.group_catalog_error = None
+        self.key_catalog_error = None
+        self.directory_groups = [
+            {"id": 3, "name": "Anthropic directory", "platform": "anthropic", "status": "active", "private_internal": "not public"},
+            {"id": 4, "name": "Kimi directory", "platform": "openai", "status": "active"},
+            {"id": 5, "name": "GLM without model key", "platform": "openai", "status": "active"},
+        ]
         self.allowed = {"user-jwt": [3], "other-user-jwt": [4]}
         self.available_calls = []
 
     async def benchmark_keys(self):
         self.key_options_reads += 1
+        if self.key_catalog_error:
+            raise self.key_catalog_error
         return deepcopy(self.keys)
+
+    async def list_groups(self):
+        if self.group_catalog_error:
+            raise self.group_catalog_error
+        return deepcopy(self.directory_groups)
 
     async def benchmark_key(self, key_id, group_id):
         self.key_lookups.append((key_id, group_id))
@@ -67,7 +81,8 @@ class GalleryApiTests(unittest.TestCase):
 
         async def generate(config, selection):
             self.generated.append({"model": selection.model, "api_format": selection.api_format,
-                                   "prompt": selection.prompt, "api_key": selection.api_key})
+                                   "prompt": selection.prompt, "api_key": selection.api_key,
+                                   "reasoning_effort": selection.reasoning_effort})
             return {"kind": "html", "content": '<svg xmlns="http://www.w3.org/2000/svg"><text>Fixture artwork</text></svg>',
                     "mime": "text/html", "latency_ms": 12}
 
@@ -219,7 +234,7 @@ class GalleryApiTests(unittest.TestCase):
         summary = self.generate_one()
         self.assertEqual(self.generator.await_count, 1)
         self.assertEqual(self.generated[0], {"model": "fixture-model", "api_format": "responses",
-                                            "prompt": CONFIG_PROMPT, "api_key": MODEL_KEY})
+                                            "prompt": CONFIG_PROMPT, "api_key": MODEL_KEY, "reasoning_effort": "default"})
         self.assertGreaterEqual(self.upstream.key_lookups.count((31, 3)), 2, "The worker must resolve the key again at execution time")
         response = self.client.get(f"/_helper/api/admin/gallery/3/works/{summary['id']}", headers=self.auth)
         self.assertEqual(response.status_code, 200, response.text)
@@ -485,6 +500,89 @@ class GalleryApiTests(unittest.TestCase):
         response = self.client.get("/_helper/api/portal/gallery/comparison", headers=ordinary)
         self.assertEqual(response.status_code, 404, response.text)
         self.assertEqual(self.upstream.available_calls, [])
+
+    def test_admin_options_include_official_groups_even_before_keys_or_gallery_config_exist(self):
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery/options").status_code, 401)
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery/options", headers=self.portal()).status_code, 401)
+        response = self.client.get("/_helper/api/admin/gallery/options", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual({group["id"] for group in data["groups"]}, {3, 4, 5})
+        self.assertTrue(any(group["name"] == "GLM without model key" for group in data["groups"]))
+        self.assertEqual({key["group_id"] for key in data["keys"]}, {3, 4})
+        self.assertIsNone(data["group_error"])
+        self.assertIsNone(data["key_error"])
+        self.assertNotIn("private_internal", response.text)
+        self.assertNotIn(MODEL_KEY, response.text)
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery", headers=self.auth).json()["groups"], [])
+
+    def test_admin_options_degrade_independently_when_one_catalog_is_unavailable(self):
+        self.upstream.key_catalog_error = UpstreamError("Model key catalog unavailable", 403)
+        response = self.client.get("/_helper/api/admin/gallery/options", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual({group["id"] for group in response.json()["groups"]}, {3, 4, 5})
+        self.assertEqual(response.json()["keys"], [])
+        self.assertIsNotNone(response.json()["key_error"])
+        self.assertIsNone(response.json()["group_error"])
+        self.upstream.key_catalog_error = None
+        self.upstream.group_catalog_error = UpstreamError("Group directory unavailable", 503)
+        response = self.client.get("/_helper/api/admin/gallery/options", headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["groups"], [])
+        self.assertEqual({key["id"] for key in response.json()["keys"]}, {31, 41})
+        self.assertIsNotNone(response.json()["group_error"])
+        self.assertIsNone(response.json()["key_error"])
+
+    def test_reasoning_effort_supports_the_documented_choices_and_defaults(self):
+        self.configure()
+        self.assertEqual(self.admin_view()["group"]["reasoning_effort"], "default")
+        for effort in ("default", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            with self.subTest(effort=effort):
+                self.configure(reasoning_effort=effort)
+                self.assertEqual(self.admin_view()["group"]["reasoning_effort"], effort)
+        for effort in ("auto", "HIGH", "very-high", None, 1):
+            with self.subTest(invalid=effort):
+                lookups = list(self.upstream.key_lookups)
+                response = self.client.put("/_helper/api/admin/gallery/3", headers=self.auth, json=self.job(reasoning_effort=effort))
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(self.upstream.key_lookups, lookups)
+
+    def test_public_work_preserves_executed_reasoning_setting_after_group_configuration_changes(self):
+        self.configure(reasoning_effort="high")
+        summary = self.generate_one()
+        self.assertEqual(self.generated[0]["reasoning_effort"], "high")
+        self.configure(reasoning_effort="low", prompt="Future prompt stays private")
+        ordinary = self.portal()
+        listing = self.client.get("/_helper/api/portal/gallery", headers=ordinary)
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertEqual(listing.json()["groups"][0]["reasoning_effort"], "low")
+        self.assertNotIn("key_id", listing.text)
+        detail = self.client.get("/_helper/api/portal/gallery/3", headers=ordinary)
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["group"]["reasoning_effort"], "low")
+        self.assertEqual(detail.json()["works"][0]["reasoning_effort"], "high")
+        self.assertNotIn("Future prompt stays private", detail.text)
+        work = self.client.get(f"/_helper/api/portal/gallery/3/works/{summary['id']}", headers=ordinary)
+        self.assertEqual(work.status_code, 200, work.text)
+        self.assertEqual(work.json()["reasoning_effort"], "high")
+        self.assertEqual(work.json()["prompt"], CONFIG_PROMPT)
+        self.assertNotIn(MODEL_KEY, work.text)
+
+    def test_public_comparison_retains_each_visible_models_requested_reasoning_setting(self):
+        self.configure_comparison()
+        self.configure(3, model="fixture-claude", reasoning_effort="xhigh")
+        self.configure(4, model="fixture-kimi", reasoning_effort="none")
+        completed = self.generate_comparison()
+        self.assertEqual({item["group_id"]: item["reasoning_effort"] for item in completed["items"]}, {3: "xhigh", 4: "none"})
+        self.configure(3, reasoning_effort="low")
+        response = self.client.get("/_helper/api/portal/gallery/comparison", headers=self.portal())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(response.json()["round"]["items"]), 1)
+        item = response.json()["round"]["items"][0]
+        self.assertEqual(item["reasoning_effort"], "xhigh")
+        self.assertEqual(item["work"]["reasoning_effort"], "xhigh")
+        self.assertNotIn("fixture-kimi", response.text)
+        self.assertNotIn("key_id", response.text)
 
 
 if __name__ == "__main__":

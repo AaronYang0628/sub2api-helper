@@ -81,6 +81,7 @@ jobs:
           node tests/benchmark_ui/test.cjs
           node tests/gallery_ui/test.cjs
           node tests/gallery_admin/test.cjs
+          node tests/console_ui/test.cjs
       - name: Build the GitHub Pages demo from the current UI
         run: node site/build.mjs
       - run: docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t sub2api-helper:test .

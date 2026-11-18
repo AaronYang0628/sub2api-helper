@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import time
 
+from .gallery_generation import REASONING_EFFORTS, UnsupportedReasoningEffort
+
 
 MAX_GROUPS = 32
 MAX_WORKS_PER_GROUP = 500
@@ -17,8 +19,8 @@ MAX_PREVIEW_BYTES = 1024 * 1024
 FAILED = "生成失败，请检查模型、Key 权限或服务连接"
 INTERRUPTED = "生成已中断，结果未确认，本次请求不会自动重试"
 DEFAULT_PROMPT = "请生成一个精美、有创意、可交互的独立 HTML 或 SVG 作品。只输出完整代码，不使用外部资源。"
-FIELDS = {"name", "model", "key_id", "api_format", "prompt", "enabled", "interval_minutes"}
-METADATA_COLUMNS = "id,group_id,round_id,title,model,created_at,finished_at,latency_ms,status,kind,mime,error,storage_bytes-length(CAST(prompt AS BLOB)) AS content_bytes"
+FIELDS = {"name", "model", "key_id", "api_format", "reasoning_effort", "prompt", "enabled", "interval_minutes"}
+METADATA_COLUMNS = "id,group_id,round_id,title,model,reasoning_effort,created_at,finished_at,latency_ms,status,kind,mime,error,storage_bytes-length(CAST(prompt AS BLOB)) AS content_bytes"
 PREVIEW_COLUMNS = METADATA_COLUMNS + ",CASE WHEN storage_bytes-length(CAST(prompt AS BLOB))<=131072 THEN content ELSE NULL END AS content"
 
 
@@ -68,14 +70,19 @@ class Gallery:
             """)
             if "round_id" not in {row["name"] for row in self._db.execute("PRAGMA table_info(gallery_runs)")}:
                 self._db.execute("ALTER TABLE gallery_runs ADD COLUMN round_id INTEGER")
+            if "reasoning_effort" not in {row["name"] for row in self._db.execute("PRAGMA table_info(gallery_runs)")}:
+                self._db.execute("ALTER TABLE gallery_runs ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'default'")
             now = self._now()
             interrupted = self._db.execute("SELECT * FROM gallery_runs WHERE status='running'").fetchall()
             for run in interrupted:
                 self._finish(run["group_id"], run["id"], now, status="failed", error=INTERRUPTED)
             # Expired offline periods are skipped, never replayed as paid calls.
             for row in self._db.execute("SELECT * FROM gallery_jobs").fetchall():
+                cfg = json.loads(row["config"])
+                if "reasoning_effort" not in cfg:
+                    cfg["reasoning_effort"] = "default"
+                    self._db.execute("UPDATE gallery_jobs SET config=? WHERE group_id=?", (json.dumps(cfg), row["group_id"]))
                 if row["next_at"] <= now.timestamp() or row["running_id"] is not None:
-                    cfg = json.loads(row["config"])
                     self._db.execute("UPDATE gallery_jobs SET running_id=NULL,next_at=? WHERE group_id=?",
                                      ((now + timedelta(minutes=cfg["interval_minutes"])).timestamp(), row["group_id"]))
             self._settle_comparison(now, interrupt=True)
@@ -101,7 +108,7 @@ class Gallery:
         if not isinstance(data, dict) or set(data) - FIELDS:
             raise GalleryError("生成配置包含不支持的字段")
         cfg = {"name": f"分组 #{group_id}", "model": "", "key_id": None, "api_format": "chat",
-               "prompt": DEFAULT_PROMPT, "enabled": False, "interval_minutes": 30} | (previous or {}) | data
+               "reasoning_effort": "default", "prompt": DEFAULT_PROMPT, "enabled": False, "interval_minutes": 30} | (previous or {}) | data
         for field, limit in (("name", 100), ("model", 150), ("prompt", 8000)):
             if not isinstance(cfg[field], str) or len(cfg[field]) > limit:
                 raise GalleryError("生成配置文本无效或过长")
@@ -112,6 +119,8 @@ class Gallery:
             raise GalleryError("自动生成间隔应为 5 至 1440 分钟")
         if not isinstance(cfg["api_format"], str) or cfg["api_format"] not in {"chat", "responses"}:
             raise GalleryError("模型接口格式无效")
+        if not isinstance(cfg["reasoning_effort"], str) or cfg["reasoning_effort"] not in REASONING_EFFORTS:
+            raise GalleryError("思考力度配置无效")
         if cfg["key_id"] is not None:
             _id(cfg["key_id"])
         if cfg["enabled"]:
@@ -139,7 +148,7 @@ class Gallery:
 
     def _metadata(self, row):
         content_bytes = row["content_bytes"] if "content_bytes" in row.keys() else len((row["content"] or "").encode("utf-8"))
-        return {key: row[key] for key in ("id", "group_id", "round_id", "title", "model", "created_at", "finished_at", "latency_ms", "status", "kind", "mime", "error")} | {"content_bytes": content_bytes}
+        return {key: row[key] for key in ("id", "group_id", "round_id", "title", "model", "reasoning_effort", "created_at", "finished_at", "latency_ms", "status", "kind", "mime", "error")} | {"content_bytes": content_bytes}
 
     def _stats(self, group_id, now):
         cutoff = int(now.timestamp()) - 24 * 3600
@@ -242,8 +251,8 @@ class Gallery:
     def _begin_work(self, group_id, cfg, now, round_id=None):
         self._prune(now)
         title = cfg["name"] + " · 作品"
-        cur = self._db.execute("INSERT INTO gallery_runs(group_id,round_id,title,model,prompt,created_at,status,storage_bytes) VALUES (?,?,?,?,?,?,'running',?)",
-                               (group_id, round_id, title, cfg["model"], cfg["prompt"], now.isoformat(), len(cfg["prompt"].encode("utf-8"))))
+        cur = self._db.execute("INSERT INTO gallery_runs(group_id,round_id,title,model,reasoning_effort,prompt,created_at,status,storage_bytes) VALUES (?,?,?,?,?,?,?,'running',?)",
+                               (group_id, round_id, title, cfg["model"], cfg.get("reasoning_effort", "default"), cfg["prompt"], now.isoformat(), len(cfg["prompt"].encode("utf-8"))))
         work_id = cur.lastrowid
         self._db.execute("UPDATE gallery_runs SET title=? WHERE id=?", (f"{title} #{work_id}", work_id))
         self._db.execute("UPDATE gallery_jobs SET running_id=?,last_error=NULL,next_at=? WHERE group_id=?", (work_id, (now + timedelta(minutes=cfg["interval_minutes"])).timestamp(), group_id))
@@ -291,9 +300,10 @@ class Gallery:
             with self._lock, self._db:
                 self._finish(group_id, work_id, self._now(), status="failed", error=INTERRUPTED, latency_ms=max(0, round((time.monotonic() - started) * 1000)))
             raise
-        except Exception:
+        except Exception as exc:
             with self._lock, self._db:
-                self._finish(group_id, work_id, self._now(), status="failed", error=FAILED, latency_ms=max(0, round((time.monotonic() - started) * 1000)))
+                error = str(exc) if isinstance(exc, UnsupportedReasoningEffort) else FAILED
+                self._finish(group_id, work_id, self._now(), status="failed", error=error, latency_ms=max(0, round((time.monotonic() - started) * 1000)))
         finally:
             self._tasks.pop(group_id, None)
 
@@ -380,6 +390,7 @@ class Gallery:
                 current["items"], preview_bytes = [], 0
                 for item in json.loads(round_row["items"]):
                     public = {key: item[key] for key in ("group_id", "name", "model", "status")}
+                    public["reasoning_effort"] = item.get("reasoning_effort", item.get("config", {}).get("reasoning_effort", "default"))
                     work = self._db.execute(f"SELECT {PREVIEW_COLUMNS} FROM gallery_runs WHERE id=? AND group_id=? AND round_id=?", (item.get("work_id"), item["group_id"], round_row["id"])).fetchone()
                     if work:
                         public["work"] = self._metadata(work)
@@ -409,7 +420,7 @@ class Gallery:
                     snapshot = json.loads(self._job(group_id)["config"])
                     self._ready(snapshot)
                     snapshot.pop("prompt", None)
-                    items.append({"group_id": group_id, "name": snapshot["name"], "model": snapshot["model"], "status": "queued", "config": snapshot})
+                    items.append({"group_id": group_id, "name": snapshot["name"], "model": snapshot["model"], "reasoning_effort": snapshot.get("reasoning_effort", "default"), "status": "queued", "config": snapshot})
                 self._db.execute("DELETE FROM gallery_rounds")
                 cur = self._db.execute("INSERT INTO gallery_rounds(prompt,items,status,created_at) VALUES (?,?,'running',?)", (cfg["prompt"], json.dumps(items), now.isoformat()))
                 round_id = cur.lastrowid

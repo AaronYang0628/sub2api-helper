@@ -31,6 +31,7 @@
   .nav-item.active { @apply tab-active; }
   .nav-icon { @apply h-4 w-4 shrink-0; }
   .page-head { @apply mb-6 flex items-start justify-between gap-4; }
+  .embed-shell .page-head h1, .feature-shell h1 { @apply text-lg leading-7; }
   .page-head p { @apply mt-1 text-sm text-gray-500 dark:text-dark-400; }
   .page-head > .button { @apply shrink-0; }
   .button { @apply btn btn-secondary whitespace-nowrap; }
@@ -61,6 +62,7 @@
   .notice.error { @apply border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300; }
   .notice.success { @apply border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300; }
   .notice-icon { @apply h-5 w-5 shrink-0; }
+  .notice > span { @apply min-w-0; overflow-wrap: anywhere; }
   .detail-row { @apply flex justify-between gap-4 border-b border-gray-100 py-3 text-sm dark:border-dark-700; }
   .detail-row:first-child { @apply pt-0; }
   .detail-row:last-child { @apply border-0 pb-0; }
@@ -74,7 +76,9 @@
   .quick-action .arrow { @apply ml-auto h-4 w-4 shrink-0 text-gray-400; }
   .table-wrap { @apply w-full overflow-x-auto; }
   .table { @apply whitespace-nowrap; }
-  .table th { @apply text-xs uppercase tracking-wider; }
+  /* Match TablePageLayout.vue's native admin table cells. */
+  .embed-shell .table th, .feature-shell .table th { @apply px-5 py-4 text-sm font-medium normal-case tracking-normal; }
+  .embed-shell .table td, .feature-shell .table td { @apply px-5 py-4; }
   .table td .name { @apply font-medium text-gray-900 dark:text-gray-100; }
   .secondary { @apply mt-0.5 block text-xs text-gray-500 dark:text-dark-400; }
   .wrap { @apply min-w-[180px] max-w-md whitespace-normal break-words; }
@@ -91,15 +95,17 @@
   .empty-icon { @apply mb-4 h-12 w-12 text-gray-400 dark:text-dark-500; }
   .empty strong { @apply text-lg font-medium text-gray-900 dark:text-gray-100; }
   .empty p { @apply mt-2 text-sm text-gray-500 dark:text-dark-400; }
-  .switch { @apply inline-flex cursor-pointer items-center gap-2 text-sm text-gray-700 dark:text-gray-300; }
-  .switch input { @apply relative m-0 inline-flex h-6 w-11 shrink-0 cursor-pointer appearance-none rounded-full border-2 border-transparent bg-gray-200 transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:bg-dark-600 dark:focus:ring-offset-dark-800; }
-  .switch input:after { content: ''; @apply pointer-events-none absolute left-0 top-0 inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out; }
-  .switch input:checked { @apply bg-primary-600; }
-  .switch input:checked:after { @apply translate-x-5; }
-  .switch input:disabled { @apply cursor-not-allowed opacity-50; }
-  .field { @apply mb-4 grid gap-1.5 text-sm text-gray-700 dark:text-gray-300; }
+  .helper-switch { @apply relative inline-flex shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap text-sm text-gray-700 dark:text-gray-300; }
+  .helper-switch > input { @apply absolute left-0 top-1/2 z-10 m-0 h-6 w-11 -translate-y-1/2 cursor-pointer opacity-0; }
+  .helper-switch > .switch { @apply inline-block shrink-0; }
+  .helper-switch > input:checked + .switch { @apply switch-active; }
+  .helper-switch > input:checked + .switch .switch-thumb { @apply translate-x-5; }
+  .helper-switch > input:focus-visible + .switch { @apply ring-2 ring-primary-500 ring-offset-2 dark:ring-offset-dark-800; }
+  .helper-switch > input:disabled { @apply cursor-not-allowed; }
+  .helper-switch > input:disabled + .switch { @apply opacity-50; }
+  .field { @apply mb-4 grid min-w-0 gap-1.5 text-sm text-gray-700 dark:text-gray-300; }
   .field > span { @apply font-medium; }
-  .field input:not([type='checkbox']), .field select, .field textarea { @apply input; }
+  .field input:not([type='checkbox']), .field select, .field textarea { @apply input min-w-0; }
   .field small { @apply text-xs font-normal text-gray-500 dark:text-dark-400; }
   .field-row { @apply grid gap-4 sm:grid-cols-2; }
   textarea { @apply resize-y; }
@@ -110,9 +116,9 @@
   .account-picker label { @apply flex items-center gap-2 text-sm font-normal; }
   .editor-dialog { @apply w-[calc(100%-2rem)] max-w-2xl overflow-hidden rounded-2xl border border-gray-200 bg-white p-0 text-gray-900 shadow-2xl dark:border-dark-700 dark:bg-dark-800 dark:text-gray-100; max-height: 90vh; }
   .editor-dialog::backdrop { @apply bg-black/50 backdrop-blur-sm; }
-  .dialog-header { @apply flex items-center justify-between gap-4 border-b border-gray-200 px-6 py-4 dark:border-dark-700; }
-  .dialog-body { @apply overflow-y-auto px-6 py-4; max-height: calc(90vh - 150px); }
-  .dialog-footer { @apply flex justify-end gap-2 border-t border-gray-200 px-6 py-4 dark:border-dark-700; }
+  .dialog-header { @apply flex items-center justify-between gap-4 border-b border-gray-200 px-4 py-3 dark:border-dark-700 sm:px-6 sm:py-4; }
+  .dialog-body { @apply overflow-y-auto px-4 py-3 sm:px-6 sm:py-4; max-height: calc(90vh - 150px); }
+  .dialog-footer { @apply flex justify-end gap-3 border-t border-gray-200 px-4 py-3 dark:border-dark-700 sm:px-6 sm:py-4; }
   .form-error { @apply mt-3 whitespace-pre-wrap break-words text-sm text-red-500; }
   .module-grid { @apply grid gap-6 lg:grid-cols-3; }
   .module-card { @apply mb-0 flex flex-col p-6; }
@@ -121,6 +127,10 @@
   .module-card p { @apply mb-6 mt-2 text-sm text-gray-500 dark:text-dark-400; }
   .module-bottom { @apply mt-auto flex items-center justify-between gap-2 border-t border-gray-100 pt-4 dark:border-dark-700; }
   .module-url { @apply mt-3 break-all text-xs text-gray-400 dark:text-dark-400; }
+  .menu-origin-form .field { @apply mb-3; }
+  .menu-settings-status { @apply mt-4 grid gap-3; }
+  .menu-settings-status .notice { @apply mb-0; }
+  .menu-preview-caption { @apply mb-3; }
   /* Position and surface come unchanged from upstream .toast (top/right only). */
   .toast-row { @apply flex items-start gap-3; }
   .toast-row > svg { @apply mt-0.5 h-5 w-5 shrink-0 text-emerald-500; }
@@ -156,8 +166,9 @@
   .connection-field { grid-column: 1 / -1; }
   .connection-form > .pill { grid-column: 1 / -1; margin-bottom: 0; }
   .connection-form > #disconnect { justify-self: end; }
-  .page-head { gap: .75rem; }
-  .page-head h1 { font-size: 1.25rem; line-height: 1.75rem; }
+  .page-head { gap: .75rem; flex-wrap: wrap; }
+  .page-head > div { min-width: 0; flex: 1 1 12rem; }
+  .card-header { flex-wrap: wrap; align-items: flex-start; }
   .page-head > .button { padding-left: .75rem; padding-right: .75rem; }
   .stat-card { flex-direction: column; }
   .toolbar .count { width: 100%; margin-left: 0; }
