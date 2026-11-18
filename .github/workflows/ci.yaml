@@ -13,11 +13,11 @@ jobs:
       run:
         working-directory: helper
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: helper
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
           cache: pip
@@ -45,7 +45,7 @@ jobs:
           PY
       - name: Checkout the pinned upstream release, never main
         if: steps.release.outputs.exists == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Wei-Shaw/sub2api
           ref: ${{ steps.release.outputs.sha }}
@@ -63,7 +63,7 @@ jobs:
           git fetch --depth=1 origin "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -v
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
       - run: node --check helper/static/app.js && node --check helper/static/feature.js && node --check helper/static/icons.js

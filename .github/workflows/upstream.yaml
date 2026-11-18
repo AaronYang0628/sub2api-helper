@@ -22,12 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: helper
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - name: Find the next official stable release
@@ -43,7 +43,7 @@ jobs:
             --release-json "$RUNNER_TEMP/upstream-release.json"
       - name: Checkout the exact release tag as data
         if: steps.discover.outputs.found == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: Wei-Shaw/sub2api
           ref: ${{ steps.discover.outputs.tag }}
@@ -72,27 +72,22 @@ jobs:
       - name: Create a PR even if no application adjustment is needed
         if: steps.discover.outputs.found == 'true'
         id: pr
-        uses: peter-evans/create-pull-request@v7
-        with:
-          path: helper
-          token: ${{ github.token }}
-          base: ${{ github.event.repository.default_branch }}
-          branch: ${{ steps.prepare.outputs.branch }}
-          title: 'chore: sync sub2api ${{ steps.prepare.outputs.tag }}'
-          commit-message: 'chore: sync sub2api ${{ steps.prepare.outputs.tag }}'
-          body-path: ${{ runner.temp }}/upstream-pr.md
-          draft: ${{ steps.prepare.outputs.requires_review == 'true' }}
-          add-paths: |
-            helper/VERSION
-            compose.yaml
-            ui/package.json
-            ui/package-lock.json
-            README.md
-            docs/upstream-release.json
-            docs/upstream-release-approval.json
-            docs/upstream-baseline.json
+        working-directory: helper
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
+          UPSTREAM_TAG: ${{ steps.prepare.outputs.tag }}
+          REQUIRES_REVIEW: ${{ steps.prepare.outputs.requires_review }}
+        run: |
+          python scripts/open_sync_pr.py --repository "$REPOSITORY" \
+            --base "$DEFAULT_BRANCH" --branch "$SYNC_BRANCH" \
+            --title "chore: sync sub2api $UPSTREAM_TAG" \
+            --body-file "$RUNNER_TEMP/upstream-pr.md" --root . \
+            --draft "$REQUIRES_REVIEW" --outputs "$GITHUB_OUTPUT"
       - name: Explicitly dispatch CI for the bot-created PR
-        if: steps.pr.outputs.pull-request-number != ''
+        if: steps.pr.outputs.pull_request_number != ''
         working-directory: helper
         env:
           GH_TOKEN: ${{ github.token }}
