@@ -1,11 +1,554 @@
 {
   "evidence": {
-    "all_changes": [],
-    "changed_pinned_files": [],
-    "embedded_version": "0.2.21",
+    "all_changes": [
+      {
+        "path": "backend/cmd/server/VERSION",
+        "scope": "version-metadata",
+        "sha256": "1c26b6827d8350fcc391724bf4e71440a594c6580edb5e88687febdab34f8a70",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/handler/admin/channel_handler.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8400f8411e2052c32f28635bc3c52c0c92640f41384d024f6826eb5aae4288f6",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/handler/admin/channel_handler_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1c894d32d84185d720699c2b045f136977ba4a17b8dd5aa0e4e342a3a43f296f",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_cache_creation_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "218cbc25070e63fb0c28dd0aae0828e9816277ffcbee1b4b73b24409b6599f27",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_cache_read_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1db118ad47f963861cf809b5417e24608f594b64136c0e959fedd856e333289d",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_to_responses.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8f48569029be3e3e083bc9821980cfb43e38aafd00f49e78dfe16f42941e12d0",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_to_responses_response.go",
+        "scope": "runtime-or-interface",
+        "sha256": "5de847832849df80490a236cfd4510993258ac85857c99ad9f0f0da7f9ee050b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/chatcompletions_anthropic_bridge.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2931081d315a3413a487fa0b03b7b8f246385305db89785c75c1fddd8a659ba3",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/chatcompletions_responses_bridge.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1299743dff24594453a56f473ec9a8018dadc3fde8366df848e509f05213757d",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/responses_anthropic_cache_creation_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "52cd0dc70f4c905c7f222c07c7be11ea1bf82739019baa94265c11545e2ba279",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/responses_to_anthropic.go",
+        "scope": "runtime-or-interface",
+        "sha256": "5d596ad971b3fda6fc39b107883a0f1ca57271e7cb809cdcc43c4d9227d05869",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/types.go",
+        "scope": "runtime-or-interface",
+        "sha256": "38727b8895f8254fb49f6ad797288f537a8b3b03f6eecb6b60467fb7ae926ab7",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/openai/codex_gpt62_astra.json",
+        "scope": "runtime-or-interface",
+        "sha256": "d5e1e3e3dcc06e9648bc5eefc3b3d09bd5412046d60e1be3b3f3a45ec3f6b16c",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/openai/codex_gpt62_sol.json",
+        "scope": "runtime-or-interface",
+        "sha256": "62469f05d46e7108e573a4746490edc6acd8931fb9b259e326c33e61f0c9cf49",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/openai/constants.go",
+        "scope": "runtime-or-interface",
+        "sha256": "d463cee8d3ada64be8b529e87cfba42790136d49fe689e20c67770f5081cfa98",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_repo_pricing.go",
+        "scope": "runtime-or-interface",
+        "sha256": "35a76c8a7d34b23273f657febe3eaf96b46df088ec3b3d1749845845cc05dd65",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_repo_pricing_reasoning_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "43f85bbd2170690a1cfaf0844aecaa17a3aa8de26553141977d785a9e4a49977",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_repo_pricing_time_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "9ffb7c8911649a0f18a926ce62efc89875f1dbe4bc41c30007c8c044a7d47ae2",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_ultrafast_pricing_integration_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "f2a09f86a3dd41891358359b54d20230c7d49ed9d8f436b912f327e653d13627",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/account_stats_pricing.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7643141264019fbfd0687c3fcc3cbbcf52c5012084ab37d4c58a96f5c803f8f3",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/account_stats_pricing_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "64f65553c0f8ef7d12ac06259a12e3640f9e793bb647d2b4fb290fbebb486d55",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/anthropic_chat_stream_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "5b9d30202fd5019d1a673a639616abad370ae8d88ff6a8efd14a445d4a0e78d6",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/anthropic_prompt_total_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4100fbdf1a93e90c1563ff60843ccea2642a032025796c7c66d7871581afa9f1",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/antigravity_gateway_service_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "967da01a23832fa1c23bb790d3e51af525fcc24610fad7029cfd3a837fb1f814",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/antigravity_gateway_upstream.go",
+        "scope": "runtime-or-interface",
+        "sha256": "869a0020c1150114ec61a9d23552a6b50f9ea2cc041ddbc68c396b6f09ccca01",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/billing_inflight_reservation_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7d59a118862c9dd785fb761b92208cbff587c358a8b16deb97b8237cca947a0b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/billing_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "97ceda422fbd974037d17fd11208fb44bb65ffcf77ef2a5445ff7b4d41c1299c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/billing_service_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "d0927c71d208ae6a44c6dfcfe666f6fd4cf6852686a58f5261341c61c8baae7c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8484667ad6d87463bd39ab65fd9c71df2725503f953605b64f6a2963d03e2f12",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel_pricing_multipliers_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "c09b415b339d121daf4893ba9d0b9b150a9dadac020bf89d466430bec94e66b8",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4b585a12f0e4aed7c787991333c6fe3e865860a8d5c61f0448bed5e0e349ce61",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel_ultrafast_pricing_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "74c2d50aed91ba28b1c18565307ffa35c5aef77c210ccd5e41eefed68c8e15d2",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_anthropic_apikey_passthrough_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7781b011089ba99c42b462cc6c775527b772461461b3e1cec726c6df718390e7",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_anthropic_passthrough.go",
+        "scope": "runtime-or-interface",
+        "sha256": "e82f0e3ab617aadec24b34af223a1cd8087213bb5caf0f272bd3730d0848603e",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_cache_compatibility_boundary_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "ad35445e2db376dcba2657219b7c6dbc4e1a5ddadb345baabea641f6c41cc530",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_cache_creation_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "9420b49b267c8b44659edfb8101333d07533e06d6777bd7ddf18a6c1e8bc923d",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_cache_ttl_override_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "0de243d2aa1da620714c5d06fb2fbdd9ea7ab1af1cdffcc6b1a62788989e0ed8",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_chat_completions.go",
+        "scope": "runtime-or-interface",
+        "sha256": "165b8b503f6935a4e1019b7c4cf504b8cda8242f989e1a2bb2a967d6836a7d64",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_chat_completions_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1a18f88f9cf1a34a746ae16dee1df8107c8fe215b9b9e614be7109b97c718f8b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_responses.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8790e7db9c1bd0798492e9f8bde80efffc257b6ea24b2b1b902cd15a160c4bce",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_responses_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "123a4576890e36ecbf2ec977c8ed836a110e1991d0f2e132c43c47839d874aba",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2f527ebad76351c71e6922983234cb5e61487c95f43e46051f1b43be49b64514",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_upstream_response.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b334b10ec7daf94346bb54508c3efc08f0f8d8485042f2797144af5c44beebf5",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_usage_billing.go",
+        "scope": "runtime-or-interface",
+        "sha256": "477565fad60a45f3afa5254d7d40a830828397172c468de4b533f90939bdd08b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/kimi_anthropic_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "695e4e862294ba743869dad3e5123d4dc28c0d25d1be8a1a19442e65562919e0",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/model_pricing_resolver.go",
+        "scope": "runtime-or-interface",
+        "sha256": "3b2132ab266324188372ee2dc601c136918714543b89402a9f0409ba590d7379",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_cache_write_ttl_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "e18e6277872a5f272025822737f1c159e76ffc798dbd45d64304d1d9a9a8805c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_codex_model_metadata.go",
+        "scope": "runtime-or-interface",
+        "sha256": "3072e0e3b20b25d3d404d9ee47a260ced8c54abe2c36c34285b0ade606a57624",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_codex_models_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b93206561044def82613ad30a86152917d0a95dbb8d1dc237b0dc231c2d44428",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_codex_transform.go",
+        "scope": "runtime-or-interface",
+        "sha256": "93aedb328c56bf0372a213c89bb5485f08a44fb9775527fbca1c110018a060a9",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_compat_model.go",
+        "scope": "runtime-or-interface",
+        "sha256": "a7354044e6329eead67d01b72e7215709342b72bbc3702e4ea4eb254345c30ba",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_compat_prompt_cache_key.go",
+        "scope": "runtime-or-interface",
+        "sha256": "ab6efd0312f5c254a44d2fdb28e035c86f94ef6b417aed3df0479a005c6aac7c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_cc_pipeline.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b49bf7076668bdd22effa6237ec8b6ed16c46749f1b5c1cc032601ee152a2f8b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_chat_completions_anthropic_native.go",
+        "scope": "runtime-or-interface",
+        "sha256": "58303fcc29838e7c06879757fa5e275cc1ea3e1cbb9aa4e9347f16a2e48d4414",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_chat_completions_raw.go",
+        "scope": "runtime-or-interface",
+        "sha256": "ed012d87a75415ad07a8f73f192cf7ea0c4c3e374b86e8ef5cc717556c7ca675",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_chat_completions_raw_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "051316fc03cb10dfbefbfcd11502069c5304c00f0c09b00db4131d6dbce160eb",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_messages.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2b0f3f4d1d060899500bdbb3817c40fd3b728adb6818f4d212c94cec8cd02835",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_messages_anthropic_native.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2a4440531b8c696b35e86b88898703e73f9316f4a1175df8e506fed5adb91679",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_messages_chat_fallback.go",
+        "scope": "runtime-or-interface",
+        "sha256": "151df1af442ab02da464589fac38c32f4880e26f49db0fa36f6d5a64b28d132e",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_native_cache_creation_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "a02dc8ed21c3e2a5130c2b1fdb7c56cfdc64eedaebf52b08ae1a5896a44b0e48",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_ollama_cloud_cc_reasoning.go",
+        "scope": "runtime-or-interface",
+        "sha256": "22cd98e22e2c8f662f5129407459209f9f36897f2cc1834091551747886f80e4",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_request_body.go",
+        "scope": "runtime-or-interface",
+        "sha256": "482673961e0d2833f88e0dd4c57951a1de37e1d74d816b8a878acc73d24779ab",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_response_handling.go",
+        "scope": "runtime-or-interface",
+        "sha256": "a561b02180cc622373b4127fe02c56571b6ab8c5f10b7b9aa29fb6904ea6dc1d",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_responses_anthropic_native.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b662dc0049a26a8abfc51446604dfa1e3d66ca1516ce3beabf62a6aaa761480c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_responses_chat_fallback.go",
+        "scope": "runtime-or-interface",
+        "sha256": "3ea4123779966c0be037c1ccd6d4205fef77a5ff1431661361c6970135264b67",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "59140da3932da20a122460faefc533aa1b87f38ce1257acae4fd2bf9ee06a397",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_usage.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2ecb248f61bb37b9b3ddeb27f30882a4e58c86ffb2e0b1f2f604342edad72ff0",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gpt62_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "cedd9d98693818e3ef748e2b3d2b108d6b2dc3ede30151df335683bb01570dcd",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_json_object_field_edit.go",
+        "scope": "runtime-or-interface",
+        "sha256": "36cc0e171032822cf1064699c4d935e0ca537aab7f5d0b2bf847a09601b35041",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_json_object_field_edit_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7a403c63eafd594df3c348161f98fda72a2d484632ec434ceb5579fe7b842adc",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_model_alias.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4015739e1ebeb6fda5782c9a8640efb7b0a49565baeaaf9e063612dbfec44bcf",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_stream_idle_timeout_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "c90e956a039ee3c925afe73b4a80d119da9780e5436a0c74a85f310cfe375e04",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/pricing_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4bad5f91dea669a537112afc2b5ad859523db2ca464a49b3accfa04fba7fa152",
+        "status": "M"
+      },
+      {
+        "path": "backend/migrations/252_channel_pricing_ultrafast_multiplier.sql",
+        "scope": "runtime-or-interface",
+        "sha256": "01eb249a933e5c3bef3a8e2106098abf56d20a5f2890fcc6490b1f83ec05687f",
+        "status": "A"
+      },
+      {
+        "path": "backend/resources/model-pricing/model_prices_and_context_window.json",
+        "scope": "runtime-or-interface",
+        "sha256": "407049cb91f1d09592900e817d126e87f35dcd1533af3e8276ae62bfeb40595f",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/api/admin/channels.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "25755e9d6f5533b2c73ea1056afaac4bb093767a3e4162b4739b77ed34cecbf1",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/PricingEntryCard.vue",
+        "scope": "runtime-or-interface",
+        "sha256": "dfaac558b18fba17fe528cae950eb39d8d8f0c9d19ac991fc56a3b1f209f24f3",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/__tests__/PricingEntryCard.modelDefaultPrice.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "473dd9830767276a5be27d0a5882b2b422ab2e914794e0e25cd13b165b167d23",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/__tests__/PricingEntryCard.timePricing.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "ced0ede69c195dc97a0471d1c773fd57a5526b0469054bad5426264f983551b0",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/types.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "4d350604b395a0e3f507aaacd792c891140b7ed088fa64f08db520c96e3d98ac",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/keys/UseKeyModal.vue",
+        "scope": "runtime-or-interface",
+        "sha256": "864f0c0915d4e3bcc1942ee6543a5c8432fa583f669d10b3bd9a06832bb0bc0c",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/keys/__tests__/UseKeyModal.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "76c64c04f35d335b88dc7ebcc06ee6a644785e0f70861b0a48bb70cf50ecdd1e",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/composables/__tests__/useModelWhitelist.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "1cf37f89c2bf28261fbe870375df0e385a91d3a7e2b612589836f470b904acd2",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/composables/useModelWhitelist.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "9a31eb2564274c4b07c71496080774f7f787f3d7dd15d35a4e4a4a5c46d87695",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/en/admin/channels.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "7346b807bc394b5c3d0c7a351ce707f453c9022c4ddba7fcf17a6b53736d10a6",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/en/admin/overview.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "bcad24f524c663378d6549a736350c84ef79db669f323bfc57be6e8c647740eb",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/zh/admin/channels.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "59eb50c0fd8c5abce9e104872ace66107c4cae9353d9771b9644ed5471c5b478",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/zh/admin/overview.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "de57e8c2a0c0870f641d32e2231f1d9ce6b0cd5ab7165d8aac53e1e224970229",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/views/admin/ChannelsView.vue",
+        "scope": "runtime-or-interface",
+        "sha256": "876b88700248655fca1384866a2331f3e7214e243e1b35ebdedab1f795785140",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/views/admin/__tests__/ChannelsView.ultrafastPricing.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "1543983227b3205ac1efe39f725bb71fa23fb97c57a6c37445574af6d9dfaa63",
+        "status": "A"
+      }
+    ],
+    "changed_pinned_files": [
+      "backend/cmd/server/VERSION"
+    ],
+    "embedded_version": "0.2.22",
     "embedded_version_matches_release": false,
     "pinned_hashes": {
-      "backend/cmd/server/VERSION": "d612e32bad3e982c0bff1240bd4d9f08fced471fe070dc54d15a669eb636909e",
+      "backend/cmd/server/VERSION": "1c26b6827d8350fcc391724bf4e71440a594c6580edb5e88687febdab34f8a70",
       "backend/internal/handler/admin/account_handler.go": "25a6aefe8bdbee39dbbd779d1c8692b986b5a76c922caf2dd0e2ce2cae9006ab",
       "backend/internal/handler/admin/compliance_handler.go": "06f0c9403bb7befe700bde22ec7d21b196d3872799385b96e2cd6c27e906a75e",
       "backend/internal/handler/admin/group_handler.go": "1278d4c9673fd54d1151ecee02de70dbe387479c0a6859ab366b7fd44901d1c4",
@@ -32,9 +575,544 @@
       "frontend/src/utils/embedded-url.ts": "c1503c6ebdcdcae4530344ef37783ac0bfa83b5a03f87e7e9915b319267537b9",
       "frontend/tailwind.config.js": "717af6397bf3c1b57fee20b15528d1c27d1241e4db686dcf79dba2effb27fb3d"
     },
-    "relevant_changes": []
+    "relevant_changes": [
+      {
+        "path": "backend/internal/handler/admin/channel_handler.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8400f8411e2052c32f28635bc3c52c0c92640f41384d024f6826eb5aae4288f6",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/handler/admin/channel_handler_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1c894d32d84185d720699c2b045f136977ba4a17b8dd5aa0e4e342a3a43f296f",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_cache_creation_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "218cbc25070e63fb0c28dd0aae0828e9816277ffcbee1b4b73b24409b6599f27",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_cache_read_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1db118ad47f963861cf809b5417e24608f594b64136c0e959fedd856e333289d",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_to_responses.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8f48569029be3e3e083bc9821980cfb43e38aafd00f49e78dfe16f42941e12d0",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/anthropic_to_responses_response.go",
+        "scope": "runtime-or-interface",
+        "sha256": "5de847832849df80490a236cfd4510993258ac85857c99ad9f0f0da7f9ee050b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/chatcompletions_anthropic_bridge.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2931081d315a3413a487fa0b03b7b8f246385305db89785c75c1fddd8a659ba3",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/chatcompletions_responses_bridge.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1299743dff24594453a56f473ec9a8018dadc3fde8366df848e509f05213757d",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/responses_anthropic_cache_creation_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "52cd0dc70f4c905c7f222c07c7be11ea1bf82739019baa94265c11545e2ba279",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/responses_to_anthropic.go",
+        "scope": "runtime-or-interface",
+        "sha256": "5d596ad971b3fda6fc39b107883a0f1ca57271e7cb809cdcc43c4d9227d05869",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/apicompat/types.go",
+        "scope": "runtime-or-interface",
+        "sha256": "38727b8895f8254fb49f6ad797288f537a8b3b03f6eecb6b60467fb7ae926ab7",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/pkg/openai/codex_gpt62_astra.json",
+        "scope": "runtime-or-interface",
+        "sha256": "d5e1e3e3dcc06e9648bc5eefc3b3d09bd5412046d60e1be3b3f3a45ec3f6b16c",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/openai/codex_gpt62_sol.json",
+        "scope": "runtime-or-interface",
+        "sha256": "62469f05d46e7108e573a4746490edc6acd8931fb9b259e326c33e61f0c9cf49",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/pkg/openai/constants.go",
+        "scope": "runtime-or-interface",
+        "sha256": "d463cee8d3ada64be8b529e87cfba42790136d49fe689e20c67770f5081cfa98",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_repo_pricing.go",
+        "scope": "runtime-or-interface",
+        "sha256": "35a76c8a7d34b23273f657febe3eaf96b46df088ec3b3d1749845845cc05dd65",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_repo_pricing_reasoning_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "43f85bbd2170690a1cfaf0844aecaa17a3aa8de26553141977d785a9e4a49977",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_repo_pricing_time_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "9ffb7c8911649a0f18a926ce62efc89875f1dbe4bc41c30007c8c044a7d47ae2",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/repository/channel_ultrafast_pricing_integration_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "f2a09f86a3dd41891358359b54d20230c7d49ed9d8f436b912f327e653d13627",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/account_stats_pricing.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7643141264019fbfd0687c3fcc3cbbcf52c5012084ab37d4c58a96f5c803f8f3",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/account_stats_pricing_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "64f65553c0f8ef7d12ac06259a12e3640f9e793bb647d2b4fb290fbebb486d55",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/anthropic_chat_stream_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "5b9d30202fd5019d1a673a639616abad370ae8d88ff6a8efd14a445d4a0e78d6",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/anthropic_prompt_total_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4100fbdf1a93e90c1563ff60843ccea2642a032025796c7c66d7871581afa9f1",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/antigravity_gateway_service_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "967da01a23832fa1c23bb790d3e51af525fcc24610fad7029cfd3a837fb1f814",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/antigravity_gateway_upstream.go",
+        "scope": "runtime-or-interface",
+        "sha256": "869a0020c1150114ec61a9d23552a6b50f9ea2cc041ddbc68c396b6f09ccca01",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/billing_inflight_reservation_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7d59a118862c9dd785fb761b92208cbff587c358a8b16deb97b8237cca947a0b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/billing_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "97ceda422fbd974037d17fd11208fb44bb65ffcf77ef2a5445ff7b4d41c1299c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/billing_service_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "d0927c71d208ae6a44c6dfcfe666f6fd4cf6852686a58f5261341c61c8baae7c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8484667ad6d87463bd39ab65fd9c71df2725503f953605b64f6a2963d03e2f12",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel_pricing_multipliers_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "c09b415b339d121daf4893ba9d0b9b150a9dadac020bf89d466430bec94e66b8",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4b585a12f0e4aed7c787991333c6fe3e865860a8d5c61f0448bed5e0e349ce61",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/channel_ultrafast_pricing_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "74c2d50aed91ba28b1c18565307ffa35c5aef77c210ccd5e41eefed68c8e15d2",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_anthropic_apikey_passthrough_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7781b011089ba99c42b462cc6c775527b772461461b3e1cec726c6df718390e7",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_anthropic_passthrough.go",
+        "scope": "runtime-or-interface",
+        "sha256": "e82f0e3ab617aadec24b34af223a1cd8087213bb5caf0f272bd3730d0848603e",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_cache_compatibility_boundary_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "ad35445e2db376dcba2657219b7c6dbc4e1a5ddadb345baabea641f6c41cc530",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_cache_creation_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "9420b49b267c8b44659edfb8101333d07533e06d6777bd7ddf18a6c1e8bc923d",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_cache_ttl_override_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "0de243d2aa1da620714c5d06fb2fbdd9ea7ab1af1cdffcc6b1a62788989e0ed8",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_chat_completions.go",
+        "scope": "runtime-or-interface",
+        "sha256": "165b8b503f6935a4e1019b7c4cf504b8cda8242f989e1a2bb2a967d6836a7d64",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_chat_completions_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "1a18f88f9cf1a34a746ae16dee1df8107c8fe215b9b9e614be7109b97c718f8b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_responses.go",
+        "scope": "runtime-or-interface",
+        "sha256": "8790e7db9c1bd0798492e9f8bde80efffc257b6ea24b2b1b902cd15a160c4bce",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_forward_as_responses_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "123a4576890e36ecbf2ec977c8ed836a110e1991d0f2e132c43c47839d874aba",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2f527ebad76351c71e6922983234cb5e61487c95f43e46051f1b43be49b64514",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_upstream_response.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b334b10ec7daf94346bb54508c3efc08f0f8d8485042f2797144af5c44beebf5",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/gateway_usage_billing.go",
+        "scope": "runtime-or-interface",
+        "sha256": "477565fad60a45f3afa5254d7d40a830828397172c468de4b533f90939bdd08b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/kimi_anthropic_usage_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "695e4e862294ba743869dad3e5123d4dc28c0d25d1be8a1a19442e65562919e0",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/model_pricing_resolver.go",
+        "scope": "runtime-or-interface",
+        "sha256": "3b2132ab266324188372ee2dc601c136918714543b89402a9f0409ba590d7379",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_cache_write_ttl_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "e18e6277872a5f272025822737f1c159e76ffc798dbd45d64304d1d9a9a8805c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_codex_model_metadata.go",
+        "scope": "runtime-or-interface",
+        "sha256": "3072e0e3b20b25d3d404d9ee47a260ced8c54abe2c36c34285b0ade606a57624",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_codex_models_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b93206561044def82613ad30a86152917d0a95dbb8d1dc237b0dc231c2d44428",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_codex_transform.go",
+        "scope": "runtime-or-interface",
+        "sha256": "93aedb328c56bf0372a213c89bb5485f08a44fb9775527fbca1c110018a060a9",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_compat_model.go",
+        "scope": "runtime-or-interface",
+        "sha256": "a7354044e6329eead67d01b72e7215709342b72bbc3702e4ea4eb254345c30ba",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_compat_prompt_cache_key.go",
+        "scope": "runtime-or-interface",
+        "sha256": "ab6efd0312f5c254a44d2fdb28e035c86f94ef6b417aed3df0479a005c6aac7c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_cc_pipeline.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b49bf7076668bdd22effa6237ec8b6ed16c46749f1b5c1cc032601ee152a2f8b",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_chat_completions_anthropic_native.go",
+        "scope": "runtime-or-interface",
+        "sha256": "58303fcc29838e7c06879757fa5e275cc1ea3e1cbb9aa4e9347f16a2e48d4414",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_chat_completions_raw.go",
+        "scope": "runtime-or-interface",
+        "sha256": "ed012d87a75415ad07a8f73f192cf7ea0c4c3e374b86e8ef5cc717556c7ca675",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_chat_completions_raw_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "051316fc03cb10dfbefbfcd11502069c5304c00f0c09b00db4131d6dbce160eb",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_messages.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2b0f3f4d1d060899500bdbb3817c40fd3b728adb6818f4d212c94cec8cd02835",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_messages_anthropic_native.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2a4440531b8c696b35e86b88898703e73f9316f4a1175df8e506fed5adb91679",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_messages_chat_fallback.go",
+        "scope": "runtime-or-interface",
+        "sha256": "151df1af442ab02da464589fac38c32f4880e26f49db0fa36f6d5a64b28d132e",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_native_cache_creation_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "a02dc8ed21c3e2a5130c2b1fdb7c56cfdc64eedaebf52b08ae1a5896a44b0e48",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_ollama_cloud_cc_reasoning.go",
+        "scope": "runtime-or-interface",
+        "sha256": "22cd98e22e2c8f662f5129407459209f9f36897f2cc1834091551747886f80e4",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_request_body.go",
+        "scope": "runtime-or-interface",
+        "sha256": "482673961e0d2833f88e0dd4c57951a1de37e1d74d816b8a878acc73d24779ab",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_response_handling.go",
+        "scope": "runtime-or-interface",
+        "sha256": "a561b02180cc622373b4127fe02c56571b6ab8c5f10b7b9aa29fb6904ea6dc1d",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_responses_anthropic_native.go",
+        "scope": "runtime-or-interface",
+        "sha256": "b662dc0049a26a8abfc51446604dfa1e3d66ca1516ce3beabf62a6aaa761480c",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_responses_chat_fallback.go",
+        "scope": "runtime-or-interface",
+        "sha256": "3ea4123779966c0be037c1ccd6d4205fef77a5ff1431661361c6970135264b67",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "59140da3932da20a122460faefc533aa1b87f38ce1257acae4fd2bf9ee06a397",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gateway_usage.go",
+        "scope": "runtime-or-interface",
+        "sha256": "2ecb248f61bb37b9b3ddeb27f30882a4e58c86ffb2e0b1f2f604342edad72ff0",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_gpt62_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "cedd9d98693818e3ef748e2b3d2b108d6b2dc3ede30151df335683bb01570dcd",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_json_object_field_edit.go",
+        "scope": "runtime-or-interface",
+        "sha256": "36cc0e171032822cf1064699c4d935e0ca537aab7f5d0b2bf847a09601b35041",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_json_object_field_edit_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "7a403c63eafd594df3c348161f98fda72a2d484632ec434ceb5579fe7b842adc",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/openai_model_alias.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4015739e1ebeb6fda5782c9a8640efb7b0a49565baeaaf9e063612dbfec44bcf",
+        "status": "M"
+      },
+      {
+        "path": "backend/internal/service/openai_stream_idle_timeout_test.go",
+        "scope": "runtime-or-interface",
+        "sha256": "c90e956a039ee3c925afe73b4a80d119da9780e5436a0c74a85f310cfe375e04",
+        "status": "A"
+      },
+      {
+        "path": "backend/internal/service/pricing_service.go",
+        "scope": "runtime-or-interface",
+        "sha256": "4bad5f91dea669a537112afc2b5ad859523db2ca464a49b3accfa04fba7fa152",
+        "status": "M"
+      },
+      {
+        "path": "backend/migrations/252_channel_pricing_ultrafast_multiplier.sql",
+        "scope": "runtime-or-interface",
+        "sha256": "01eb249a933e5c3bef3a8e2106098abf56d20a5f2890fcc6490b1f83ec05687f",
+        "status": "A"
+      },
+      {
+        "path": "backend/resources/model-pricing/model_prices_and_context_window.json",
+        "scope": "runtime-or-interface",
+        "sha256": "407049cb91f1d09592900e817d126e87f35dcd1533af3e8276ae62bfeb40595f",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/api/admin/channels.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "25755e9d6f5533b2c73ea1056afaac4bb093767a3e4162b4739b77ed34cecbf1",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/PricingEntryCard.vue",
+        "scope": "runtime-or-interface",
+        "sha256": "dfaac558b18fba17fe528cae950eb39d8d8f0c9d19ac991fc56a3b1f209f24f3",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/__tests__/PricingEntryCard.modelDefaultPrice.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "473dd9830767276a5be27d0a5882b2b422ab2e914794e0e25cd13b165b167d23",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/__tests__/PricingEntryCard.timePricing.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "ced0ede69c195dc97a0471d1c773fd57a5526b0469054bad5426264f983551b0",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/admin/channel/types.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "4d350604b395a0e3f507aaacd792c891140b7ed088fa64f08db520c96e3d98ac",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/keys/UseKeyModal.vue",
+        "scope": "runtime-or-interface",
+        "sha256": "864f0c0915d4e3bcc1942ee6543a5c8432fa583f669d10b3bd9a06832bb0bc0c",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/components/keys/__tests__/UseKeyModal.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "76c64c04f35d335b88dc7ebcc06ee6a644785e0f70861b0a48bb70cf50ecdd1e",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/composables/__tests__/useModelWhitelist.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "1cf37f89c2bf28261fbe870375df0e385a91d3a7e2b612589836f470b904acd2",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/composables/useModelWhitelist.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "9a31eb2564274c4b07c71496080774f7f787f3d7dd15d35a4e4a4a5c46d87695",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/en/admin/channels.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "7346b807bc394b5c3d0c7a351ce707f453c9022c4ddba7fcf17a6b53736d10a6",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/en/admin/overview.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "bcad24f524c663378d6549a736350c84ef79db669f323bfc57be6e8c647740eb",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/zh/admin/channels.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "59eb50c0fd8c5abce9e104872ace66107c4cae9353d9771b9644ed5471c5b478",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/i18n/locales/zh/admin/overview.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "de57e8c2a0c0870f641d32e2231f1d9ce6b0cd5ab7165d8aac53e1e224970229",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/views/admin/ChannelsView.vue",
+        "scope": "runtime-or-interface",
+        "sha256": "876b88700248655fca1384866a2331f3e7214e243e1b35ebdedab1f795785140",
+        "status": "M"
+      },
+      {
+        "path": "frontend/src/views/admin/__tests__/ChannelsView.ultrafastPricing.spec.ts",
+        "scope": "runtime-or-interface",
+        "sha256": "1543983227b3205ac1efe39f725bb71fa23fb97c57a6c37445574af6d9dfaa63",
+        "status": "A"
+      }
+    ]
   },
-  "fingerprint": "f194ddcbce4a08798d183d0315eb57e57bfb6bdb16e8fc976577e4fc44f27191",
+  "fingerprint": "45b621432d97bebb89e30971901dac4e087062dcefd387ad225fd09aa3709fca",
   "previous_baseline": {
     "files": {
       "backend/cmd/server/VERSION": "d612e32bad3e982c0bff1240bd4d9f08fced471fe070dc54d15a669eb636909e",
@@ -70,11 +1148,11 @@
     "reviewed_commit": "b0fa9f3e6eeab1968a53e1289b69daa4bb40ca2b",
     "reviewed_version": "0.2.22"
   },
-  "published_at": "2026-11-17T02:48:12Z",
-  "release_id": 448020118,
-  "release_url": "https://github.com/Wei-Shaw/sub2api/releases/tag/v0.2.22",
-  "requires_review": false,
-  "tag": "v0.2.22",
-  "target_sha": "b0fa9f3e6eeab1968a53e1289b69daa4bb40ca2b",
-  "version": "0.2.22"
+  "published_at": "2026-11-18T03:51:33Z",
+  "release_id": 449502473,
+  "release_url": "https://github.com/Wei-Shaw/sub2api/releases/tag/v0.2.23",
+  "requires_review": true,
+  "tag": "v0.2.23",
+  "target_sha": "5af9afb588c4b014b3df9db7d4073af1f8ae01b6",
+  "version": "0.2.23"
 }
