@@ -388,6 +388,7 @@ function benchmarkForm(endpoint = '/benchmark', caller = api) {
   const key = el('select', { name: 'key_id', required: true });
   const format = el('select', { name: 'api_format' }, el('option', { value: 'chat' }, 'Chat Completions'), el('option', { value: 'responses' }, 'Responses'));
   const results = el('div'); const err = el('div', { class: 'form-error', role: 'alert' }); const submit = el('button', { type: 'submit', class: 'button primary', disabled: true }, '开始检测');
+  const configuration = el('div');
   let keys = [];
   function updateKeys() {
     const matches = keys.filter(item => String(item.group_id) === group.value);
@@ -407,16 +408,32 @@ function benchmarkForm(endpoint = '/benchmark', caller = api) {
     } catch (error) { err.textContent = errorText(error); }
   }
   const form = el('form', { class: 'benchmark-form', onsubmit: async event => {
-    event.preventDefault(); if (!confirm('检测将使用所选分组的 API Key 调用模型并消耗额度，确认开始？')) return;
-    err.textContent = ''; submit.disabled = true; results.replaceChildren(el('div', { class: 'loading' }, el('span', { class: 'spinner' }), '正在运行题集，请稍候…'));
+    event.preventDefault();
+    if (submit.disabled || !confirm('检测将使用所选分组的 API Key 调用模型并消耗额度，确认开始？')) return;
+    const groupName = group.selectedOptions[0]?.textContent;
+    err.textContent = '';
+    submit.disabled = true;
+    configuration.hidden = true;
+    results.replaceChildren(el('div', { class: 'loading', role: 'status' }, el('span', { class: 'spinner' }), '正在运行题集，请稍候…'));
     try {
       const result = await caller(endpoint, 'POST', { model: model.value.trim(), key_id: Number(key.value), group_id: Number(group.value), api_format: format.value });
-      results.replaceChildren(card('检测结果', `${result.model || model.value} · 固定题集仅供参考`, [el('div', { class: 'card-body' }, el('div', { class: 'score' }, `${result.score} `, el('small', {}, `/ ${result.total}`))),
-        table(['题目', '期望答案', '模型回答', '结果', '耗时'], (result.results || []).map(item => el('tr', {}, el('td', { class: 'wrap' }, item.question), el('td', { class: 'wrap' }, item.expected), el('td', { class: 'wrap' }, item.answer || item.error || '—'), el('td', {}, pill(item.passed ? '通过' : '未通过', item.passed ? 'green' : 'red')), el('td', {}, `${item.latency_ms ?? '—'} ms`))))]));
-    } catch (error) { results.replaceChildren(); err.textContent = errorText(error); } finally { submit.disabled = !key.value; }
+      const view = helperBenchmarkResults(result, { groupName, onBack() {
+        results.replaceChildren();
+        configuration.hidden = false;
+        model.focus();
+      } });
+      results.replaceChildren(view);
+      results.scrollIntoView({ block: 'start' });
+      view.querySelector('h2')?.focus({ preventScroll: true });
+    } catch (error) {
+      results.replaceChildren();
+      configuration.hidden = false;
+      err.textContent = errorText(error);
+    } finally { submit.disabled = !key.value; }
   } }, field('模型名称', model), field('接口格式', format), field('检测分组', group), field('调用 API Key', key, '从当前账户已有的分组 Key 中选择，密钥内容不会发送到浏览器。'), el('div', { class: 'wide button-group' }, submit, button('刷新可用分组', loadOptions), err));
+  configuration.append(notice('该检测会实际调用模型并消耗所选 Key 的额度。固定题集只反映本次回答表现，不代表全面的模型能力。', 'warning'), card('', '', el('div', { class: 'card-body' }, form)));
   loadOptions();
-  return [notice('该检测会实际调用模型并消耗所选 Key 的额度。固定题集只反映本次回答表现，不代表全面的模型能力。', 'warning'), card('', '', el('div', { class: 'card-body' }, form)), results];
+  return [configuration, results];
 }
 async function analyticsPage() {
   const [models, ranking] = await Promise.allSettled([api('/analytics/models'), api('/analytics/ranking')]);

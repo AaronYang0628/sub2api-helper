@@ -1,0 +1,42 @@
+/* Scoped result layout; card/button/badge surfaces use the current sub2api UI. */
+.helper-benchmark-results { min-width: 0; }
+.helper-benchmark-results h2, .helper-benchmark-results h3, .helper-benchmark-results h4, .helper-benchmark-results p, .helper-benchmark-results pre, .helper-benchmark-results figure { margin: 0; }
+.helper-benchmark-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.helper-benchmark-heading h2 { font-size: 1.125rem; line-height: 1.75rem; font-weight: 600; }
+.helper-benchmark-heading p { margin-top: .25rem; color: #64748b; font-size: .875rem; overflow-wrap: anywhere; }
+.dark .helper-benchmark-heading p { color: #94a3b8; }
+.helper-benchmark-back { flex-shrink: 0; }
+.helper-benchmark-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 1.5rem; margin-top: 1.5rem; }
+.helper-benchmark-metrics > div { display: grid; gap: .375rem; min-width: 0; }
+.helper-benchmark-metrics span, .helper-benchmark-note { color: #64748b; font-size: .75rem; line-height: 1.5; }
+.dark .helper-benchmark-metrics span, .dark .helper-benchmark-note { color: #94a3b8; }
+.helper-benchmark-metrics strong { font-size: 1.5rem; line-height: 2rem; font-weight: 700; overflow-wrap: anywhere; }
+.helper-benchmark-counts { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; margin-bottom: .75rem; }
+.helper-benchmark-results .card-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.helper-benchmark-question-meta { display: flex; align-items: center; gap: .75rem; }
+.helper-benchmark-question h3 { font-size: 1rem; line-height: 1.5rem; font-weight: 600; }
+.helper-benchmark-question h4 { font-size: .75rem; line-height: 1rem; font-weight: 600; color: #64748b; margin-bottom: .5rem; }
+.dark .helper-benchmark-question h4 { color: #94a3b8; }
+.helper-benchmark-text { font-family: inherit; font-size: .875rem; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.helper-benchmark-answer-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,2fr); gap: 1.5rem; margin-top: 1.5rem; }
+.helper-benchmark-answer-grid > div { min-width: 0; }
+.helper-benchmark-prompt { font-weight: 500; }
+.helper-benchmark-gallery { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,16rem),1fr)); align-items: start; gap: 1rem; margin-top: 1rem; }
+.helper-benchmark-media { overflow: hidden; border: 1px solid #e5e7eb; border-radius: .75rem; padding: .75rem; min-width: 0; }
+.dark .helper-benchmark-media { border-color: #334155; }
+.helper-benchmark-image img { display: block; width: auto; max-width: 100%; height: auto; max-height: 32rem; margin: 0 auto; }
+.helper-benchmark-media figcaption { margin-top: .5rem; font-size: .75rem; line-height: 1.5; color: #64748b; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dark .helper-benchmark-media figcaption { color: #94a3b8; }
+.helper-benchmark-format { display: inline-block; margin-left: .5rem; font-size: .625rem; }
+.helper-benchmark-media-status { font-size: .75rem; line-height: 1.5; color: #64748b; margin-bottom: .75rem !important; overflow-wrap: anywhere; }
+.dark .helper-benchmark-media-status { color: #94a3b8; }
+.helper-benchmark-remote .helper-benchmark-image { margin-top: .75rem; }
+.helper-benchmark-error { margin-top: .75rem !important; color: #ef4444; font-size: .875rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dark .helper-benchmark-error { color: #f87171; }
+.helper-benchmark-empty { text-align: center; color: #64748b; }
+@media (max-width: 640px) {
+  .helper-benchmark-metrics { gap: .75rem; }
+  .helper-benchmark-metrics strong { font-size: 1.125rem; line-height: 1.75rem; }
+  .helper-benchmark-answer-grid { grid-template-columns: 1fr; gap: 1rem; }
+  .helper-benchmark-heading { flex-wrap: wrap; }
+}

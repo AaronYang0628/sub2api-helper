@@ -22,6 +22,7 @@ BALANCES = {1: 0, 2: 0, 4: 0, 5: 0}
 SETTINGS = {"session_binding_enabled": False, "custom_menu_items": [
     {"id": "existing-docs", "label": "原有文档", "url": "https://example.invalid", "visibility": "user", "sort_order": 0, "icon_svg": ""}
 ]}
+GIF_RESPONSE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -127,7 +128,10 @@ class Handler(BaseHTTPRequestHandler):
             answers = {"计算": "391", "字符串": "6", "所有": "YES", "将列表": "[-1,2,9,11]", "有 3": "7"}
             answer = next(value for prefix, value in answers.items() if prompt.startswith(prefix))
             if path.endswith("responses"):
-                return self.reply(200, {"output": [{"content": [{"type": "output_text", "text": answer}]}]})
+                content = [{"type": "output_text", "text": answer}]
+                if prompt.startswith("计算"):
+                    content.append({"type": "output_image", "image_url": GIF_RESPONSE})
+                return self.reply(200, {"output": [{"type": "message", "content": content}]})
             return self.reply(200, {"choices": [{"message": {"content": answer}}]})
         else:
             return self.reply(404, {})

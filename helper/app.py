@@ -123,8 +123,11 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             return response
         source = urlsplit(config.sub2api_public_url or config.sub2api_url)
         ancestor = f"{source.scheme}://{source.netloc}" if source.hostname else "http: https:"
+        benchmark_page = request.url.path in {"/", "/_helper/setup", "/_helper/console", "/features/benchmark"}
+        image_sources = "'self' data: https:" if benchmark_page else "'self' data:"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            f"img-src {image_sources}; "
             "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
             f"frame-ancestors 'self' {ancestor}"
         )

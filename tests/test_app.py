@@ -158,6 +158,16 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "ok")
         self.assertNotIn("upstream_url", response.json())
 
+    def test_benchmark_document_allows_https_image_previews_without_expanding_other_policies(self):
+        self.enable_modules(benchmark=True, ranking=True)
+        for path in ("/features/benchmark", "/_helper/console"):
+            response = self.client.get(path)
+            self.assertIn("img-src 'self' data: https:;", response.headers["Content-Security-Policy"])
+            self.assertIn("script-src 'self';", response.headers["Content-Security-Policy"])
+            self.assertIn("connect-src 'self';", response.headers["Content-Security-Policy"])
+            self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+        self.assertIn("img-src 'self' data:;", self.client.get("/features/ranking").headers["Content-Security-Policy"])
+
     def test_enabled_schedule_ownership_conflicts_but_disabled_schedule_allowed(self):
         first = self.client.post("/api/schedules", json=self.schedule(), headers=self.auth)
         self.assertEqual(first.status_code, 200, first.text)

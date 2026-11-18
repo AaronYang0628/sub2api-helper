@@ -92,6 +92,7 @@ def main():
         flags = {"benchmark": True, "pricing": True, "ranking": True}
         assert request("/api/modules", "PUT", flags) == flags
         assert b"feature.js" in request("/features/ranking?token=fixture-user-jwt")
+        assert b"benchmark-results.js" in request("/features/benchmark")
         opts = request("/api/benchmark/options")
         assert opts["keys"][0]["group_id"] == 3 and "fixture-model-key" not in json.dumps(opts)
         result = request("/api/benchmark", "POST", {"model": "fixture-model", "key_id": 1, "group_id": 3})
@@ -105,6 +106,9 @@ def main():
         result = request("/api/portal/benchmark", "POST", {"model": "fixture-model", "key_id": 2, "group_id": 3,
                          "api_format": "responses"}, headers=headers)
         assert result["score"] == 5
+        first = result["results"][0]
+        assert first["answer"] == "391" and first["scored"] is True
+        assert first["media"][0]["src"].startswith("data:image/gif;base64,")
         assert request("/api/portal/models", headers=headers)["models"][0]["requests"] == 10
         assert request("/api/groups")[0]["id"] == 3
         rate_rule = request("/api/automations", "POST", {"name": "到期倍率测试", "type": "subscription_multiplier",

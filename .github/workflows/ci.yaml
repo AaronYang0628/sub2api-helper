@@ -66,17 +66,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
-      - run: node --check helper/static/app.js && node --check helper/static/feature.js && node --check helper/static/icons.js && node --check helper/static/native.js
+      - run: |
+          for script in helper/static/*.js; do node --check "$script" || exit 1; done
       - run: npm --prefix ui ci && npm --prefix ui run build
       - name: Require the tested generated UI to be committed
         run: git diff --exit-code -- helper/static/style.css
-      - name: Test native row buttons in Chromium
+      - name: Test native rows and benchmark results in Chromium
         env:
           HELPER_CHROMIUM_PATH: /usr/bin/google-chrome
           HELPER_PLAYWRIGHT_PATH: ${{ runner.temp }}/helper-browser/node_modules/playwright-core
         run: |
           npm install --prefix "$RUNNER_TEMP/helper-browser" --no-save --no-package-lock --ignore-scripts playwright-core@1.65.1
           node tests/native_ui/test.cjs
+          node tests/benchmark_ui/test.cjs
       - name: Build the GitHub Pages demo from the current UI
         run: node site/build.mjs
       - run: docker build -t sub2api-helper:test .

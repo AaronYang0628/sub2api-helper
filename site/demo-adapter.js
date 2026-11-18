@@ -6,6 +6,53 @@
   const assetRoot = new URL('../', document.currentScript.src);
   const base = assetRoot.href.replace(/\/$/, '');
   const nativeDemo = document.body.classList.contains('demo-native');
+  const resultDemo = document.body.classList.contains('demo-benchmark');
+  // Small offline fixtures: a 240x96 PNG and a two-frame 64x24 GIF.
+  const benchmarkPng = 'data:image/png;base64,' +
+    'iVBORw0KGgoAAAANSUhEUgAAAPAAAABgCAYAAAAjM//RAAAB6ElEQVR4nO3TsW0VURBAUTeASFwfJRBSAwU4oQFqoAhCSiBy' +
+    'BAkBCEE6AUIY/X3Pd/cEJx2NRnPvvvz8/gtoutu9APD/BAxhAoYwAUOYgCFMwBAmYAgTMIQJGMIEDGEChjABQ5iAIUzAECZg' +
+    'CBMwhAkYwm4W8McfX4F/JGAIEzCECRjCBAxhAj7I/Yf3T7J7X5oEfBABs4KADyJgVhDwQQTMCgI+iIBZQcAHETArCHh48fD2' +
+    'Sf42S8CsIOBBwNQIeDhTwC/fvCZEwAIWcJiABSzgMAELWMBhAhawgMMuG/AtDyVgBCxgAXPTvxTwBQPmGgQ8CJgaAQ8CpkbA' +
+    'g4CpEfAgYGoEPAiYGgEPAqZGwIOAqRHwIGBqBDycKeBXj584wO5gBSxgBCxgAV/T7mAFLGAELGABX9PuYAUsYAQs4OceMNcg' +
+    '4EHA1Ah4EDA1Ah4ETI2ABwFTI+BBwNQIeBAwNQIeBEyNgIczBfzu2+dL2h2UgAUsYAFfJ2D+bHdIAl5DwCe1OyQBryHgk9od' +
+    'koDXEDCECRjCBAxhAoYwAUOYgCFMwBAmYAgTMIQJGMIEDGEChrBnFzCwnoAhTMAQJmAIEzCECRjCBAxhAoYwAUOYgCFMwBAm' +
+    'YAgTMIQJGMIEDGEChjABQ5iAIew3C7pDy/nEBHwAAAAASUVORK5CYII=';
+  const benchmarkGif = 'data:image/gif;base64,' +
+    'R0lGODlhQAAYAIEAAPD9+g2UiJn25A92biH/C05FVFNDQVBFMi4wAwEAAAAh+QQAKAAAACwAAAAAQAAYAAAC/wRBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEP8EQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAE' +
+    'QRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAE' +
+    'QRAEQRAEQRAEQRAEQRAEQRAEQRAEwTAMwzAMwzAMwzAMQ1EURVEURVEURVEURVEURVEURVEURVEURVEURRAEQRAEQRAEwTAM' +
+    'wzAMwzAMwzAMQ1EURVEURVEURVEURVEURVEURVEURVEURVEURRAEQRAEQRAEwTAMwzAMwzAMwzAMQ1EURVEURVEURVEURVH/' +
+    'FEVRFEVRFEVRFEVRFEUQBEEQBEEQBMEwDMMwDMMwDMMwDENRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEUQBEEQBEEQBMEw' +
+    'DMMwDMMwDMMwDENRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEUQBEEQBEEQBMEwDMMwDMMwDMMwDENRFEVRFEVRFEVRFEVR' +
+    'FEVRFEVRFEVRFEVRFEUQBEEQBEEQBMEwDMMwDMMwDMMwDENRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEUQBEEQBEEQBMEw' +
+    'DMMwDMMwDMMwDENRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEVRFEUQ/wRBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEIUEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAE' +
+    'QRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAEQRAFACH5' +
+    'BAAoAAAALAAAAABAABgAAAL/BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQ' +
+    'BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQ' +
+    'BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQ' +
+    'BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQ/wRBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEATBMAzDMAzDMAzDMAzDMAzDMAzDMAzDMAzD' +
+    'MAzDMAzDMAzDMAzDMAxDEARBEARBEATBMAzDMAzDMAzDMAzDMAzDMAzDMAzDMAzDMAzDMAzDMAzDMAzDMAxDEARBEARBEATB' +
+    'MAzDMAzDMAzDMAzDMAzDMAzDMAzDMAzDMP8MwzAMwzAMwzAMwzAMQxAEQRAEQRAEwTAMwzAMwzAMwzAMwzAMwzAMwzAMwzAM' +
+    'wzAMwzAMwzAMwzAMwzAMQxAEQRAEQRAEwTAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMQxAEQRAEQRAE' +
+    'wTAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMQxAEQRAEQRAEwTAMwzAMwzAMwzAMwzAMwzAMwzAMwzAM' +
+    'wzAMwzAMwzAMwzAMwzAMQxAEQRAEQRAEwTAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMwzAMQxD/BEEQBEEQ' +
+    'BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQ' +
+    'BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQ' +
+    'BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQ' +
+    'BEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQBEEQhQRBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARBEARB' +
+    'EARBEARBEARBEARBEARBEARBEARBEAUAOw==';
+  const benchmarkMedia = { png: benchmarkPng, gif: benchmarkGif };
   const fixtureUrl = 'https://sub2api.example.invalid';
   let sequence = 20;
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -77,6 +124,23 @@
   }
   function response(value, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }); }
   function bad(detail, status = 422) { return response({ detail }, status); }
+  function benchmarkSample(model = 'demo-model', includeUnscored = false) {
+    // These are fixed examples, not answers from an external model.
+    const answers = [
+      ['计算 17 × 23。只输出整数答案。', '391', '391'],
+      ['字符串 SUB2API 中有多少个字母（数字不计）？只输出整数。', '6', '6'],
+      ['所有蓝球都是圆的。某个物体是蓝球。该物体是否一定是圆的？只输出 YES 或 NO。', 'YES', 'YES'],
+      ['将列表 [9, 2, 11, -1] 从小到大排序，只输出 JSON 数组，不加解释。', '[-1,2,9,11]', '[-1,2,9,11]'],
+      ['有 3 个盒子，每盒 4 个球，拿走 5 个球，还剩多少？只输出整数。', '7', '8'],
+    ];
+    const data = { model, score: 4, total: 5, completed: 5, results: answers.map(([question, expected, answer], index) => ({
+      question, expected, answer, passed: index < 4, scored: true, latency_ms: 180 + index * 37,
+      media: index === 0 ? [{ src: benchmarkMedia.png, mime: 'image/png', alt: '离线 PNG 示例：结果卡片' }]
+        : index === 4 ? [{ src: benchmarkMedia.gif, mime: 'image/gif', alt: '离线 GIF 示例：进度动图' }] : [],
+    })) };
+    if (includeUnscored) Object.assign(data.results[4], { question: '请用一张动图展示当前进度。', expected: '', answer: '', passed: false, scored: false });
+    return data;
+  }
   function preview(rule) {
     if (rule.type === 'subscription_multiplier') return {
       type: rule.type, actions: [{ action: rule.scope === 'global_group' ? 'set_group_rate' : 'set_user_group_rate', scope: rule.scope, user_id: rule.scope === 'global_group' ? null : 103, group_id: rule.group_id, previous_multiplier: 1, multiplier: rule.multiplier, status: 'ready' }],
@@ -156,16 +220,8 @@
     if (path === '/api/compatibility' || path === '/api/compatibility/check') { if (method === 'POST') compatibility.checked_at = new Date().toISOString(); return compatibility; }
     if (path === '/api/benchmark/options') return { keys: [{ id: 11, name: '示例分组 Key（不存在真实密钥）', group_id: 1, group_name: '夜间免费分组' }, { id: 12, name: '示例高级分组 Key', group_id: 2, group_name: '高级订阅分组' }] };
     if (path === '/api/benchmark' && method === 'POST') {
-      // Mirrors helper/benchmark.py QUESTIONS; the last example deliberately fails.
-      const answers = [
-        ['计算 17 × 23。只输出整数答案。', '391', '391'],
-        ['字符串 SUB2API 中有多少个字母（数字不计）？只输出整数。', '6', '6'],
-        ['所有蓝球都是圆的。某个物体是蓝球。该物体是否一定是圆的？只输出 YES 或 NO。', 'YES', 'YES'],
-        ['将列表 [9, 2, 11, -1] 从小到大排序，只输出 JSON 数组，不加解释。', '[-1,2,9,11]', '[-1,2,9,11]'],
-        ['有 3 个盒子，每盒 4 个球，拿走 5 个球，还剩多少？只输出整数。', '7', '8'],
-      ];
       log('benchmark.demo', data.model, '示例检测结果，无模型调用或费用。');
-      return { model: data.model, score: 4, total: 5, results: answers.map(([question, expected, answer], i) => ({ question, expected, answer, passed: i < 4, latency_ms: 180 + i * 37 })) };
+      return benchmarkSample(data.model);
     }
     let match = path.match(/^\/api\/accounts\/(\d+)\/schedulable$/);
     if (match && method === 'POST') {
@@ -232,12 +288,18 @@
     const message = '仅使用本页示例数据；未连接任何 sub2api 服务。真实部署请查看上方部署说明。';
     if (feedback.textContent !== message) feedback.textContent = message;
   }
-  if (nativeDemo) {
+  if (resultDemo) {
+    const result = window.helperBenchmarkResults(benchmarkSample('demo-model', true), {
+      groupName: '离线示例分组',
+    });
+    document.getElementById('demo-result-main').append(result);
+  } else if (nativeDemo) {
     // Return a fixed fixture JWT to the real extension without reading or
     // writing any browser credential. This adapter is never served by Helper.
     const getItem = Storage.prototype.getItem;
     Storage.prototype.getItem = function (key) { return key === 'auth_token' ? 'demo-native-jwt' : getItem.call(this, key); };
     const selected = /\/admin\/users\/?$/.test(location.pathname) ? 'users' : 'accounts';
+    document.getElementById('demo-benchmark-link').href = new URL('results.html', assetRoot).href;
     history.replaceState(null, '', new URL('admin/' + selected + '/', assetRoot).pathname);
     renderNative(selected);
     document.getElementById('demo-accounts').addEventListener('click', () => navigate('accounts'));
