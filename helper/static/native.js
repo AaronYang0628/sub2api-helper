@@ -1,4 +1,4 @@
-/* Native row enhancements for Wei-Shaw/sub2api v0.2.22.
+/* Native row enhancements for Wei-Shaw/sub2api v0.2.23.
  * SVG geometry and native control classes follow its Icon.vue and admin views.
  * Upstream portions are LGPL-3.0; see THIRD_PARTY_NOTICES.md and LICENSES/.
  * This bridge never reads refresh credentials or changes native login state.
@@ -9,7 +9,7 @@
   window.__sub2apiHelperNative = true;
   const API = '/_helper/api';
   const TABLE = '.table-page-layout .table-scroll-container';
-  const BUTTON = 'helper-native-action flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400';
+  const BUTTON = 'helper-native-action shrink-0 whitespace-nowrap flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400';
   const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
   const ADVANCED = { automations: '自动化规则', rules: '闲置提醒', modules: '功能菜单', analytics: '统计检测', audit: '执行记录', compatibility: '兼容性' };
   const state = { key: '', phase: 'idle', status: {}, error: '', scheduled: false, dialog: null, generation: 0, observedToken: undefined };
@@ -137,32 +137,58 @@
       const data = await request(`/accounts/${id}/schedule`);
       if (!view.current()) return;
       if (String(data.account_id) !== id || typeof data.schedulable !== 'boolean') throw new Error('账号身份或状态响应不完整，已停止操作。');
+      const accountLabel = data.account_name || `账号 #${id}`;
       view.heading.textContent = `账号定时 · ${data.account_name || `#${id}`}`;
       const readOnly = data.read_only === true || !!data.conflict;
+      const defaultZone = state.status.timezone || 'Asia/Shanghai';
       const allDay = input('mode', 'all_day', 'radio', { checked: data.mode !== 'window', disabled: readOnly });
       const windowed = input('mode', 'window', 'radio', { checked: data.mode === 'window', disabled: readOnly });
       const start = input('start', data.start || '23:00', 'time', { required: true });
       const end = input('end', data.end || '09:00', 'time', { required: true });
-      const zone = input('timezone', data.timezone || state.status.timezone || 'Asia/Shanghai', 'text', { required: true });
+      const ruleName = input('name', typeof data.name === 'string' ? data.name : '', 'text', { maxlength: 100, placeholder: `账号 #${id} 定时调度` });
+      const zone = input('timezone', data.timezone || defaultZone, 'text', { required: true });
       const weekdays = element('div', { class: 'helper-native-weekdays' }, DAYS.map((day, n) => element('label', {}, input('weekdays', String(n), 'checkbox', { checked: (data.weekdays || [0, 1, 2, 3, 4, 5, 6]).includes(n) }), day)));
-      const windowFields = element('div', { class: 'helper-native-window' }, element('div', { class: 'helper-native-two' }, field('开启时间', start), field('关闭时间', end)), field('时区', zone), field('开启日期', weekdays), message('保存后按所选时段接管账号调度：窗口内开启，窗口外关闭。'), message('支持跨午夜：23:00 开启，次日 09:00 关闭。星期按开启时间所属日计算。'));
+      const summary = element('p', { class: 'helper-native-summary', 'data-helper-schedule-summary': 'true', role: 'status' });
+      const updateSummary = () => {
+        const selectedDays = [...weekdays.querySelectorAll('input:checked')].map(control => Number(control.value));
+        const dayText = selectedDays.length === 7 ? '每天' : selectedDays.length ? selectedDays.map(n => DAYS[n]).join('、') : '未选择星期';
+        const overnight = end.value && start.value && end.value < start.value;
+        const tz = zone.value.trim() || defaultZone;
+        summary.textContent = `${accountLabel} ${dayText} ${start.value || '23:00'} 开启、${overnight ? '次日 ' : ''}${end.value || '09:00'} 关闭（${tz}）`;
+      };
+      const moreSettings = element('details', { class: 'helper-native-more' },
+        element('summary', {}, '更多设置'),
+        element('div', { class: 'helper-native-more-body' },
+          field('规则名称', ruleName),
+          field('开启日期', weekdays, '日期按开启时间所属日计算。'),
+          field('时区', zone, '默认使用当前配置的时区。')));
+      const windowFields = element('div', { class: 'helper-native-window' },
+        element('div', { class: 'helper-native-two' }, field('开启时间', start), field('关闭时间', end)),
+        summary,
+        moreSettings,
+        message('保存后按所选时段接管账号调度：窗口内开启，窗口外关闭。'));
       const feedback = message('', 'error'); feedback.hidden = true;
-      const submit = element('button', { type: 'submit', class: 'btn btn-primary', disabled: readOnly }, '保存设置');
-      const form = element('form', { class: 'helper-native-form' });
+      const formId = 'helper-native-account-form';
+      const submit = element('button', { type: 'submit', form: formId, class: 'btn btn-primary', disabled: readOnly }, '保存设置');
+      const form = element('form', { id: formId, class: 'helper-native-form' });
       const updateMode = () => {
         windowFields.hidden = !windowed.checked;
         for (const control of windowFields.querySelectorAll('input')) control.disabled = readOnly || !windowed.checked;
+        updateSummary();
       };
-      allDay.addEventListener('change', updateMode); windowed.addEventListener('change', updateMode); updateMode();
+      allDay.addEventListener('change', updateMode); windowed.addEventListener('change', updateMode);
+      start.addEventListener('input', updateSummary); end.addEventListener('input', updateSummary);
+      zone.addEventListener('input', updateSummary); weekdays.addEventListener('change', updateSummary);
+      updateMode();
       form.append(...[message(`账号 #${id} · 当前参与调度：${data.schedulable ? '开启' : '关闭'}。打开窗口不会改变当前状态。`),
         data.conflict ? message(data.conflict, 'warning') : null,
         data.last_error ? message(`最近执行错误：${data.last_error}，请检查执行记录。`, 'warning') : null,
         element('div', { class: 'helper-native-mode' }, element('label', {}, allDay, data.managed ? '全天运行' : '全天（未接管）'), element('label', {}, windowed, '按时段调度')),
-        message('全天模式默认不创建定时计划，保留原生手动开关。只有明确保存时，才会开启参与调度并移除本账号由助手接管的定时计划。'), windowFields, feedback,
-        element('div', { class: 'helper-native-submit' }, submit)].filter(Boolean));
+        message('全天模式默认不创建定时计划，保留原生手动开关。只有明确保存时，才会开启参与调度并移除本账号由助手接管的定时计划。'), windowFields, feedback].filter(Boolean));
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (readOnly) return;
-        const value = windowed.checked ? { mode: 'window', start: start.value, end: end.value, timezone: zone.value.trim(), weekdays: [...weekdays.querySelectorAll('input:checked')].map(control => Number(control.value)) } : { mode: 'all_day' };
+        const trimmedName = ruleName.value.trim();
+        const value = windowed.checked ? { mode: 'window', ...(trimmedName ? { name: trimmedName } : {}), start: start.value, end: end.value, timezone: zone.value.trim() || defaultZone, weekdays: [...weekdays.querySelectorAll('input:checked')].map(control => Number(control.value)) } : { mode: 'all_day' };
         feedback.hidden = true;
         if (value.mode === 'window' && !value.weekdays.length) { feedback.textContent = '请至少选择一个开启日期。'; feedback.hidden = false; return; }
         submit.disabled = true;
@@ -175,7 +201,7 @@
         finally { submit.disabled = readOnly; }
       });
       view.body.replaceChildren(form);
-      view.footer.replaceChildren(advancedControls(view), button('取消', closeDialog));
+      view.footer.replaceChildren(advancedControls(view), button('取消', closeDialog), submit);
     } catch (error) { if (view.current()) { view.body.replaceChildren(message(errorMessage(error), 'error')); view.footer.replaceChildren(button('关闭', closeDialog)); } }
   }
   async function userDialog(id) {
@@ -193,13 +219,13 @@
         if (template.value === 'maintenance') { subject.value = '服务维护通知'; body.value = `您好 ${user.username || user.email}，服务将进行维护，请留意管理员后续通知。`; }
       });
       const feedback = message('', 'error'); feedback.hidden = true;
-      const submit = element('button', { class: 'btn btn-primary', type: 'submit', disabled: !state.status.mail_configured }, '发送邮件');
-      const form = element('form', { class: 'helper-native-form' },
+      const formId = 'helper-native-user-form';
+      const submit = element('button', { class: 'btn btn-primary', type: 'submit', form: formId, disabled: !state.status.mail_configured }, '发送邮件');
+      const form = element('form', { id: formId, class: 'helper-native-form' },
         element('div', { class: 'helper-native-recipient' }, element('strong', {}, user.email), element('span', {}, `用户 #${id}${user.username ? ` · ${user.username}` : ''}`)),
         message('仅向当前选中的用户发信，不批量发送、不自动修改用户状态。'),
         !state.status.mail_configured ? message('邮件服务尚未配置，请先配置 Helper 的 SMTP 环境变量。', 'warning') : null,
-        field('邮件模板', template), field('主题', subject), field('正文', body, '以纯文本邮件发送。'), feedback,
-        element('div', { class: 'helper-native-submit' }, submit));
+        field('邮件模板', template), field('主题', subject), field('正文', body, '以纯文本邮件发送。'), feedback);
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (!state.status.mail_configured) return;
         submit.disabled = true; feedback.hidden = true;
@@ -211,7 +237,7 @@
         } catch (error) { if (view.current()) { feedback.textContent = errorMessage(error); feedback.hidden = false; } }
         finally { submit.disabled = !state.status.mail_configured; }
       });
-      view.body.replaceChildren(form); view.footer.replaceChildren(advancedControls(view), button('取消', closeDialog));
+      view.body.replaceChildren(form); view.footer.replaceChildren(advancedControls(view), button('取消', closeDialog), submit);
     } catch (error) { if (view.current()) { view.body.replaceChildren(message(errorMessage(error), 'error')); view.footer.replaceChildren(button('关闭', closeDialog)); } }
   }
   function mobileInfo(card) {

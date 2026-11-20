@@ -5,9 +5,11 @@ temporary containers/network/config. It never contacts a real sub2api instance.
 """
 
 import base64
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -21,10 +23,12 @@ import uuid
 
 SHELL = b'<!doctype html><html><head><script type="module" src="/assets/index-fixture.js"></script></head><body><div id="app">Original SPA shell</div></body></html>'
 ASSET = b"globalThis.upstreamAsset=true;"
-NGINX_IMAGE = "nginx:alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72"
+NGINX_IMAGE = os.environ.get("HELPER_NGINX_IMAGE", "nginx:alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72")
 
 
 def fixture():
+    account_state = {"schedulable": False, "writes": 0}
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -55,8 +59,12 @@ def fixture():
                 self.wfile.write(bytes([0x81, len(value)]) + value)
                 self.wfile.flush()
                 self.close_connection = True
+            elif self.path.startswith("/api/v1/admin/compliance"):
+                self.reply({"code": 0, "data": {"required": False}})
             elif self.path.startswith("/api/v1/admin/settings"):
                 self.reply({"code": 0, "data": {"session_binding_enabled": False, "custom_menu_items": []}})
+            elif self.path.startswith("/api/v1/admin/accounts") and "fixture=1" not in self.path:
+                self.reply({"code": 0, "data": {"items": [{"id": 1, "name": "SmokeAccount", "platform": "anthropic", "status": "active", "schedulable": account_state["schedulable"]}], "total": 1}})
             elif self.path.startswith("/api/v1/"):
                 self.reply({"code": 0, "data": {"items": [], "total": 0}, "method": "GET", "uri": self.path, "host": self.headers.get("Host")})
             elif self.path.startswith("/assets/"):
@@ -70,7 +78,7 @@ def fixture():
 
         def do_POST(self):
             raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            if self.path == "/responses?stream=1":
+            if self.path in ("/responses?stream=1", "/v1/chat/completions?stream=1"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Connection", "close")
@@ -81,6 +89,11 @@ def fixture():
                 self.wfile.write(b"data: second\n\n")
                 self.wfile.flush()
                 self.close_connection = True
+            elif self.path == "/api/v1/admin/accounts/1/schedulable":
+                payload = json.loads(raw.decode() or "{}")
+                account_state["schedulable"] = bool(payload.get("schedulable"))
+                account_state["writes"] += 1
+                self.reply({"code": 0, "data": {"id": 1, "schedulable": account_state["schedulable"], "writes": account_state["writes"]}})
             else:
                 self.reply({"method": "POST", "uri": self.path, "host": self.headers.get("Host"), "body": raw.decode(), "admin_key": self.headers.get("x-api-key")})
 
@@ -165,19 +178,20 @@ def main():
                     assert response.read() == ASSET, "Original assets were changed"
 
             def business():
-                for path in ("/api/v1/admin/users?fixture=1", "/api/v1/auth/status"):
-                    with request(path) as response:
+                for path in ("/api/v1/admin/accounts?fixture=1", "/api/v1/admin/users?fixture=1", "/api/v1/auth/status"):
+                    with request(path, accept="application/json") as response:
                         body = json.load(response)
                     assert body["host"] == host and body["uri"] == path
                 for path in ("/api/v1/auth/login", "/api/v1/auth/logout", "/responses?fixture=1", "/chat/completions", "/api/v3/contents/generations/tasks"):
-                    with request(path, method="POST", data=b'{"fixture":true}') as response:
+                    with request(path, method="POST", data=b'{"fixture":true}', accept="application/json") as response:
                         body = json.load(response)
                     assert body == {"method": "POST", "uri": path, "host": host, "body": '{"fixture":true}', "admin_key": None}, body
-                started = time.monotonic()
-                with request("/responses?stream=1", method="POST", data=b"{}", accept="text/event-stream") as response:
-                    assert response.readline() == b"data: first\n"
-                    assert time.monotonic() - started < .8, "SSE was buffered"
-                    assert b"data: second" in response.read()
+                for stream_path in ("/responses?stream=1", "/v1/chat/completions?stream=1"):
+                    started = time.monotonic()
+                    with request(stream_path, method="POST", data=b"{}", accept="text/event-stream") as response:
+                        assert response.readline() == b"data: first\n"
+                        assert time.monotonic() - started < .8, "SSE was buffered"
+                        assert b"data: second" in response.read()
                 with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
                     key = base64.b64encode(b"fixture-16-bytes").decode()
                     connection.sendall((f"GET /responses HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\n\r\n").encode())
@@ -212,11 +226,38 @@ def main():
             with request("/not-a-spa") as response:
                 assert b"/_helper/native.js" not in response.read()
             business()
-            # A running Helper is bypassed immediately after rollback reload.
+            with request("/_helper/api/admin/connection", method="POST",
+                         data=b'{"url":"http://upstream:8000","admin_key":"fixture-admin-key"}',
+                         accept="application/json", headers={"Content-Type": "application/json"}) as response:
+                admin_session = json.load(response)["session"]
+            admin_headers = {"Authorization": "Bearer " + admin_session, "Content-Type": "application/json"}
+            now_utc = datetime.now(timezone.utc)
+            win_start = (now_utc - timedelta(hours=1)).strftime("%H:%M")
+            win_end = (now_utc + timedelta(hours=1)).strftime("%H:%M")
+            schedule_payload = json.dumps({
+                "name": "RollbackTick", "start": win_start, "end": win_end,
+                "timezone": "UTC", "account_ids": [1], "weekdays": [0, 1, 2, 3, 4, 5, 6], "enabled": True,
+            }).encode()
+            with request("/_helper/api/admin/schedules", method="POST",
+                         data=schedule_payload, accept="application/json", headers=admin_headers) as response:
+                assert json.load(response)["enabled"] is True
+            # A running Helper is bypassed immediately after rollback reload, while background rules continue executing ticks.
             configuration(False)
             docker("exec", nginx, "nginx", "-c", "/fixture/nginx.conf", "-s", "reload")
             time.sleep(.3)
             documents(False)
+            with request("/api/v1/admin/accounts/1/schedulable", method="POST",
+                         data=b'{"schedulable":false}', accept="application/json",
+                         headers={"Content-Type": "application/json"}) as response:
+                assert json.load(response)["data"]["schedulable"] is False
+            for _ in range(90):
+                with request("/_helper/api/admin/accounts", accept="application/json", headers=admin_headers) as response:
+                    accounts = json.load(response)
+                if accounts and accounts[0]["schedulable"] is True:
+                    break
+                time.sleep(.5)
+            else:
+                raise AssertionError("Helper background scheduler did not reconcile account schedulable state after UI rollback")
             # Failure with beta still selected must not affect original traffic.
             configuration(True)
             docker("exec", nginx, "nginx", "-c", "/fixture/nginx.conf", "-s", "reload")

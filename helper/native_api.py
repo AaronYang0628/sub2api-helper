@@ -16,10 +16,19 @@ from .schemas import Email, Input, Schedule
 
 class NativeSchedule(Input):
     mode: Literal["all_day", "window"]
+    name: str | None = Field(default=None, min_length=1, max_length=100)
     start: str = "23:00"
     end: str = "09:00"
     timezone: str = "Asia/Shanghai"
     weekdays: list[int] = Field(default_factory=lambda: list(range(7)), min_length=1, max_length=7)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
     @field_validator("start", "end")
     @classmethod
@@ -36,8 +45,8 @@ class NativeSchedule(Input):
         # Reuse the scheduler's exact weekday and overnight-window validation.
         # all_day has no time window, so equal start/end values are harmless.
         if self.mode == "window":
-            Schedule(name="native", account_ids=[1], enabled=True,
-                     **self.model_dump(exclude={"mode"}))
+            Schedule(name=self.name or "native", account_ids=[1], enabled=True,
+                     **self.model_dump(exclude={"mode", "name"}))
         elif any(day < 0 or day > 6 for day in self.weekdays) or len(set(self.weekdays)) != len(self.weekdays):
             raise ValueError("星期取值为 0 至 6，不能重复")
         return self
@@ -84,6 +93,7 @@ def install_native_api(app, store, upstream, mailer, engine, config_provider, na
             "account_id": row["id"], "account_name": row.get("name", ""),
             "schedulable": row["schedulable"], "mode": "window" if plan and plan.get("enabled") else "all_day",
             "managed": plan is not None, "read_only": bool(conflict), "conflict": conflict,
+            "name": (plan or {}).get("name") or f"账号 #{row['id']} 定时调度",
             "start": (plan or {}).get("start", "23:00"), "end": (plan or {}).get("end", "09:00"),
             "timezone": (plan or {}).get("timezone", config.timezone),
             "weekdays": (plan or {}).get("weekdays", list(range(7))),
@@ -116,8 +126,9 @@ def install_native_api(app, store, upstream, mailer, engine, config_provider, na
                 raise HTTPException(409, conflict)
             now = datetime.now(timezone.utc)
             if value.mode == "window":
-                data = value.model_dump(exclude={"mode"}) | {
-                    "name": f"账号 #{account_id} 定时调度", "account_ids": [account_id],
+                resolved_name = value.name or (plan or {}).get("name") or f"账号 #{account_id} 定时调度"
+                data = value.model_dump(exclude={"mode", "name"}) | {
+                    "name": resolved_name, "account_ids": [account_id],
                     "owner": "native-account", "native_account_id": account_id, "enabled": True,
                 }
                 plan = store.update("schedules", plan["id"], data) if plan else store.create("schedules", data)

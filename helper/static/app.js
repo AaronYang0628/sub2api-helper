@@ -11,6 +11,7 @@ function saveSession(value) { try { if (value) sessionStorage.setItem('helper_se
 const $ = (selector, root = document) => root.querySelector(selector);
 const main = $('#main');
 const editor = $('#editor');
+const isNativeConsole = location.pathname.endsWith('/console');
 const dayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const views = [
   ['overview', '概览', 'home'], ['accounts', '账号管理', 'database'], ['schedules', '定时调度', 'clock'],
@@ -46,6 +47,11 @@ function pill(text, kind = '') { return el('span', { class: `pill ${kind}` }, te
 function notice(text, kind = '') { return el('div', { class: `notice ${kind}` }, helperIcon(kind === 'error' ? 'exclamationCircle' : 'infoCircle', 'notice-icon'), el('span', {}, text)); }
 function empty(title, text = '') { return el('div', { class: 'empty' }, helperIcon('inbox', 'empty-icon'), el('strong', {}, title), el('p', {}, text)); }
 function fmtTime(value) { if (!value) return '暂无记录'; const d = new Date(value); return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString('zh-CN', { hour12: false }); }
+function autoRuleName(prefix, suffix, limit = 100) {
+  const cleanPrefix = String(prefix || '').trim();
+  if ((cleanPrefix + suffix).length <= limit) return cleanPrefix + suffix;
+  return cleanPrefix.slice(0, Math.max(1, limit - suffix.length - 1)).trimEnd() + '…' + suffix;
+}
 function errorText(error) { return error?.message || String(error); }
 function toast(message, error = false) {
   const target = $('#toast');
@@ -68,7 +74,14 @@ async function run(action, message, reload = true) {
   try { await action(); if (message) toast(message); if (reload) await render(); }
   catch (error) { toast(errorText(error), true); }
 }
-function pageHead(title, desc, actions) { return el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, title), el('p', {}, desc)), actions); }
+function pageHead(title, desc, actions) {
+  if (isNativeConsole) {
+    main.setAttribute('aria-label', title);
+    return actions ? el('div', { class: 'page-head page-head-compact' }, actions) : null;
+  }
+  main.removeAttribute('aria-label');
+  return el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, title), el('p', {}, desc)), actions);
+}
 function card(title, subtitle, content, action) { return el('section', { class: 'card' }, title ? el('div', { class: 'card-header' }, el('div', {}, el('h2', {}, title), subtitle ? el('p', {}, subtitle) : null), action) : null, content); }
 function table(headers, rows) {
   return el('div', { class: 'table-wrap' }, el('table', { class: 'table' }, el('thead', {}, el('tr', {}, headers.map(h => el('th', {}, h)))), el('tbody', {}, rows)));
@@ -176,19 +189,60 @@ async function accountsPage() {
 }
 async function editSchedule(item = {}) {
   try { state.accounts = await api('/accounts'); } catch (error) { toast(errorText(error), true); return; }
+  const defaultZone = state.status.timezone || 'Asia/Shanghai';
+  const startInput = input('start', item.start || '23:00', 'time', { required: true });
+  const endInput = input('end', item.end || '09:00', 'time', { required: true });
+  const nameInput = input('name', item.name || '', 'text', { maxlength: 100, placeholder: '留空将按所选账号与时段自动生成' });
+  const zoneInput = input('timezone', item.timezone || defaultZone, 'text', { required: true });
   const weekdays = el('div', { class: 'checklist' }, dayNames.map((name, i) => el('label', { class: 'check-chip' }, input('weekdays', String(i), 'checkbox', { checked: (item.weekdays || [0, 1, 2, 3, 4, 5, 6]).includes(i) }), name)));
-  const picker = el('div', { class: 'account-picker' }, state.accounts.length ? state.accounts.map(a => el('label', {}, input('account_ids', String(a.id), 'checkbox', { checked: (item.account_ids || []).includes(a.id) }), `${a.name} · #${a.id} · ${a.platform || ''}`)) : el('span', { class: 'muted tiny' }, '上游暂无账号'));
+  const knownIds = new Set(state.accounts.map(a => a.id));
+  const missingAccounts = (item.account_ids || [])
+    .filter(id => !knownIds.has(id))
+    .map(id => ({ id, name: `原关联账号 #${id}`, platform: '当前列表未返回' }));
+  const selectableAccounts = [...state.accounts, ...missingAccounts];
+  const picker = el('div', { class: 'account-picker' }, selectableAccounts.length ? selectableAccounts.map(a => el('label', {}, input('account_ids', String(a.id), 'checkbox', { checked: (item.account_ids || []).includes(a.id) }), `${a.name} · #${a.id} · ${a.platform || ''}`)) : el('span', { class: 'muted tiny' }, '上游暂无账号'));
+  const summary = el('p', { class: 'schedule-summary', 'data-schedule-summary': 'true', role: 'status' });
+  function updateSummary() {
+    const selectedIds = [...picker.querySelectorAll('input:checked')].map(node => Number(node.value));
+    const selectedAccounts = selectableAccounts.filter(a => selectedIds.includes(a.id));
+    const accountText = !selectedAccounts.length ? '所选账号' : selectedAccounts.length === 1 ? selectedAccounts[0].name : `${selectedAccounts[0].name} 等 ${selectedAccounts.length} 个账号`;
+    const selectedDays = [...weekdays.querySelectorAll('input:checked')].map(node => Number(node.value));
+    const dayText = selectedDays.length === 7 ? '每天' : selectedDays.length ? selectedDays.map(n => dayNames[n]).join('、') : '未选择星期';
+    const startVal = startInput.value || '23:00', endVal = endInput.value || '09:00';
+    const overnight = endVal < startVal;
+    const tz = zoneInput.value.trim() || defaultZone;
+    summary.textContent = `${accountText} ${dayText} ${startVal} 开启、${overnight ? '次日 ' : ''}${endVal} 关闭（${tz}）`;
+  }
+  picker.addEventListener('change', updateSummary);
+  weekdays.addEventListener('change', updateSummary);
+  startInput.addEventListener('input', updateSummary);
+  endInput.addEventListener('input', updateSummary);
+  zoneInput.addEventListener('input', updateSummary);
+  updateSummary();
+  const moreSettings = el('details', { class: 'more-settings' },
+    el('summary', {}, '更多设置'),
+    el('div', { class: 'more-settings-body' },
+      field('规则名称', nameInput, '留空时自动按所选账号和时段生成名称。'),
+      field('执行日期', weekdays, '日期按开启时间所属日计算。周一 23:00 开启，周二 09:00 关闭。'),
+      field('自定义时区', zoneInput, '默认使用当前配置的时区（IANA 名称，例如 Asia/Shanghai）。')));
   modal(item.id ? '编辑定时调度' : '新建定时调度', [
-    field('规则名称', input('name', item.name || '', 'text', { required: true, maxlength: 100, placeholder: '例如：夜间免费额度' })),
-    el('div', { class: 'field-row' }, field('开启时间', input('start', item.start || '23:00', 'time', { required: true })), field('关闭时间', input('end', item.end || '09:00', 'time', { required: true }))),
-    field('时区', input('timezone', item.timezone || 'Asia/Shanghai', 'text', { required: true }), '使用 IANA 时区名称，例如 Asia/Shanghai。'),
-    field('执行日期', weekdays, '日期按开启时间所属日计算。周一 23:00 开启，周二 09:00 关闭。'), field('管理账号', picker, '同一账号只能由一条已启用的规则管理。'),
+    field('管理账号', picker, '同一账号只能由一条已启用的规则管理。'),
+    el('div', { class: 'field-row' }, field('开启时间', startInput), field('关闭时间', endInput)),
+    summary,
+    moreSettings,
     el('label', { class: 'switch' }, input('enabled', 'yes', 'checkbox', { checked: item.enabled ?? true }), '启用此规则'),
     notice('窗口内开启调度，窗口外关闭。保存已启用规则后，会在后台检查时生效。', 'warning')
   ], async form => {
     const data = new FormData(form); const ids = data.getAll('account_ids').map(Number); const days = data.getAll('weekdays').map(Number);
     if (!ids.length) throw new Error('请至少选择一个账号。'); if (!days.length) throw new Error('请至少选择一天。');
-    await api(`/schedules${item.id ? `/${item.id}` : ''}`, item.id ? 'PUT' : 'POST', { name: data.get('name'), start: data.get('start'), end: data.get('end'), timezone: data.get('timezone'), account_ids: ids, weekdays: days, enabled: data.has('enabled') }); toast('定时调度已保存');
+    const start = data.get('start'), end = data.get('end');
+    const timezone = String(data.get('timezone') || '').trim() || item.timezone || defaultZone;
+    const firstAccount = selectableAccounts.find(a => a.id === ids[0]);
+    const defaultName = ids.length === 1 && firstAccount
+      ? autoRuleName(firstAccount.name, ` ${start}-${end}`)
+      : autoRuleName(`定时调度 (${ids.length} 个账号)`, ` ${start}-${end}`);
+    const name = String(data.get('name') || '').trim() || item.name || defaultName;
+    await api(`/schedules${item.id ? `/${item.id}` : ''}`, item.id ? 'PUT' : 'POST', { name, start, end, timezone, account_ids: ids, weekdays: days, enabled: data.has('enabled') }); toast('定时调度已保存');
   });
 }
 async function schedulesPage() {
@@ -226,18 +280,23 @@ async function usersPage() {
     card('', '', [el('div', { class: 'toolbar' }, el('div', { class: 'search' }, search), switcher(true, async value => { active = value; paint(query, active); }, '仅启用用户'), el('span', { class: 'count' }, `共 ${state.users.length} 位用户`)), target])];
 }
 function editRule(item = {}) {
+  const moreSettings = el('details', { class: 'more-settings' },
+    el('summary', {}, '更多设置'),
+    el('div', { class: 'more-settings-body' },
+      field('规则名称', input('name', item.name || '', 'text', { maxlength: 100, placeholder: '留空将按闲置天数自动生成' }))));
   modal(item.id ? '编辑自动化规则' : '新建自动化规则', [
-    field('规则名称', input('name', item.name || '', 'text', { required: true, maxlength: 100, placeholder: '例如：长期未使用提醒' })),
     field('连续未使用天数', input('days', item.days || 30, 'number', { required: true, min: 1, max: 3650 }), '按最后模型调用时间判断；调用时间为空或无法确认时跳过。管理员不参与自动处理。'),
     field('提醒邮件主题', input('subject', item.subject || '账户长期未使用提醒', 'text', { required: true, maxlength: 200 })),
     field('提醒邮件正文', textArea('body', item.body || '您好，您的账户已超过 {days} 天未使用，请及时登录查看。如有疑问请联系管理员。', { required: true, rows: 5 }), '支持模板变量：{email}、{username}、{days}、{last_used_at}。'),
     el('div', { class: 'field' }, el('label', { class: 'switch' }, input('disable_after_email', 'yes', 'checkbox', { checked: item.disable_after_email ?? false }), '提醒邮件发送成功后禁用用户')),
+    moreSettings,
     el('label', { class: 'switch' }, input('enabled', 'yes', 'checkbox', { checked: item.enabled ?? false }), '启用此规则'),
     notice('启用后将自动处理符合条件的用户。成功发送的提醒会记录，避免重复发送；邮件发送失败时不会禁用用户。', 'warning')
   ], async form => {
-    const data = new FormData(form); const enabled = data.has('enabled');
+    const data = new FormData(form); const enabled = data.has('enabled'), days = Number(data.get('days'));
+    const name = String(data.get('name') || '').trim() || item.name || `闲置 ${days} 天提醒`;
     if (enabled && !confirm('启用此规则后，符合条件的用户可能在下次检查时被发信或禁用。确认保存？')) throw new Error('已取消保存。');
-    await api(`/rules${item.id ? `/${item.id}` : ''}`, item.id ? 'PUT' : 'POST', { name: data.get('name'), days: Number(data.get('days')), subject: data.get('subject'), body: data.get('body'), disable_after_email: data.has('disable_after_email'), enabled }); toast('自动化规则已保存');
+    await api(`/rules${item.id ? `/${item.id}` : ''}`, item.id ? 'PUT' : 'POST', { name, days, subject: data.get('subject'), body: data.get('body'), disable_after_email: data.has('disable_after_email'), enabled }); toast('自动化规则已保存');
   });
 }
 async function rulesPage() {
@@ -256,12 +315,22 @@ function automationPayload(item, enabled = item.enabled) {
   return { ...common, mode: item.mode, rewards: item.rewards.map(tier => ({ rank: tier.rank, amount: tier.amount })) };
 }
 async function editAutomation(item = {}) {
-  let groups = [];
-  try { groups = (await api('/groups')).filter(g => g.status === 'active' && g.subscription_type === 'subscription'); } catch (error) { toast(`分组加载失败：${errorText(error)}；仍可配置月度奖励规则。`, true); }
+  let allGroups = [], groups = [];
+  try {
+    allGroups = await api('/groups');
+    groups = allGroups.filter(g => g.status === 'active' && g.subscription_type === 'subscription');
+  } catch (error) { toast(`分组加载失败：${errorText(error)}；仍可配置月度奖励规则。`, true); }
+  if (item.group_id !== undefined && item.group_id !== null && !groups.some(g => g.id === item.group_id)) {
+    const matched = allGroups.find(g => g.id === item.group_id);
+    groups = [{ id: item.group_id, name: matched ? `${matched.name}（原关联分组）` : `原关联分组 #${item.group_id}` }, ...groups];
+  }
+  const defaultZone = state.status.timezone || 'Asia/Shanghai';
   const type = el('select', { name: 'type' }, Object.entries(automationTypes).map(([key, title]) => el('option', { value: key, ...(item.type === key ? { selected: true } : {}) }, title)));
   if (item.id) type.disabled = true;
   const details = el('div');
   function paint() {
+    const nameInput = input('name', item.name || '', 'text', { maxlength: 100, placeholder: type.value === 'subscription_multiplier' ? '留空将按分组与目标倍率自动生成' : '默认：月度用量排名奖励' });
+    const zoneInput = input('timezone', item.timezone || defaultZone, 'text', { required: true });
     if (type.value === 'subscription_multiplier') {
       const group = el('select', { name: 'group_id', required: true }, groups.length ? groups.map(g => el('option', { value: g.id, ...(g.id === item.group_id ? { selected: true } : {}) }, `${g.name} · #${g.id}`)) : el('option', { value: '' }, '没有可用分组'));
       const period = el('select', { name: 'quota_period' }, [['day', '日额度'], ['week', '周额度'], ['month', '月额度']].map(([value, label]) => el('option', { value, ...((item.quota_period || 'month') === value ? { selected: true } : {}) }, label)));
@@ -271,28 +340,101 @@ async function editAutomation(item = {}) {
         warning.replaceChildren(helperIcon('exclamationCircle', 'notice-icon'), el('span', {}, scope.value === 'global_group' ? '将修改整个分组的默认倍率；已设置个人专属倍率的用户仍优先使用其个人倍率。请确认影响范围后再启用。' : '仅为符合条件的用户设置该分组的个人倍率覆盖，不修改其他用户或分组基础倍率。'));
       };
       scope.addEventListener('change', updateWarning); updateWarning();
-      details.replaceChildren(field('订阅分组', group), el('div', { class: 'field-row' }, field('距离到期不超过（天）', input('expires_within_days', item.expires_within_days ?? 2, 'number', { required: true, min: 1, max: 365 })), field('检查额度周期', period)), el('div', { class: 'field-row' }, field('剩余额度比例超过（%）', input('remaining_percent', (item.remaining_fraction_gt ?? .5) * 100, 'number', { required: true, min: 0, max: 100, step: .1 })), field('调整后的倍率', input('multiplier', item.multiplier ?? .5, 'number', { required: true, min: .000001, max: 100, step: .000001 }), '直接设置目标倍率，不在原倍率上重复相乘。')), field('倍率作用范围', scope), warning, el('div', { class: 'field' }, el('label', { class: 'switch' }, input('restore_on_exit', 'yes', 'checkbox', { checked: item.restore_on_exit ?? true }), '不再满足条件时恢复原倍率')), el('p', { class: 'caption' }, '恢复前会核对当前倍率仍与本规则写入的值相同；若管理员已手动修改，将跳过恢复，避免覆盖。'));
+      const moreSettings = el('details', { class: 'more-settings' },
+        el('summary', {}, '更多设置'),
+        el('div', { class: 'more-settings-body' },
+          field('规则名称', nameInput),
+          field('规则时区', zoneInput, '默认使用当前配置的时区。'),
+          el('div', { class: 'field' }, el('label', { class: 'switch' }, input('restore_on_exit', 'yes', 'checkbox', { checked: item.restore_on_exit ?? true }), '不再满足条件时恢复原倍率')),
+          el('p', { class: 'caption' }, '恢复前会核对当前倍率仍与本规则写入的值相同；若管理员已手动修改，将跳过恢复，避免覆盖。')));
+      details.replaceChildren(
+        field('订阅分组', group),
+        el('div', { class: 'field-row' }, field('距离到期不超过（天）', input('expires_within_days', item.expires_within_days ?? 2, 'number', { required: true, min: 1, max: 365 })), field('检查额度周期', period)),
+        el('div', { class: 'field-row' }, field('剩余额度比例超过（%）', input('remaining_percent', (item.remaining_fraction_gt ?? .5) * 100, 'number', { required: true, min: 0, max: 100, step: .1 })), field('调整后的倍率', input('multiplier', item.multiplier ?? .5, 'number', { required: true, min: .000001, max: 100, step: .000001 }), '直接设置目标倍率，不在原倍率上重复相乘。')),
+        field('倍率作用范围', scope),
+        warning,
+        moreSettings);
     } else {
       const mode = el('select', { name: 'mode' }, [['approval', '管理员预览后手动发放'], ['automatic', '每月 1 日自动发放']].map(([value, label]) => el('option', { value, ...((item.mode || 'automatic') === value ? { selected: true } : {}) }, label)));
-      const tiers = el('div', { class: 'reward-tiers' });
+      const tiers = el('div', { class: 'reward-tiers-row' });
       for (const rank of [1, 2, 3]) {
         const tier = (item.rewards || []).find(value => value.rank === rank) || { rank, amount: 0 };
-        tiers.append(el('div', { class: 'reward-tier' }, field('名次', input('reward_rank', rank, 'number', { required: true, readonly: true })), field('余额奖励（USD）', input('reward_amount', tier.amount, 'number', { required: true, min: 0, max: 1000000, step: .000001 }))));
+        tiers.append(el('div', { class: 'reward-tier-item' }, input('reward_rank', rank, 'hidden'), field(`第 ${rank} 名奖励（USD）`, input('reward_amount', tier.amount, 'number', { required: true, min: 0, max: 1000000, step: .000001 }))));
       }
-      details.replaceChildren(field('执行方式', mode), notice('按规则时区，在每月 1 日结算上一个完整自然月，以实际费用 actual_cost 排名。自动模式不会补发规则启用前的月份。金额为 0 的名次跳过。'), tiers, el('p', { class: 'caption mt' }, '每个结算月份与用户的奖励都有持久化发放记录，避免重启或重复执行导致重复奖励。'));
+      const previewContent = el('div', { class: 'inline-preview-body' },
+        item.id ? el('p', { class: 'caption' }, '点击“加载预览”核对当前已保存规则的上月排名与奖励金额。') : null);
+      let previewEpoch = 0;
+      let previewDirty = false;
+      const loadInlinePreview = async () => {
+        if (!item.id) return;
+        if (previewDirty) {
+          previewContent.replaceChildren(el('p', { class: 'caption', 'data-preview-stale': 'true' }, '规则参数已修改，请保存后重新预览。'));
+          return;
+        }
+        const reqEpoch = ++previewEpoch;
+        previewContent.replaceChildren(el('p', { class: 'caption' }, '正在加载已保存规则的执行预览…'));
+        try {
+          const preview = await api(`/automations/${item.id}/preview`, 'POST');
+          if (reqEpoch !== previewEpoch || previewDirty) return;
+          const actions = Array.isArray(preview.actions) ? preview.actions : [];
+          const period = preview.period || preview.month;
+          previewContent.replaceChildren(
+            period ? el('p', { class: 'caption' }, `结算周期：${typeof period === 'object' ? JSON.stringify(period) : period}（按已保存规则计算）`) : null,
+            previewTable(actions));
+        } catch (error) {
+          if (reqEpoch !== previewEpoch || previewDirty) return;
+          previewContent.replaceChildren(el('p', { class: 'form-error' }, errorText(error)));
+        }
+      };
+      const previewButton = item.id ? button('加载预览', loadInlinePreview, 'small') : null;
+      const invalidateInlinePreview = () => {
+        if (!item.id) return;
+        previewEpoch++;
+        previewDirty = true;
+        if (previewButton) previewButton.disabled = true;
+        previewContent.replaceChildren(el('p', { class: 'caption', 'data-preview-stale': 'true' }, '规则参数已修改，请保存后重新预览。'));
+      };
+      tiers.addEventListener('input', invalidateInlinePreview);
+      tiers.addEventListener('change', invalidateInlinePreview);
+      mode.addEventListener('change', invalidateInlinePreview);
+      zoneInput.addEventListener('input', invalidateInlinePreview);
+      zoneInput.addEventListener('change', invalidateInlinePreview);
+      const previewBox = el('div', { class: 'inline-preview', 'data-automation-inline-preview': 'true' },
+        el('div', { class: 'inline-preview-head' },
+          el('strong', {}, '执行预览'),
+          previewButton),
+        item.id ? previewContent : el('p', { class: 'caption' }, '保存规则后可在此或规则列表点击“预览 / 执行”，核对上月排名用户名单与奖励金额。'));
+      const moreSettings = el('details', { class: 'more-settings' },
+        el('summary', {}, '更多设置'),
+        el('div', { class: 'more-settings-body' },
+          field('规则名称', nameInput),
+          field('规则时区', zoneInput, '默认使用当前配置的时区。'),
+          el('p', { class: 'caption' }, '每个结算月份与用户的奖励都有持久化发放记录，避免重启或重复执行导致重复奖励。')));
+      details.replaceChildren(
+        tiers,
+        field('执行方式', mode),
+        notice('按规则时区，在每月 1 日结算上一个完整自然月，以实际费用 actual_cost 排名。自动模式不会补发规则启用前的月份。金额为 0 的名次跳过。'),
+        previewBox,
+        moreSettings);
     }
   }
   type.addEventListener('change', paint); paint();
-  modal(item.id ? '编辑自动化规则' : '新建自动化规则', [field('规则类型', type), field('规则名称', input('name', item.name || '', 'text', { required: true, maxlength: 100 })), field('规则时区', input('timezone', item.timezone || 'Asia/Shanghai', 'text', { required: true })), details, el('div', { class: 'field mt' }, el('label', { class: 'switch' }, input('enabled', 'yes', 'checkbox', { checked: item.enabled ?? false }), '启用此规则'))], async form => {
+  modal(item.id ? '编辑自动化规则' : '新建自动化规则', [field('规则类型', type), details, el('div', { class: 'field mt' }, el('label', { class: 'switch' }, input('enabled', 'yes', 'checkbox', { checked: item.enabled ?? false }), '启用此规则'))], async form => {
     const data = new FormData(form);
-    const value = { name: data.get('name'), type: type.value, timezone: data.get('timezone'), enabled: data.has('enabled') };
+    const timezone = String(data.get('timezone') || '').trim() || item.timezone || defaultZone;
+    const rawName = String(data.get('name') || '').trim();
+    const value = { name: rawName, type: type.value, timezone, enabled: data.has('enabled') };
     if (type.value === 'subscription_multiplier') {
       if (!data.get('group_id')) throw new Error('请先选择一个分组。');
-      Object.assign(value, { group_id: Number(data.get('group_id')), expires_within_days: Number(data.get('expires_within_days')), remaining_fraction_gt: Number(data.get('remaining_percent')) / 100, quota_period: data.get('quota_period'), multiplier: Number(data.get('multiplier')), scope: data.get('scope'), restore_on_exit: data.has('restore_on_exit') });
+      const groupId = Number(data.get('group_id')), multiplier = Number(data.get('multiplier'));
+      const groupObj = groups.find(g => g.id === groupId);
+      value.name = rawName || item.name || autoRuleName(groupObj ? groupObj.name : `分组 #${groupId}`, ` 到期倍率 ${multiplier}x`);
+      Object.assign(value, { group_id: groupId, expires_within_days: Number(data.get('expires_within_days')), remaining_fraction_gt: Number(data.get('remaining_percent')) / 100, quota_period: data.get('quota_period'), multiplier, scope: data.get('scope'), restore_on_exit: data.has('restore_on_exit') });
     } else {
       const ranks = data.getAll('reward_rank').map(Number), amounts = data.getAll('reward_amount').map(Number);
       if (!ranks.length) throw new Error('请至少配置一个奖励名次。');
       if (new Set(ranks).size !== ranks.length) throw new Error('奖励名次不能重复。');
+      value.name = rawName || item.name || '月度用量排名奖励';
       Object.assign(value, { mode: data.get('mode'), rewards: ranks.map((rank, i) => ({ rank, amount: amounts[i] })) });
     }
     if (value.enabled && !confirm(`确认启用「${value.name}」？${value.type === 'subscription_multiplier' && value.scope === 'global_group' ? '将修改分组默认倍率，已有个人专属倍率仍优先。' : value.type === 'monthly_rewards' && value.mode === 'automatic' ? '规则将按月自动向用户余额发放奖励。' : '规则将按配置执行。'}`)) throw new Error('已取消保存。');
@@ -548,7 +690,7 @@ async function render() {
   } catch (error) {
     if (version !== generation) return;
     if (!token) { disconnected(); return; }
-    main.replaceChildren(pageHead(selected[1], '数据暂时无法加载。'), notice(errorText(error), 'error'), button('重试', () => render(), 'primary'));
+    main.replaceChildren(...[pageHead(selected[1], '数据暂时无法加载。'), notice(errorText(error), 'error'), button('重试', () => render(), 'primary')].filter(Boolean));
   }
 }
 $('#disconnect').addEventListener('click', async () => {

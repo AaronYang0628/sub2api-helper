@@ -152,7 +152,22 @@ class NativeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(self.store.list("schedules")), 2)
         self.assertEqual(self.store.get("schedules", native["id"])["start"], "22:00")
+        self.assertEqual(self.store.get("schedules", native["id"])["name"], "Native")
         self.assertEqual(self.store.get("schedules", foreign["id"]), foreign)
+
+    def test_custom_name_is_returned_updated_and_preserved_when_omitted(self):
+        self.assertEqual(self.client.get(self.path).json()["name"], "账号 #1 定时调度")
+        created = self.client.put(self.path, json=self.window())
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["name"], "账号 #1 定时调度")
+        named = self.client.put(self.path, json=self.window(name="夜间主力账号"))
+        self.assertEqual(named.status_code, 200)
+        self.assertEqual(named.json()["name"], "夜间主力账号")
+        self.assertEqual(self.client.get(self.path).json()["name"], "夜间主力账号")
+        preserved = self.client.put(self.path, json=self.window(start="22:30", name="   "))
+        self.assertEqual(preserved.status_code, 200)
+        self.assertEqual(preserved.json()["name"], "夜间主力账号")
+        self.assertEqual(self.store.list("schedules")[0]["name"], "夜间主力账号")
 
     def test_foreign_enabled_rule_is_read_only_and_cannot_be_overridden(self):
         foreign = self.plan(owner="batch", native_account_id=None, account_ids=[1, 2])

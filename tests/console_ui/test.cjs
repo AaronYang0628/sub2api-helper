@@ -13,6 +13,13 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
   let publicOrigin = 'https://api.example.test', syncedOrigin = publicOrigin;
   let modules = { benchmark: true, pricing: false, ranking: true };
   let rejectSave = false, rejectSync = false;
+  let schedules = [];
+  let rules = [{ id: '1', name: '旧闲置提醒规则', days: 30, subject: '账户长期未使用提醒', body: '您好 {username}', disable_after_email: false, enabled: false }];
+  let automations = [
+    { id: '1', name: '旧订阅倍率规则', type: 'subscription_multiplier', timezone: 'Europe/London', enabled: false, group_id: 88, expires_within_days: 2, remaining_fraction_gt: 0.5, quota_period: 'month', multiplier: 0.5, scope: 'user_group', restore_on_exit: false },
+    { id: '2', name: '旧月度奖励规则', type: 'monthly_rewards', timezone: 'Europe/London', enabled: false, mode: 'approval', rewards: [{ rank: 1, amount: 50 }, { rank: 2, amount: 30 }, { rank: 3, amount: 10 }] }
+  ];
+  let delayPreviewMs = 0;
   const writes = [], errors = [], resources = [], pendingMetrics = [];
   const labels = { benchmark: '智商检测', pricing: '模型价格统计', ranking: '用户用量排名' };
   const settings = () => ({ public_origin: publicOrigin, origin_source: 'stored', sub2api_public_origin: 'https://api.example.test', modules, menus: Object.entries(labels).map(([key, label]) => ({ key, id: `sub2api-helper-${key}`, label, url: `${publicOrigin}/_helper/features/${key}`, enabled: modules[key], icon_svg: '' })), ready: Boolean(publicOrigin), problems: [], in_sync: publicOrigin === syncedOrigin });
@@ -26,14 +33,45 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
       const route = url.pathname.slice('/_helper/api/admin'.length);
       if (route.startsWith('/analytics/')) { pendingMetrics.push(res); return; }
       if (route === '/connection') result = { upstream_url: 'https://api.example.test', public_url: publicOrigin };
-      else if (route === '/status') result = { upstream_url: 'https://api.example.test', public_url: publicOrigin, timezone: 'Asia/Shanghai', mail_configured: true, version: 'fixture', engine: { running: true } };
+      else if (route === '/status') result = { upstream_url: 'https://api.example.test', public_url: publicOrigin, timezone: 'America/New_York', mail_configured: true, version: 'fixture', engine: { running: true } };
       else if (route === '/modules') { if (req.method === 'PUT') { modules = body; syncedOrigin = publicOrigin; } result = modules; }
       else if (route === '/menu-settings') { if (req.method === 'PUT') { if (rejectSave) { code = 422; result = { detail: '此地址不能供用户访问' }; } else publicOrigin = body.public_origin; } if (code === 200) result = settings(); }
       else if (route === '/menu-settings/sync') { if (rejectSync) { code = 502; result = { detail: '上游菜单回读不一致' }; } else { const changed = syncedOrigin !== publicOrigin; syncedOrigin = publicOrigin; result = { ...settings(), sync_status: 'verified', changed }; } }
-      else if (route === '/accounts') result = [{ id: 1, name: '跨夜免费额度账号', platform: 'anthropic', status: 'active', schedulable: true, group_ids: [1] }];
+      else if (route === '/accounts') result = [
+        { id: 1, name: '跨夜免费额度账号', platform: 'anthropic', status: 'active', schedulable: true, group_ids: [1] },
+        { id: 2, name: '超长名称测试账号_' + 'A'.repeat(95), platform: 'openai', status: 'active', schedulable: true, group_ids: [1] }
+      ];
+      else if (route === '/groups') result = [
+        { id: 1, name: '主力订阅分组', status: 'active', subscription_type: 'subscription', rate_multiplier: 1 },
+        { id: 2, name: '超长名称测试订阅分组_' + 'G'.repeat(95), status: 'active', subscription_type: 'subscription', rate_multiplier: 1 }
+      ];
       else if (route === '/gallery') result = { groups: [], timezone: 'Asia/Shanghai' };
       else if (route === '/benchmark/options') result = { keys: [] };
-      else if (['/schedules', '/rules', '/automations', '/settlements', '/users', '/groups', '/audit'].includes(route)) result = [];
+      else if (route === '/schedules' || route.startsWith('/schedules/')) {
+        if (req.method === 'GET') result = schedules;
+        else if (req.method === 'POST') { const created = { id: String(schedules.length + 1), ...body }; schedules.push(created); result = created; }
+        else if (req.method === 'PUT') { const id = route.split('/')[2]; const idx = schedules.findIndex(s => String(s.id) === id); schedules[idx] = { ...schedules[idx], ...body, id }; result = schedules[idx]; }
+      }
+      else if (route === '/rules' || route.startsWith('/rules/')) {
+        if (req.method === 'GET') result = rules;
+        else if (req.method === 'POST') { const created = { id: String(rules.length + 1), ...body }; rules.push(created); result = created; }
+        else if (req.method === 'PUT') { const id = route.split('/')[2]; const idx = rules.findIndex(r => String(r.id) === id); rules[idx] = { ...rules[idx], ...body, id }; result = rules[idx]; }
+      }
+      else if (route === '/automations' || route.startsWith('/automations/')) {
+        const parts = route.split('/');
+        if (req.method === 'GET') result = automations;
+        else if (req.method === 'POST' && parts[3] === 'preview') {
+          if (delayPreviewMs > 0) await new Promise(resolve => setTimeout(resolve, delayPreviewMs));
+          const item = automations.find(a => String(a.id) === parts[2]);
+          result = item?.type === 'monthly_rewards'
+            ? { type: 'monthly_rewards', month: '2026-10', actions: [{ action: 'credit_balance', rank: 1, user_id: 101, amount: item.rewards[0].amount, status: 'ready' }], skipped: [], errors: [] }
+            : { type: 'subscription_multiplier', actions: [{ action: 'set_user_group_rate', user_id: 101, group_id: 1, multiplier: item?.multiplier || 0.5, status: 'ready' }], skipped: [], errors: [] };
+        }
+        else if (req.method === 'POST' && parts[3] === 'run') result = { executed: 1, actions: [{ action: 'credit_balance', user_id: 101, status: 'done' }], errors: [] };
+        else if (req.method === 'POST') { const created = { id: String(automations.length + 1), ...body }; automations.push(created); result = created; }
+        else if (req.method === 'PUT') { const id = parts[2]; const idx = automations.findIndex(a => String(a.id) === id); automations[idx] = { ...automations[idx], ...body, id }; result = automations[idx]; }
+      }
+      else if (['/settlements', '/users', '/audit'].includes(route)) result = [];
       res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(result)); return;
     }
     if (url.pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
@@ -101,13 +139,102 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     assert.deepEqual(tableStyle, { font: '14px', line: '20px', x: '20px', y: '16px' }, 'native TablePageLayout.vue admin cell typography and spacing');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.goto(origin + '/_helper/setup#schedules'); await page.getByRole('button', { name: '新建调度', exact: true }).click();
-    const dialog = page.locator('#editor'); await dialog.waitFor(); const modalPadding = await dialog.locator('.dialog-header').evaluate(node => getComputedStyle(node).paddingLeft); assert.equal(modalPadding, '16px'); assert.equal(await dialog.locator('h2').evaluate(node => getComputedStyle(node).fontSize), '18px'); await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    const dialog = page.locator('#editor'); await dialog.waitFor(); const modalPadding = await dialog.locator('.dialog-header').evaluate(node => getComputedStyle(node).paddingLeft); assert.equal(modalPadding, '16px'); assert.equal(await dialog.locator('h2').evaluate(node => getComputedStyle(node).fontSize), '18px');
+    assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false, 'schedule more-settings collapsed by default');
+    await dialog.locator('input[name="account_ids"][value="1"]').check();
+    assert.equal(await dialog.locator('[data-schedule-summary]').textContent(), '跨夜免费额度账号 每天 23:00 开启、次日 09:00 关闭（America/New_York）');
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByText('跨夜免费额度账号 23:00-09:00', { exact: true }).waitFor();
+    assert.deepEqual(schedules[0], { id: '1', name: '跨夜免费额度账号 23:00-09:00', start: '23:00', end: '09:00', timezone: 'America/New_York', account_ids: [1], weekdays: [0, 1, 2, 3, 4, 5, 6], enabled: true }, 'new schedule uses configured default timezone');
+    schedules[0] = { id: '1', name: '旧自定义跨夜计划', start: '23:00', end: '09:00', timezone: 'Europe/London', account_ids: [1, 99], weekdays: [0, 2, 4], enabled: true };
+    await page.reload();
+    await page.getByText('旧自定义跨夜计划', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await dialog.locator('[data-schedule-summary]').waitFor();
+    assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false, 'legacy schedule edit keeps more-settings collapsed');
+    assert.equal(await dialog.locator('[data-schedule-summary]').textContent(), '跨夜免费额度账号 等 2 个账号 周一、周三、周五 23:00 开启、次日 09:00 关闭（Europe/London）');
+    await dialog.locator('input[name="end"]').fill('08:30');
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByText('旧自定义跨夜计划', { exact: true }).waitFor();
+    assert.deepEqual(schedules[0], { id: '1', name: '旧自定义跨夜计划', start: '23:00', end: '08:30', timezone: 'Europe/London', account_ids: [1, 99], weekdays: [0, 2, 4], enabled: true }, 'collapsed save preserves legacy name, weekdays, third timezone, and unreturned account_id');
+    await page.locator('table .helper-switch input').first().uncheck();
+    await page.getByText('规则已暂停', { exact: true }).waitFor();
+    assert.equal(schedules[0].enabled, false);
+    await page.locator('table .helper-switch input').first().check();
+    await page.getByText('规则已启用', { exact: true }).waitFor();
+    assert.equal(schedules[0].enabled, true);
+
+    await page.goto(origin + '/_helper/setup#rules'); await page.getByText('旧闲置提醒规则', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false);
+    await dialog.locator('input[name="days"]').fill('45');
+    await dialog.locator('input[name="disable_after_email"]').check();
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByText('超过 45 天未使用', { exact: true }).waitFor();
+    assert.equal(rules[0].name, '旧闲置提醒规则');
+    assert.equal(rules[0].days, 45);
+    assert.equal(rules[0].disable_after_email, true);
+
+    await page.goto(origin + '/_helper/setup#automations'); await page.getByText('旧订阅倍率规则', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false);
+    await dialog.locator('input[name="multiplier"]').fill('0.4');
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByText('自动化规则已保存', { exact: true }).waitFor();
+    assert.equal(automations[0].name, '旧订阅倍率规则');
+    assert.equal(automations[0].timezone, 'Europe/London', 'editing legacy automation preserves its own timezone');
+    assert.equal(automations[0].group_id, 88, 'editing legacy automation preserves unreturned group_id instead of switching to first group');
+    assert.equal(automations[0].restore_on_exit, false);
+    assert.equal(automations[0].multiplier, 0.4);
+    const previewCallsBefore = writes.filter(w => w.path.endsWith('/preview')).length;
+    await page.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
+    assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false);
+    assert.equal(writes.filter(w => w.path.endsWith('/preview')).length, previewCallsBefore, 'opening monthly rewards editor does not auto-request preview');
+    await dialog.getByRole('button', { name: '加载预览', exact: true }).click();
+    await dialog.locator('[data-automation-inline-preview] table').waitFor();
+    assert.equal(await dialog.locator('[data-automation-inline-preview] table').textContent(), '操作名次用户 ID奖励（USD）状态发放余额奖励110150待执行');
+    await dialog.locator('input[name="reward_amount"]').first().fill('80');
+    assert.equal(await dialog.locator('[data-automation-inline-preview] table').count(), 0, 'changing reward amount immediately clears stale preview table');
+    await dialog.locator('[data-preview-stale]').waitFor();
+    assert.equal(await dialog.locator('[data-preview-stale]').textContent(), '规则参数已修改，请保存后重新预览。');
+    assert.equal(writes.filter(w => w.path.endsWith('/run')).length, 0, 'preview and edit never call execute endpoint');
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByText(/第 1 名 \$80/).waitFor();
+    assert.equal(automations[1].name, '旧月度奖励规则');
+    assert.equal(automations[1].timezone, 'Europe/London');
+    assert.equal(automations[1].rewards[0].amount, 80);
+    // Verify in-flight preview response is ignored if parameters are edited before it returns
+    await page.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
+    delayPreviewMs = 200;
+    await dialog.getByRole('button', { name: '加载预览', exact: true }).click();
+    await dialog.getByText('正在加载已保存规则的执行预览…', { exact: true }).waitFor();
+    await dialog.locator('input[name="reward_amount"]').first().fill('90');
+    await dialog.locator('[data-preview-stale]').waitFor();
+    await page.waitForTimeout(260);
+    delayPreviewMs = 0;
+    assert.equal(await dialog.locator('[data-automation-inline-preview] table').count(), 0, 'late in-flight preview response is ignored after parameter edit');
+    assert.equal(writes.filter(w => w.path.endsWith('/run')).length, 0, 'no execute endpoint called during in-flight preview cancellation');
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '新建规则', exact: true }).click();
+    await dialog.locator('select[name="group_id"]').selectOption('2');
+    await dialog.locator('input[name="multiplier"]').fill('0.75');
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await page.getByText('自动化规则已保存', { exact: true }).waitFor();
+    assert.equal(automations[2].timezone, 'America/New_York', 'new automation uses configured default timezone');
+    assert(automations[2].name.length <= 100 && automations[2].name.endsWith('到期倍率 0.75x'), `auto-generated name respects 100-char limit: len=${automations[2].name.length}`);
+    await page.getByRole('button', { name: '预览 / 执行', exact: true }).nth(1).click();
+    await dialog.getByText('规则预览 · 旧月度奖励规则', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: '关闭', exact: true }).first().click();
     await page.goto(origin + '/_helper/setup#analytics'); await page.getByRole('heading', { name: '统计与检测', exact: true }).waitFor(); await page.locator('.helper-gallery-admin-catalog').waitFor(); assert.equal(await page.getByText('正在读取统计数据…', { exact: true }).count(), 2, 'slow optional metrics do not block gallery mount');
     await page.waitForFunction(() => document.querySelectorAll('.helper-gallery-admin-catalog').length === 1);
     for (const response of pendingMetrics.splice(0)) { response.writeHead(403, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ detail: '此统计暂不可用' })); }
     await page.getByText('此统计暂不可用', { exact: true }).first().waitFor(); assert.equal(await page.locator('.helper-gallery-admin-catalog').count(), 1, 'denied metrics keep gallery available');
+    assert.equal(await page.locator('.page-head h1').evaluate(node => getComputedStyle(node).fontSize), '18px', 'standalone setup keeps page-head h1');
     await page.setViewportSize({ width: 1280, height: 1000 }); await page.goto(origin + '/host');
-    const embedded = page.frameLocator('iframe'); await embedded.getByRole('heading', { name: '功能与菜单', exact: true }).waitFor();
+    const embedded = page.frameLocator('iframe'); await embedded.getByRole('button', { name: '刷新核对', exact: true }).waitFor();
+    assert.equal(await embedded.locator('.page-head h1').count(), 0, 'embedded console removes duplicate page-head h1');
+    assert.equal(await embedded.locator('.page-head p').count(), 0, 'embedded console removes duplicate page-head description');
+    assert.equal(await embedded.locator('main').getAttribute('aria-label'), '功能与菜单', 'embedded console preserves accessible landmark name');
     const reference = await page.locator('.native-reference button').evaluate(node => { const s = getComputedStyle(node); return { font: s.fontSize, line: s.lineHeight, family: s.fontFamily, padX: s.paddingLeft, padY: s.paddingTop, radius: s.borderRadius }; });
     const actual = await embedded.getByRole('button', { name: '保存域名', exact: true }).evaluate(node => { const s = getComputedStyle(node); return { font: s.fontSize, line: s.lineHeight, family: s.fontFamily, padX: s.paddingLeft, padY: s.paddingTop, radius: s.borderRadius }; });
     assert.deepEqual(actual, reference, 'embedded buttons exactly match pinned native .btn typography and shape');
@@ -116,7 +243,6 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     assert.deepEqual(embeddedInput, nativeInput, 'embedded form inputs exactly match pinned native .input');
     assert.equal(await embedded.locator('html').evaluate(node => getComputedStyle(node).fontSize), '16px');
     assert.equal(await embedded.locator('.embed-shell').evaluate(node => getComputedStyle(node).paddingLeft), '0px', 'embedded console avoids duplicated surrounding padding');
-    assert.equal(await embedded.locator('.page-head h1').evaluate(node => getComputedStyle(node).fontSize), '18px');
     await page.screenshot({ path: path.join(directory, 'modules-iframe-native.png'), fullPage: true });
     await page.evaluate(() => document.body.style.zoom = '2');
     await page.waitForTimeout(250);

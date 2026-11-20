@@ -17,7 +17,7 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
   const compile = spawnSync(process.execPath, [path.join(root, 'ui/node_modules/tailwindcss/lib/cli.js'), '-i', path.join(root, 'ui/upstream.css'), '-c', path.join(root, 'ui/upstream.tailwind.config.js'), '--content', [path.join(root, 'helper/static/native.js'), path.join(__dirname, 'index.html'), path.join(__dirname, 'fixture.js')].join(','), '-o', css, '--minify'], { encoding: 'utf8' });
   assert.equal(compile.status, 0, compile.stderr);
   const calls = [], schedules = new Map();
-  let emailRateLimit = false, statusFailure = false;
+  let emailRateLimit = false, statusFailure = false, enhancementEnabled = true;
   const observed = new Map([[1, false], [2, true], [33, false]]);
   const server = http.createServer(async (request, response) => {
     try {
@@ -30,7 +30,7 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
         assert.equal(request.headers['x-admin-ui-request'], '1');
         if (url.pathname === '/_helper/api/session/revoke') return send(200, { ok: true });
         if (!['Bearer fixture-admin-jwt', 'Bearer fixture-admin-two'].includes(request.headers.authorization)) return send(403, { detail: '需要管理员身份' });
-        if (url.pathname.endsWith('/status')) { if (statusFailure) { statusFailure = false; return send(503, { detail: '模拟暂时不可用' }); } return send(200, { timezone: 'Asia/Shanghai', mail_configured: true }); }
+        if (url.pathname.endsWith('/status')) { if (statusFailure) { statusFailure = false; return send(503, { detail: '模拟暂时不可用' }); } return send(200, { timezone: 'America/New_York', mail_configured: true }); }
         if (url.pathname.endsWith('/session')) return send(200, { session: 'fixture-opaque-helper-session' });
         let match = url.pathname.match(/\/accounts\/(\d+)\/schedule$/);
         if (match) {
@@ -38,7 +38,7 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
           const existing = schedules.get(id);
           if (request.method === 'PUT') { if (id === 2) return send(409, { detail: '其他计划正在管理' }); schedules.set(id, body); observed.set(id, true); }
           const value = schedules.get(id) || existing;
-          return send(200, { account_id: id === 99 ? 100 : id, account_name: id === 33 ? '循环复用后的账号' : '示例账号 ' + id, schedulable: observed.get(id) ?? false, managed: !!value && value.mode === 'window', read_only: id === 2, conflict: id === 2 ? '该账号已由其他定时计划管理' : null, mode: value?.mode || 'all_day', start: value?.start || '23:00', end: value?.end || '09:00', timezone: value?.timezone || 'Asia/Shanghai', weekdays: value?.weekdays || [0, 1, 2, 3, 4, 5, 6] });
+          return send(200, { account_id: id === 99 ? 100 : id, account_name: id === 33 ? '循环复用后的账号' : '示例账号 ' + id, schedulable: observed.get(id) ?? false, managed: !!value && value.mode === 'window', read_only: id === 2, conflict: id === 2 ? '该账号已由其他定时计划管理' : null, ...(value?.name ? { name: value.name } : {}), mode: value?.mode || 'all_day', start: value?.start || '23:00', end: value?.end || '09:00', timezone: value?.timezone || 'America/New_York', weekdays: value?.weekdays || [0, 1, 2, 3, 4, 5, 6] });
         }
         match = url.pathname.match(/\/users\/(\d+)(\/email)?$/);
         if (match) {
@@ -55,7 +55,11 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
       const files = { '/native.js': path.join(root, 'helper/static/native.js'), '/native.css': path.join(root, 'helper/static/native.css'), '/fixture.js': path.join(__dirname, 'fixture.js'), '/fixture.css': path.join(__dirname, 'fixture.css'), '/fixture-native.css': css };
       const file = files[url.pathname] || path.join(__dirname, 'index.html');
       const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
-      response.writeHead(200, { 'Content-Type': type, 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src 'self'; object-src 'none'" }); response.end(await fs.readFile(file));
+      let body = await fs.readFile(file);
+      if (type === 'text/html' && !enhancementEnabled) {
+        body = Buffer.from(body.toString('utf8').replace('<link rel="stylesheet" href="/native.css">', '').replace('<script src="/native.js" defer></script>', ''));
+      }
+      response.writeHead(200, { 'Content-Type': type, 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src 'self'; object-src 'none'" }); response.end(body);
     } catch (error) { response.writeHead(500, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ detail: error.message })); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -93,10 +97,35 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     assert.deepEqual(calls.find(c => c.method === 'PUT').body, { mode: 'all_day' }); await close();
     await page.locator('tr[data-row-id="1"] [data-helper-native-action]').click();
     await dialog.locator('[name="mode"][value="window"]').check();
+    assert.equal(await dialog.locator('.modal-footer button[type="submit"]').count(), 1, 'primary submit button lives in .modal-footer');
+    assert.equal(await dialog.locator('.modal-body button[type="submit"]').count(), 0, 'no duplicate submit button inside .modal-body');
+    assert.equal(await dialog.locator('details.helper-native-more').evaluate(node => node.open), false, 'more settings collapsed by default');
+    assert.equal(await dialog.locator('[data-helper-schedule-summary]').textContent(), '示例账号 1 每天 23:00 开启、次日 09:00 关闭（America/New_York）');
     assert.equal(await dialog.locator('[name="start"]').inputValue(), '23:00');
     assert.equal(await dialog.locator('[name="end"]').inputValue(), '09:00');
     await dialog.getByRole('button', { name: '保存设置', exact: true }).click(); await dialog.getByText(/设置已保存/).waitFor(); await close();
-    assert.equal(schedules.get(1).mode, 'window'); assert.equal(schedules.get(1).weekdays.length, 7);
+    assert.equal(schedules.get(1).mode, 'window'); assert.equal(schedules.get(1).weekdays.length, 7); assert.equal(schedules.get(1).timezone, 'America/New_York', 'new native schedule uses configured default timezone');
+    schedules.set(1, { mode: 'window', name: '自定义夜间计划', start: '23:00', end: '09:00', timezone: 'Europe/London', weekdays: [1, 3, 5] });
+    await page.locator('tr[data-row-id="1"] [data-helper-native-action]').click();
+    await dialog.locator('[data-helper-schedule-summary]').waitFor();
+    assert.equal(await dialog.locator('details.helper-native-more').evaluate(node => node.open), false, 'more settings stays collapsed when editing legacy schedule');
+    assert.equal(await dialog.locator('[data-helper-schedule-summary]').textContent(), '示例账号 1 周二、周四、周六 23:00 开启、次日 09:00 关闭（Europe/London）');
+    await dialog.locator('[name="end"]').fill('08:30');
+    await dialog.getByRole('button', { name: '保存设置', exact: true }).click(); await dialog.getByText(/设置已保存/).waitFor(); await close();
+    assert.deepEqual(schedules.get(1), { mode: 'window', name: '自定义夜间计划', start: '23:00', end: '08:30', timezone: 'Europe/London', weekdays: [1, 3, 5] }, 'collapsed fields preserve saved name, weekdays, and third timezone');
+    await page.evaluate(() => { document.body.style.zoom = '2'; });
+    const rowActionLayout = await page.locator('tr[data-row-id="1"]').evaluate(row => {
+      const nativeBtn = row.querySelector('td:last-child button:not([data-helper-native-action])');
+      const helperBtn = row.querySelector('td:last-child [data-helper-native-action]');
+      const label = helperBtn.querySelector('span');
+      const style = getComputedStyle(label);
+      const nb = nativeBtn.getBoundingClientRect(), hb = helperBtn.getBoundingClientRect();
+      return { overlap: nb.right > hb.left + 1 && nb.left < hb.right - 1 && nb.bottom > hb.top + 1 && nb.top < hb.bottom - 1, writingMode: style.writingMode, whiteSpace: style.whiteSpace };
+    });
+    assert.equal(rowActionLayout.overlap, false, 'injected button must not overlap native action button at 200% zoom');
+    assert.equal(rowActionLayout.writingMode, 'horizontal-tb');
+    assert.equal(rowActionLayout.whiteSpace, 'nowrap');
+    await page.evaluate(() => { document.body.style.zoom = ''; });
     await page.locator('tr[data-row-id="2"] [data-helper-native-action]').click();
     await dialog.getByText('该账号已由其他定时计划管理', { exact: true }).waitFor();
     assert.equal(await dialog.getByRole('button', { name: '保存设置', exact: true }).isDisabled(), true); await close();
@@ -165,6 +194,14 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     await page.screenshot({ path: path.join(directory, 'desktop-mail-dark.png'), fullPage: true });
     await dialog.locator('summary').click(); await dialog.getByRole('button', { name: '打开', exact: true }).click(); await page.locator('.helper-native-console').waitFor();
     await page.evaluate(() => history.pushState({}, '', '/login')); await dialog.waitFor({ state: 'detached' }); assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_session')), null);
+    enhancementEnabled = false;
+    await page.goto(origin + '/admin/accounts');
+    await page.locator('tr[data-row-id="1"]').waitFor();
+    assert.equal(await page.evaluate(() => window.__sub2apiHelperNative), undefined, 'disabling enhancement and refreshing removes injected script');
+    assert.equal(await page.locator('[data-helper-native-action]').count(), 0, 'disabling enhancement removes injected action buttons');
+    await page.locator('tr[data-row-id="1"]').getByRole('button', { name: '编辑', exact: true }).click();
+    assert.equal(await page.evaluate(() => fixture.nativeClicks), 1, 'native table actions continue working after rollback');
+    assert.equal(schedules.get(1).name, '自定义夜间计划', 'saved backend schedule remains active after UI rollback');
     assert.deepEqual(browserDialogs, [], 'native flows use explicit modal buttons, no browser confirm');
     assert.equal(await page.evaluate(() => window.fetch === window.fixtureOriginalFetch && XMLHttpRequest.prototype.open === window.fixtureOriginalXHROpen && XMLHttpRequest.prototype.send === window.fixtureOriginalXHRSend), true, 'navigation/logout must keep native fetch/XHR unchanged');
     assert.deepEqual(errors, []);

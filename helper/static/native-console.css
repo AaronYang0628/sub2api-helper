@@ -1,2 +1,4 @@
 .connection-card, .tabs-nav { display: none !important; }
 .embed-shell { max-width: none; padding: 0; }
+.page-head-compact { justify-content: flex-end; margin-bottom: 0.75rem; }
+

@@ -355,7 +355,7 @@
         if (data.mode === 'window') {
           if (!/^\d{2}:\d{2}$/.test(data.start || '') || !/^\d{2}:\d{2}$/.test(data.end || '') || data.start === data.end || !data.weekdays?.length) return bad('请填写有效时间，并至少选择一天。');
           try { new Intl.DateTimeFormat('en', { timeZone: data.timezone }).format(new Date()); } catch (_) { return bad('无效时区。'); }
-          const saved = { ...clone(data), id: plan?.id || ++sequence, name: account.name + ' · 运行时段', owner: 'native-account', native_account_id: id, account_ids: [id], enabled: true };
+          const saved = { ...clone(data), id: plan?.id || ++sequence, name: data.name?.trim() || plan?.name || (account.name + ' · 运行时段'), owner: 'native-account', native_account_id: id, account_ids: [id], enabled: true };
           if (plan) state.schedules.splice(state.schedules.indexOf(plan), 1, saved); else state.schedules.push(saved);
           plan = saved;
           const parts = new Intl.DateTimeFormat('en-GB', { timeZone: plan.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' }).formatToParts(new Date());
@@ -371,7 +371,7 @@
         log('schedule.demo', id);
         updateStatusCells();
       }
-      return { account_id: id, account_name: account.name, schedulable: account.schedulable, mode: plan ? 'window' : 'all_day', managed: !!plan, read_only: !!conflict, conflict: conflict ? '此账号由其他计划管理，请先在原计划中停用。' : null, start: plan?.start || '23:00', end: plan?.end || '09:00', timezone: plan?.timezone || 'Asia/Shanghai', weekdays: plan?.weekdays || [0, 1, 2, 3, 4, 5, 6], last_error: null };
+      return { account_id: id, account_name: account.name, schedulable: account.schedulable, mode: plan ? 'window' : 'all_day', managed: !!plan, read_only: !!conflict, conflict: conflict ? '此账号由其他计划管理，请先在原计划中停用。' : null, name: plan?.name || (account.name + ' · 运行时段'), start: plan?.start || '23:00', end: plan?.end || '09:00', timezone: plan?.timezone || 'Asia/Shanghai', weekdays: plan?.weekdays || [0, 1, 2, 3, 4, 5, 6], last_error: null };
     }
     if (path === '/api/connection') return { upstream_url: fixtureUrl, configured: true, public_url: base, timezone: 'Asia/Shanghai', session: 'demo-session' };
     if (path === '/api/status') return { upstream_url: fixtureUrl, timezone: 'Asia/Shanghai', mail_configured: true, public_url: base, version: '演示', engine: { running: true, last_tick_at: '2026-11-17T09:20:00+08:00', last_error: null } };

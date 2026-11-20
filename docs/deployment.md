@@ -8,7 +8,7 @@
                                            Helper /data 持久化规则与凭据
 ```
 
-以下说明适用于当前源码，尚未在 ZJLAB 生产入口执行。已发布的历史 `v0.2.22` 镜像是此前的完整代理实现；版本号暂保持 `0.2.22`，并不表示旧镜像包含本次隔离。不要覆盖既有 tag，或重新拉取历史镜像验证本功能。请构建当前审阅 checkout，或使用对应镜像归档，并记录源码提交与镜像 ID。
+以下说明适用于当前 `v0.2.23` 基线源码与镜像。历史 `v0.2.22` 早期镜像是此前的完整代理实现；已发布的 `v0.2.23` Release 镜像仅包含该标签发布时的内容，若需验证或部署当前工作树中的未发布改动，请从当前审阅 checkout 本地构建镜像，并记录源码提交与镜像 ID。
 
 ## 1. 构建与配置
 
@@ -103,9 +103,11 @@ sub2api 使用 History SPA。从 `/`、`/login` 或其他页面首次加载后�
 
 样例仅分流 GET、Accept 含 `text/html` 或 `application/xhtml+xml`、且不属于 API/网关/静态文件的请求。`Sec-Fetch-Dest` 必须为空、`document` 或 `iframe`；有 Upgrade 或 WebSocket Key 的请求直连原站。HTML 的 `q=0` 保守地禁用本次注入，即使另一个 HTML 类型权重非零。只有符合条件的文档 GET 的 `404/502/503/504` 会回原站；关闭 Helper 注入的 404 也回退。连接超时 1 秒、读取超时 10 秒。没有 HTML Accept 的老客户端直接获得原页面，不保证显示按钮。
 
-`/api/v1/`、模型 POST、SSE、WebSocket、上传与静态文件仍直连原站，不因 Helper 失败自动重试。原站认证和登出保持原路由。网关不只有 `/v1/`：样例也排除 `/v1beta/`、`/backend-api/`、`/antigravity/`、`/responses`、`/chat/completions`、`/images/*`、`/videos/*`、语音、搜索和视频任务根别名，按已审阅 v0.2.22 维护。上游增加路由时重新核对；保留流式、Upgrade 和 `proxy_next_upstream off`。
+`/api/v1/`、模型 POST、SSE、WebSocket、上传与静态文件仍直连原站，不因 Helper 失败自动重试。原站认证和登出保持原路由。网关不只有 `/v1/`：样例也排除 `/v1beta/`、`/backend-api/`、`/antigravity/`、`/responses`、`/chat/completions`、`/images/*`、`/videos/*`、语音、搜索和视频任务根别名，按已审阅 v0.2.23 维护。上游增加路由时重新核对；保留流式、Upgrade 和 `proxy_next_upstream off`。
 
-原生按钮验证当前原站管理员。当前要求 `session_binding_enabled` 明确关闭；启用或读不到时停止增强操作，不修改此设置、不强行验证可能撤销会话的 JWT。可继续用独立管理页面。注入保留上游 CSP 和 nonce；没有可靠行 ID 时不猜测目标。
+原生按钮在浏览器里给原站账号和用户表格操作列追加「定时」「邮件」按钮，沿用原表格的数据和现有操作。按钮以可确认的行 ID 为准，随切页和表格重绘更新，并验证当前原站管理员。当前要求 `session_binding_enabled` 明确关闭；启用或读不到时停止增强操作，不修改此设置、不强行验证可能撤销会话的 JWT。可继续用独立管理页面。注入保留上游 CSP 和 nonce；没有可靠行 ID 时不猜测目标。上游调整表格结构后，新增按钮可能暂时不显示，需要重新适配和验证。
+
+开启增强后，首次打开页面的 HTML 会多经过一次 Helper；原站登录 API、管理 API、模型请求和流式连接仍直达 sub2api。Helper 不可用时，入口会回到原站，首次加载 HTML（例如首次打开登录页或后台页）可能多等一个连接或读取超时，但登录提交和业务 API 不经过 Helper。
 
 隔离验收应覆盖：首页/登录页再进账号列表、直接打开列表、前进后退与刷新、静态资源；停止 Helper 后登录、用户管理、模型 POST、SSE 和 WebSocket 仍可用。仓库测试使用真实 Nginx、当前镜像与假上游，无真实 Key、无付费模型调用：
 

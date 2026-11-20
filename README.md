@@ -38,9 +38,17 @@ docker compose up -d --build
 
 1. 保留原站的网页、管理 API、模型网关和流式转发。只把 `/_helper/` 转给 Helper。Compose 默认监听宿主机回环地址的 `18080`。
 2. 打开原公网域名下的 `/_helper/setup`，绑定管理员 API Key。到「功能与菜单」确认浏览器访问地址，再同步菜单。已有部署也可用此操作修正旧地址和补齐图标。
-3. 需要试点行按钮时，设置 `HELPER_NATIVE_UI=true` 并启用部署指南中的网页入口分流。该配置只选择 SPA 文档请求，Helper 不可用时由入口回到 sub2api。
+3. 需要开启页内增强（账号列表「定时」、用户列表「邮件」按钮）时，设置 `HELPER_NATIVE_UI=true` 并启用部署指南中的网页入口分流。该配置只选择 SPA 文档请求，Helper 不可用时由入口回到 sub2api。
 
-默认接入与试点回切、SMTP、备份和升级步骤见[部署文档](docs/deployment.md)。这里的路由隔离版晚于已发布的 `0.2.22` 镜像。可从当前源码构建，或在对应提交的 CI 制品中下载通过测试的 `linux/amd64` 镜像归档。[镜像构建记录](https://github.com/AaronYang0628/sub2api-helper/actions/workflows/ci.yaml)
+默认接入与试点回切、SMTP、备份和升级步骤见[部署文档](docs/deployment.md)。已发布的 `v0.2.23` Release 镜像对应当时的发布基线；若包含当前工作树中的未发布改动，请直接从当前源码 checkout 构建镜像，或在对应提交的 CI 制品中下载通过测试的 `linux/amd64` 镜像归档。[镜像构建记录](https://github.com/AaronYang0628/sub2api-helper/actions/workflows/ci.yaml)
+
+## 页内增强及回切
+
+Helper 在浏览器里给原站账号和用户表格的操作列追加「定时」「邮件」按钮，沿用原表格的数据和现有操作。按钮仅以可确认的行 ID 为准（桌面端 `tr[data-row-id]`、移动端可见 ID 单元格），随切页、筛选和表格重绘自动更新。页内增强保留独立开关（Helper 的 `HELPER_NATIVE_UI` 与 Nginx 的 `$helper_injection_enabled`）。
+
+- **请求路径与故障回退**：开启增强后，仅首次打开页面的 HTML 文档请求会多经过一次 Helper；原站登录 API、管理 API、模型请求和 SSE/WebSocket 流式连接仍直达 sub2api。Helper 不可用时，入口会自动回到原站 HTML，首次加载页面可能多等一个连接或读取回退超时。
+- **上游表格结构变化**：若上游版本调整了表格 DOM 结构或隐藏/修改了行 ID 标记，新增按钮会安全降级为暂时不显示（不猜测目标行），需要重新适配和验证。
+- **关闭回切与后台状态**：关闭增强开关并刷新页面即可移除按钮。后台定时和自动化规则会继续运行，已发送的邮件、已执行的禁用、倍率调整和余额充值也会保留。
 
 ## 自动化规则
 
