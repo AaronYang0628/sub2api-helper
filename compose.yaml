@@ -1,6 +1,6 @@
 services:
   helper:
-    image: sub2api-helper:0.2.23
+    image: sub2api-helper:0.2.24
     build: .
     restart: unless-stopped
     env_file: .env
