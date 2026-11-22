@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Path as ApiPath
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, Path as ApiPath
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +33,7 @@ from .gallery_generation import generate_artwork
 from .mailer import Mailer
 from .native_proxy import NativeProxy, is_document_request
 from .native_api import install_native_api
-from .schemas import Automation, Benchmark, BenchmarkSelection, Connection, Email, Modules, Rule, Schedule, Session, Toggle, UserStatus
+from .schemas import Automation, Benchmark, BenchmarkSelection, Connection, Email, EmailTemplate, Modules, Rule, Schedule, Session, Toggle, UserStatus
 from .store import Store
 from .upstream import Upstream, UpstreamError
 
@@ -42,8 +42,24 @@ STATIC = Path(__file__).parent / "static"
 MODULE_NAMES = {"benchmark": "智商检测", "pricing": "模型价格统计", "ranking": "用户用量排名"}
 ACCOUNT_FIELDS = {"id", "name", "platform", "type", "status", "schedulable", "group_ids"}
 USER_FIELDS = {"id", "username", "email", "role", "status", "last_used_at", "last_active_at", "created_at"}
-HELPER_API_ROOTS = {"status", "connection", "accounts", "schedules", "users", "rules", "modules", "audit", "groups",
+HELPER_API_ROOTS = {"status", "connection", "accounts", "schedules", "users", "rules", "email-templates", "modules", "audit", "groups",
                     "automations", "settlements", "analytics", "benchmark", "gallery", "portal", "compatibility", "menu-settings"}
+ADMIN_SESSION_COOKIE = "helper_admin_session"
+ADMIN_SESSION_TTL = 7 * 24 * 3600
+_REAL_WALL_TIME = time.time
+
+
+def _session_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _wall_time() -> float:
+    return float(getattr(time, "time", _REAL_WALL_TIME)())
+
+
+def _is_https(request: Request) -> bool:
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    return request.url.scheme == "https" or proto == "https"
 
 # Trusted SVG geometry from the already vendored upstream Icon.vue (LGPL-3.0).
 MENU_ICONS = {'benchmark': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
@@ -151,9 +167,8 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     native_proxy = native_proxy or NativeProxy(lambda: config.sub2api_url,
                                               public_url_provider=lambda: config.sub2api_public_url or config.public_url)
     sessions = {}
-    admin_sessions = {}
     native_sessions = {}
-    last_admin_verification = [0.0]
+    last_admin_verification = [None]
     requests_by_ip = defaultdict(deque)
     mutations = engine._tick_lock
     benchmark_slots = asyncio.Semaphore(2)
@@ -253,36 +268,48 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    async def verify_admin_upstream():
+        now_mono = time.monotonic()
+        if last_admin_verification[0] is None or now_mono - last_admin_verification[0] >= 30:
+            try:
+                await verify_connection(upstream)
+            except UpstreamError as exc:
+                if exc.status in (401, 403):
+                    store.clear_admin_sessions()
+                raise
+            last_admin_verification[0] = now_mono
+
     async def admin(request: Request, authorization: str = Header(default="")):
         expected = "Bearer " + config.admin_token
         if hmac.compare_digest(authorization.encode(), expected.encode()):
             return
-        token = authorization.removeprefix("Bearer ")
-        native_entry = native_sessions.get(token)
-        if native_entry:
-            if (native_entry["expires"] <= time.monotonic() or
-                    native_entry["user_agent"] != request.headers.get("user-agent", "")):
-                native_sessions.pop(token, None)
-                raise HTTPException(401, "请重新打开原生列表中的助手操作")
-            try:
-                profile = await verify_native(native_entry["jwt"], native_entry["user_agent"])
-                if profile["id"] != native_entry["actor"]:
-                    raise HTTPException(401, "管理员身份已改变，请重新打开操作")
-            except (HTTPException, UpstreamError):
-                native_sessions.pop(token, None)
-                raise
-            return
-        if admin_sessions.get(token, 0) > time.monotonic():
-            if time.monotonic() - last_admin_verification[0] >= 30:
+        if authorization.startswith("Bearer "):
+            token = authorization[7:]
+            native_entry = native_sessions.get(token)
+            if native_entry:
+                if (native_entry["expires"] <= time.monotonic() or
+                        native_entry["user_agent"] != request.headers.get("user-agent", "")):
+                    native_sessions.pop(token, None)
+                    raise HTTPException(401, "请重新打开原生列表中的助手操作")
                 try:
-                    await verify_connection(upstream)
-                except UpstreamError as exc:
-                    if exc.status in (401, 403):
-                        admin_sessions.clear()
+                    profile = await verify_native(native_entry["jwt"], native_entry["user_agent"])
+                    if profile["id"] != native_entry["actor"]:
+                        raise HTTPException(401, "管理员身份已改变，请重新打开操作")
+                except (HTTPException, UpstreamError):
+                    native_sessions.pop(token, None)
                     raise
-                last_admin_verification[0] = time.monotonic()
-            return
-        admin_sessions.pop(token, None)
+                return
+            if token and store.has_admin_session(_session_hash(token), _wall_time()):
+                await verify_admin_upstream()
+                return
+            raise HTTPException(401, "请在顶部填写有效的管理员 Key 并连接服务")
+        cookie_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+        if not authorization and cookie_token:
+            if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("x-helper-ui") != "1":
+                raise HTTPException(403, "缺少浏览器界面校验头，请刷新页面后重试")
+            if store.has_admin_session(_session_hash(cookie_token), _wall_time()):
+                await verify_admin_upstream()
+                return
         raise HTTPException(401, "请在顶部填写有效的管理员 Key 并连接服务")
 
     def limit(request, category, count=30, seconds=60):
@@ -583,7 +610,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             raise UpstreamError("管理员 Key 缺少助手所需的读取权限，或尚未完成上游运营确认", 403)
 
     @admin_api.post("/connection")
-    async def connection(value: Connection, request: Request):
+    async def connection(value: Connection, request: Request, response: Response):
         nonlocal config
         limit(request, "connection", 10)
         async with mutations:
@@ -609,30 +636,52 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                 if discovered:
                     store.set_setting("public_url", newconfig.public_url)
                 if config.sub2api_admin_key != value.admin_key:
-                    admin_sessions.clear()
+                    store.clear_admin_sessions()
                     native_sessions.clear()
                     sessions.clear()
                 upstream.base_url = value.url
                 upstream.admin_key = value.admin_key
                 config = newconfig
-                now = time.monotonic()
-                for old in list(admin_sessions):
-                    if admin_sessions[old] <= now:
-                        del admin_sessions[old]
-                if len(admin_sessions) >= 256:
-                    admin_sessions.pop(next(iter(admin_sessions)))
+                now_wall = _wall_time()
                 token = secrets.token_urlsafe(32)
-                admin_sessions[token] = now + 8 * 3600
-                last_admin_verification[0] = now
+                store.create_admin_session(_session_hash(token), now_wall + ADMIN_SESSION_TTL, now_wall)
+                last_admin_verification[0] = time.monotonic()
+                response.set_cookie(
+                    ADMIN_SESSION_COOKIE,
+                    token,
+                    max_age=ADMIN_SESSION_TTL,
+                    httponly=True,
+                    samesite="strict",
+                    path="/_helper",
+                    secure=_is_https(request),
+                )
                 store.audit("connection.validated", "upstream", detail="管理员凭证已验证并加密保存")
                 return {"session": token, "upstream_url": config.sub2api_url, "public_url": config.public_url, "warning": warning}
             finally:
                 await candidate.close()
 
     @admin_api.post("/connection/disconnect")
-    async def disconnect(authorization: str = Header(default="")):
-        admin_sessions.pop(authorization.removeprefix("Bearer "), None)
-        native_sessions.pop(authorization.removeprefix("Bearer "), None)
+    async def disconnect(request: Request, response: Response, authorization: str = Header(default="")):
+        bearer = authorization[7:] if authorization.startswith("Bearer ") else ""
+        cookie_token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+        if not bearer and cookie_token and request.headers.get("x-helper-ui") != "1":
+            raise HTTPException(403, "缺少浏览器界面校验头，请刷新页面后重试")
+        if bearer:
+            store.delete_admin_session(_session_hash(bearer))
+            native_sessions.pop(bearer, None)
+        if cookie_token and (
+            not bearer
+            or request.headers.get("x-helper-ui") == "1"
+            or hmac.compare_digest(cookie_token, bearer)
+        ):
+            store.delete_admin_session(_session_hash(cookie_token))
+            response.delete_cookie(
+                ADMIN_SESSION_COOKIE,
+                path="/_helper",
+                httponly=True,
+                samesite="strict",
+                secure=_is_https(request),
+            )
         return {"ok": True}
 
     @admin_api.get("/accounts", dependencies=[Depends(admin)])
@@ -741,6 +790,33 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
             existing("rules", item_id)
             store.delete("rules", item_id)
             store.audit("rule.delete", item_id)
+            return {"ok": True}
+
+    @admin_api.get("/email-templates", dependencies=[Depends(admin)])
+    async def email_templates():
+        return store.list("email_templates")
+
+    @admin_api.post("/email-templates", dependencies=[Depends(admin)])
+    async def email_template_create(value: EmailTemplate):
+        async with mutations:
+            result = store.create("email_templates", value.model_dump())
+            store.audit("email_template.create", str(result["id"]), detail=value.name)
+            return result
+
+    @admin_api.put("/email-templates/{item_id}", dependencies=[Depends(admin)])
+    async def email_template_update(item_id: str, value: EmailTemplate):
+        async with mutations:
+            existing("email_templates", item_id)
+            result = store.update("email_templates", item_id, value.model_dump())
+            store.audit("email_template.update", item_id, detail=value.name)
+            return result
+
+    @admin_api.delete("/email-templates/{item_id}", dependencies=[Depends(admin)])
+    async def email_template_delete(item_id: str):
+        async with mutations:
+            existing("email_templates", item_id)
+            store.delete("email_templates", item_id)
+            store.audit("email_template.delete", item_id)
             return {"ok": True}
 
     @admin_api.get("/modules", dependencies=[Depends(admin)])
@@ -895,13 +971,34 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     async def ranking(start_date: str | None = None, end_date: str | None = None):
         return await upstream.ranking(*dates(start_date, end_date))
 
-    async def do_benchmark(value, identity):
+    async def do_benchmark(value, identity, group_id=None):
         if identity in benchmark_users or benchmark_slots.locked():
             raise HTTPException(429, "模型测试正在进行，请稍后再试")
         benchmark_users.add(identity)
         try:
             async with benchmark_slots:
                 result = await run_benchmark(config, value)
+                if type(group_id) is int and group_id > 0:
+                    rows = result.get("results") if isinstance(result.get("results"), list) else []
+                    total = int(result.get("total", len(rows)))
+                    graded = sum(1 for row in rows if isinstance(row, dict) and row.get("scored"))
+                    passed = sum(1 for row in rows if isinstance(row, dict) and row.get("passed"))
+                    error_count = sum(1 for row in rows if isinstance(row, dict) and row.get("error"))
+                    latencies = [int(row["latency_ms"]) for row in rows
+                                 if isinstance(row, dict) and isinstance(row.get("latency_ms"), (int, float)) and row["latency_ms"] >= 0]
+                    latency_ms = round(sum(latencies) / len(latencies)) if latencies else None
+                    completed = int(result.get("completed", len(rows)))
+                    if error_count > 0 or completed < total:
+                        run_status = "failed"
+                    elif graded == 0:
+                        run_status = "ungraded"
+                    else:
+                        run_status = "ok"
+                    store.record_benchmark_run(
+                        group_id=group_id, model=value.model, api_format=value.api_format,
+                        passed=passed, graded=graded, total=total, error_count=error_count,
+                        latency_ms=latency_ms, status=run_status,
+                    )
                 store.audit("benchmark.run", str(identity), detail=f"model={value.model}, score={result['score']}/{result['total']}")
                 return result
         finally:
@@ -912,7 +1009,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         limit(request, "benchmark", 3, 300)
         key = await upstream.benchmark_key(value.key_id, value.group_id)
         resolved = Benchmark(model=value.model, api_key=key, api_format=value.api_format)
-        return await do_benchmark(resolved, "admin")
+        return await do_benchmark(resolved, "admin", group_id=value.group_id)
 
     @admin_api.get("/benchmark/options", dependencies=[Depends(admin)])
     async def benchmark_options():
@@ -964,7 +1061,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
         limit(request, "benchmark", 3, 300)
         key = await upstream.user_benchmark_key(identity["token"], value.key_id, value.group_id)
         resolved = Benchmark(model=value.model, api_key=key, api_format=value.api_format)
-        return await do_benchmark(resolved, identity["profile"]["id"])
+        return await do_benchmark(resolved, identity["profile"]["id"], group_id=value.group_id)
 
     @portal_api.get("/benchmark/options")
     async def portal_benchmark_options(identity=Depends(portal)):

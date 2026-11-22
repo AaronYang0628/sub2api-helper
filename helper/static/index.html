@@ -18,14 +18,25 @@
 <body class="embedded">
   <div class="embed-shell">
     <section class="connection-card" aria-label="连接 sub2api">
+      <div id="connection-summary" class="connection-summary" hidden>
+        <div class="connection-summary-info">
+          <span id="connection-summary-badge" class="pill green">已连接</span>
+          <strong class="connection-summary-title">已连接 · Key 已在服务端加密保存</strong>
+          <span id="connection-summary-url" class="connection-summary-url"></span>
+        </div>
+        <div class="button-group">
+          <button id="toggle-connection-form" class="button small" type="button">更换 Key</button>
+          <button id="disconnect-summary" class="button ghost small" type="button">退出当前会话</button>
+        </div>
+      </div>
       <form id="connection-form" class="connection-form">
         <label class="connection-field"><span>sub2api 服务地址</span><input id="connection-url" name="url" type="url" required placeholder="https://sub2api.example.com" autocomplete="url"></label>
         <label class="connection-field"><span>管理员 API Key</span><input id="connection-key" name="admin_key" type="password" required placeholder="输入 sub2api 管理员 API Key" autocomplete="off" spellcheck="false"></label>
         <button id="connect" class="button primary" type="submit">连接服务</button>
-        <button id="disconnect" class="button ghost" type="button" hidden>断开连接</button>
+        <button id="disconnect" class="button ghost" type="button" hidden>退出当前会话</button>
         <span id="connection-badge" class="pill">未连接</span>
       </form>
-      <div id="connection-feedback" class="connection-feedback" role="status" aria-live="polite">填写管理员 API Key 后即可管理。断开浏览器连接不会停止已保存的后台任务。</div>
+      <div id="connection-feedback" class="connection-feedback" role="status" aria-live="polite">填写管理员 API Key 后即可管理。退出当前会话不会停止已保存的后台任务。</div>
     </section>
     <nav id="navigation" class="tabs-nav" aria-label="助手功能"></nav>
     <main id="main" tabindex="-1"></main>

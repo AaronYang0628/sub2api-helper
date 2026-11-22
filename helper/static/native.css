@@ -29,6 +29,16 @@ dialog.helper-native-dialog::backdrop { background: rgba(0,0,0,.5); backdrop-fil
 .dark .helper-native-recipient > span { color: #94a3b8; }
 .helper-native-summary { margin: 0; padding: .625rem .75rem; border-radius: .75rem; background: #f8fafc; border: 1px solid #e2e8f0; font-size: .875rem; line-height: 1.5; color: #334155; overflow-wrap: anywhere; }
 .dark .helper-native-summary { background: rgba(15,23,42,.5); border-color: #334155; color: #e2e8f0; }
+.helper-native-shared { display: grid; gap: .625rem; padding: .75rem; border-radius: .75rem; border: 1px solid #f59e0b; background: rgba(245,158,11,.08); font-size: .875rem; line-height: 1.5; }
+.dark .helper-native-shared { border-color: rgba(251,191,36,.5); background: rgba(245,158,11,.12); }
+.helper-native-shared-title { font-weight: 600; color: #92400e; }
+.dark .helper-native-shared-title { color: #fcd34d; }
+.helper-native-shared-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.helper-native-preview { display: grid; gap: .375rem; padding: .75rem; border-radius: .75rem; border: 1px solid #e2e8f0; background: #f8fafc; font-size: .8125rem; line-height: 1.5; color: #334155; }
+.dark .helper-native-preview { border-color: #334155; background: rgba(15,23,42,.5); color: #cbd5e1; }
+.helper-native-preview-title { font-size: .75rem; font-weight: 600; color: #64748b; }
+.dark .helper-native-preview-title { color: #94a3b8; }
+.helper-native-preview-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; max-height: 8rem; overflow-y: auto; }
 .helper-native-more { border: 1px solid #e2e8f0; border-radius: .75rem; padding: .625rem .75rem; }
 .dark .helper-native-more { border-color: #334155; }
 .helper-native-more > summary { cursor: pointer; font-size: .875rem; font-weight: 500; color: #334155; user-select: none; }

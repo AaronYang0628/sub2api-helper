@@ -32,26 +32,62 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
         if (!['Bearer fixture-admin-jwt', 'Bearer fixture-admin-two'].includes(request.headers.authorization)) return send(403, { detail: '需要管理员身份' });
         if (url.pathname.endsWith('/status')) { if (statusFailure) { statusFailure = false; return send(503, { detail: '模拟暂时不可用' }); } return send(200, { timezone: 'America/New_York', mail_configured: true }); }
         if (url.pathname.endsWith('/session')) return send(200, { session: 'fixture-opaque-helper-session' });
+        const sharedRule = { id: 10, name: '夜间共享规则', start: '23:00', end: '09:00', timezone: 'America/New_York', weekdays: [0, 1, 2, 3, 4, 5, 6], enabled: true, account_count: 1, in_window_now: true };
         let match = url.pathname.match(/\/accounts\/(\d+)\/schedule$/);
         if (match) {
           const id = Number(match[1]);
           const existing = schedules.get(id);
-          if (request.method === 'PUT') { if (id === 2) return send(409, { detail: '其他计划正在管理' }); schedules.set(id, body); observed.set(id, true); }
+          if (request.method === 'PUT') {
+            if (id === 2) return send(409, { detail: '其他计划正在管理' });
+            if (body?.mode === 'all_day' && body?.remove_from_schedule_id === 10) {
+              schedules.delete(id); observed.set(id, true);
+            } else {
+              schedules.set(id, body); observed.set(id, true);
+            }
+          }
           const value = schedules.get(id) || existing;
-          return send(200, { account_id: id === 99 ? 100 : id, account_name: id === 33 ? '循环复用后的账号' : '示例账号 ' + id, schedulable: observed.get(id) ?? false, managed: !!value && value.mode === 'window', read_only: id === 2, conflict: id === 2 ? '该账号已由其他定时计划管理' : null, ...(value?.name ? { name: value.name } : {}), mode: value?.mode || 'all_day', start: value?.start || '23:00', end: value?.end || '09:00', timezone: value?.timezone || 'America/New_York', weekdays: value?.weekdays || [0, 1, 2, 3, 4, 5, 6] });
+          const inShared = value?.mode === 'rule' && value?.schedule_id === 10;
+          return send(200, {
+            account_id: id === 99 ? 100 : id,
+            account_name: id === 33 ? '循环复用后的账号' : '示例账号 ' + id,
+            schedulable: observed.get(id) ?? false,
+            managed: !!value && (value.mode === 'window' || inShared),
+            read_only: id === 2 || inShared,
+            conflict: id === 2 ? '该账号已由其他定时计划管理' : (inShared ? '该账号已由时段规则「夜间共享规则」管理' : null),
+            ...(inShared ? { shared_schedule: { id: 10, name: '夜间共享规则', start: '23:00', end: '09:00', timezone: 'America/New_York', weekdays: [0, 1, 2, 3, 4, 5, 6], other_account_count: 1 } } : {}),
+            available_schedules: [sharedRule],
+            ...(value?.name ? { name: value.name } : {}),
+            mode: value?.mode || 'all_day',
+            start: value?.start || '23:00',
+            end: value?.end || '09:00',
+            timezone: value?.timezone || 'America/New_York',
+            weekdays: value?.weekdays || [0, 1, 2, 3, 4, 5, 6]
+          });
         }
         match = url.pathname.match(/\/users\/(\d+)(\/email)?$/);
         if (match) {
           const id = Number(match[1]);
           if (match[2]) { if (emailRateLimit) { emailRateLimit = false; return send(429, { detail: 'rate limit' }, { 'Retry-After': '60' }); } return send(200, { ok: true }); }
-          return send(200, { id: id === 9 ? 999 : id, username: '<img src=x onerror=alert(1)>', email: `fresh${id}@example.invalid`, status: 'active', role: 'user' });
+          return send(200, {
+            id: id === 9 ? 999 : id,
+            username: '<img src=x onerror=alert(1)>',
+            email: `fresh${id}@example.invalid`,
+            status: 'active',
+            role: 'user',
+            last_used_at: '2026-10-01T12:00:00Z',
+            templates: [
+              { id: 'template:5', name: '续费提醒模板', subject: '续费提醒 · {username}', body: '您好 {username}（{email}），上次活跃：{last_used_at}', builtin: false },
+              { id: 'builtin:inactive', name: '长期未使用提醒', subject: '账户长期未使用提醒', body: '您好 {username}，您的账户近期未使用，请及时登录查看。', builtin: true },
+              { id: 'builtin:maintenance', name: '服务维护通知', subject: '服务维护通知', body: '您好 {username}，服务将进行维护，请留意管理员后续通知。', builtin: true },
+            ]
+          });
         }
         return send(404, { detail: 'Unknown fixture API' });
       }
       if (url.pathname === '/_helper/console') {
         response.writeHead(200, { 'Content-Type': 'text/html' }); response.end('<!doctype html><html><body><p id="session"></p><script src="/advanced.js"></script></body></html>'); return;
       }
-      if (url.pathname === '/advanced.js') { response.writeHead(200, { 'Content-Type': 'text/javascript' }); response.end("document.getElementById('session').textContent=sessionStorage.getItem('helper_session') === 'fixture-opaque-helper-session' ? '高级功能会话已验证' : 'missing session';"); return; }
+      if (url.pathname === '/advanced.js') { response.writeHead(200, { 'Content-Type': 'text/javascript' }); response.end("document.getElementById('session').textContent=sessionStorage.getItem('helper_native_console_session') === 'fixture-opaque-helper-session' ? '高级功能会话已验证' : 'missing session';"); return; }
       const files = { '/native.js': path.join(root, 'helper/static/native.js'), '/native.css': path.join(root, 'helper/static/native.css'), '/fixture.js': path.join(__dirname, 'fixture.js'), '/fixture.css': path.join(__dirname, 'fixture.css'), '/fixture-native.css': css };
       const file = files[url.pathname] || path.join(__dirname, 'index.html');
       const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
@@ -133,7 +169,21 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     await page.evaluate(() => fixture.recycle(33));
     await page.locator('tr[data-row-id="33"] [data-helper-native-action]').click();
     await dialog.getByRole('heading', { name: '账号定时 · 循环复用后的账号' }).waitFor();
-    assert.equal(calls[countBefore].path, '/_helper/api/accounts/33/schedule', 'reused row reads current ID at click'); await close();
+    assert.equal(calls[countBefore].path, '/_helper/api/accounts/33/schedule', 'reused row reads current ID at click');
+    await dialog.locator('[name="mode"][value="rule"]').check();
+    await dialog.locator('[data-helper-rule-preview]').waitFor();
+    assert((await dialog.locator('[data-helper-rule-preview]').textContent()).includes('夜间共享规则'));
+    await dialog.getByRole('button', { name: '保存设置', exact: true }).click();
+    await dialog.getByText(/设置已保存/).waitFor();
+    assert.deepEqual(schedules.get(33), { mode: 'rule', schedule_id: 10 }, 'applying existing rule sends mode=rule and schedule_id');
+    await close();
+    await page.locator('tr[data-row-id="33"] [data-helper-native-action]').click();
+    await dialog.locator('[data-helper-shared-schedule="10"]').waitFor();
+    assert.equal(await dialog.getByRole('button', { name: '保存设置', exact: true }).isDisabled(), true, 'shared-rule account disables direct overwrite');
+    await dialog.getByRole('button', { name: '仅将此账号移出规则并改为全天', exact: true }).click();
+    await dialog.getByText(/已将 循环复用后的账号 从「夜间共享规则」移出并设为全天运行/).waitFor();
+    assert.equal(schedules.has(33), false, 'explicit remove_from_schedule_id detaches only this account');
+    await close();
     await page.evaluate(() => { for (let n = 0; n < 30; n++) { const span = document.createElement('span'); document.body.append(span); span.remove(); } });
     await page.waitForTimeout(100); assert.equal(await actions('accounts').count(), 2, 'observer dedupes buttons');
     const statuses = calls.filter(c => c.path.endsWith('/status')).length;
@@ -145,24 +195,30 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     await page.locator('tr[data-row-id="7"] [data-helper-native-action]').click();
     await dialog.getByText('fresh7@example.invalid', { exact: true }).waitFor();
     assert.equal(await dialog.locator('img').count(), 0, 'untrusted API labels are text');
-    await dialog.locator('[name="template"]').selectOption('maintenance');
+    await dialog.locator('[name="template"]').selectOption('template:5');
+    assert((await dialog.locator('[data-helper-email-preview]').textContent()).includes('fresh7@example.invalid'), 'custom template renders placeholders into live preview');
+    assert.equal(await dialog.locator('img').count(), 0, 'template preview keeps untrusted username text-only');
+    await dialog.locator('[name="template"]').selectOption('builtin:maintenance');
     await dialog.getByRole('button', { name: '发送邮件', exact: true }).click(); await dialog.getByText('邮件已发送给用户 #7。', { exact: true }).waitFor();
     const sent = calls.filter(c => c.path.endsWith('/email')); assert.equal(sent.length, 1); assert.equal(sent[0].path, '/_helper/api/users/7/email'); assert.deepEqual(Object.keys(sent[0].body).sort(), ['body', 'subject']); await close();
     emailRateLimit = true;
     await page.locator('tr[data-row-id="8"] [data-helper-native-action]').click(); await dialog.getByText('fresh8@example.invalid', { exact: true }).waitFor();
-    await dialog.locator('[name="template"]').selectOption('inactive'); await dialog.getByRole('button', { name: '发送邮件', exact: true }).click();
+    await dialog.locator('[name="template"]').selectOption('builtin:inactive'); await dialog.getByRole('button', { name: '发送邮件', exact: true }).click();
     await dialog.getByText('操作过于频繁，请 60 秒后重试。', { exact: true }).waitFor(); assert.equal(calls.filter(c => c.path.endsWith('/email')).length, 2); await close();
+    await page.evaluate(() => sessionStorage.setItem('helper_setup_session', 'keep-standalone-setup'));
     await page.locator('tr[data-row-id="7"] [data-helper-native-action]').click(); await dialog.getByText('fresh7@example.invalid', { exact: true }).waitFor();
-    await dialog.locator('summary').click(); await dialog.locator('[aria-label="高级功能"]').selectOption('automations'); await dialog.getByRole('button', { name: '打开', exact: true }).click();
+    await dialog.locator('summary').click(); await dialog.locator('[aria-label="高级功能"]').selectOption('rules'); await dialog.getByRole('button', { name: '打开', exact: true }).click();
     await page.frameLocator('.helper-native-console').getByText('高级功能会话已验证', { exact: true }).waitFor();
-    const frameSource = await page.locator('.helper-native-console').getAttribute('src'); assert(!frameSource.includes('jwt')); assert(frameSource.endsWith('#automations'));
+    const frameSource = await page.locator('.helper-native-console').getAttribute('src'); assert(!frameSource.includes('jwt')); assert(frameSource.endsWith('#rules'));
     assert.equal(calls.filter(c => c.path === '/_helper/api/session/revoke').length, 0, 'initial login and unchanged identity must not revoke sessions');
     const revokeFirst = page.waitForResponse(value => new URL(value.url()).pathname === '/_helper/api/session/revoke' && value.request().headers().authorization === 'Bearer fixture-admin-jwt');
     await page.evaluate(() => fixture.identity('fixture-admin-two'));
     assert.equal((await revokeFirst).status(), 200);
     const revoked = calls.find(c => c.path === '/_helper/api/session/revoke');
     assert.equal(revoked.method, 'POST'); assert.equal(revoked.body, undefined); assert.equal(revoked.ui, '1');
-    await dialog.waitFor({ state: 'detached' }); assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_session')), null, 'identity change clears advanced console session');
+    await dialog.waitFor({ state: 'detached' });
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_native_console_session')), null, 'identity change clears advanced console session');
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_setup_session')), 'keep-standalone-setup', 'native identity change never wipes standalone setup session');
     await actions('users').first().waitFor(); await actions('users').first().click(); await dialog.getByText('fresh7@example.invalid', { exact: true }).waitFor();
     assert.equal(calls.at(-1).authorization, 'Bearer fixture-admin-two', 'per-request current native JWT'); await close();
     const revokeSecond = page.waitForResponse(value => new URL(value.url()).pathname === '/_helper/api/session/revoke' && value.request().headers().authorization === 'Bearer fixture-admin-two');
@@ -193,7 +249,7 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     await page.getByRole('button', { name: '深色', exact: true }).click(); await actions('users').first().click(); await dialog.getByText('fresh7@example.invalid', { exact: true }).waitFor();
     await page.screenshot({ path: path.join(directory, 'desktop-mail-dark.png'), fullPage: true });
     await dialog.locator('summary').click(); await dialog.getByRole('button', { name: '打开', exact: true }).click(); await page.locator('.helper-native-console').waitFor();
-    await page.evaluate(() => history.pushState({}, '', '/login')); await dialog.waitFor({ state: 'detached' }); assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_session')), null);
+    await page.evaluate(() => history.pushState({}, '', '/login')); await dialog.waitFor({ state: 'detached' }); assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_native_console_session')), null); assert.equal(await page.evaluate(() => sessionStorage.getItem('helper_setup_session')), 'keep-standalone-setup', 'route exit never wipes standalone setup session');
     enhancementEnabled = false;
     await page.goto(origin + '/admin/accounts');
     await page.locator('tr[data-row-id="1"]').waitFor();

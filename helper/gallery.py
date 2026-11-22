@@ -22,6 +22,37 @@ DEFAULT_PROMPT = "请生成一个精美、有创意、可交互的独立 HTML �
 FIELDS = {"name", "model", "key_id", "api_format", "reasoning_effort", "prompt", "enabled", "interval_minutes"}
 METADATA_COLUMNS = "id,group_id,round_id,title,model,reasoning_effort,created_at,finished_at,latency_ms,status,kind,mime,error,storage_bytes-length(CAST(prompt AS BLOB)) AS content_bytes"
 PREVIEW_COLUMNS = METADATA_COLUMNS + ",CASE WHEN storage_bytes-length(CAST(prompt AS BLOB))<=131072 THEN content ELSE NULL END AS content"
+VERDICT_ORDER = {"regressed": 0, "failed": 1, "improved": 2, "stable": 2, "no_baseline": 3}
+
+
+def _benchmark_verdict(summary, gallery_status):
+    latest = summary["latest"] if summary else None
+    graded = summary["graded"] if summary else []
+    previous = graded[1] if len(graded) >= 2 else None
+    if latest and (
+        latest.get("status") == "failed"
+        or (latest.get("graded", 0) == 0 and latest.get("error_count", 0) > 0)
+        or (latest.get("graded", 0) > 0 and latest.get("passed", 0) == 0)
+    ):
+        verdict = "failed"
+    elif gallery_status in {"failed", "interrupted"}:
+        verdict = "failed"
+    elif len(graded) >= 2:
+        cur, prev = graded[0], graded[1]
+        left = cur["passed"] * prev["graded"]
+        right = prev["passed"] * cur["graded"]
+        if left < right:
+            verdict = "regressed"
+        elif left > right:
+            verdict = "improved"
+        else:
+            verdict = "stable"
+        latest = cur
+    else:
+        verdict = "no_baseline"
+        if graded:
+            latest = graded[0]
+    return {"verdict": verdict, "latest": latest, "previous": previous}
 
 
 class GalleryError(RuntimeError):
@@ -254,14 +285,31 @@ class Gallery:
                                "reasoning_effort": item.get("reasoning_effort", item.get("config", {}).get("reasoning_effort", "default")),
                                "status": item["status"], "created_at": current["created_at"], "round_id": current["id"]})
         candidates.sort(key=lambda item: (item["created_at"], "work" not in item, item.get("work", {}).get("id", 0), item["group_id"]), reverse=True)
-        latest, history, participants = [], [], set()
+        latest, history_by_group, latest_model, participants = [], {}, {}, set()
         for item in candidates:
-            (history if item["group_id"] in participants else latest).append(item)
-            participants.add(item["group_id"])
-        items = latest + history
+            gid = item["group_id"]
+            if gid in participants:
+                bucket = history_by_group.setdefault(gid, [])
+                work = item.get("work")
+                if len(bucket) < 4 and isinstance(work, dict) and work.get("model") == latest_model[gid]:
+                    bucket.append(work)
+            else:
+                latest.append(item)
+                latest_model[gid] = item.get("model")
+                participants.add(gid)
+        benchmark_map = self.store.benchmark_summaries(ids)
+        for item in latest:
+            item["history"] = history_by_group.get(item["group_id"], [])
+            item["benchmark"] = _benchmark_verdict(
+                benchmark_map.get((item["group_id"], item.get("model", ""))),
+                item.get("status"),
+            )
+        latest.sort(key=lambda item: VERDICT_ORDER.get(item["benchmark"]["verdict"], 3))
         preview_ids, budget = [], MAX_PREVIEW_BYTES
-        for item in items:
-            work = item.get("work")
+        preview_targets = [item.get("work") for item in latest]
+        for item in latest:
+            preview_targets.extend(item["history"])
+        for work in preview_targets:
             if not work or work["status"] != "success" or work["kind"] not in {"html", "text", "image"}:
                 continue
             # SQLite substr counts characters; four bytes per codepoint bounds
@@ -274,9 +322,10 @@ class Gallery:
             marks = ",".join("?" for _ in preview_ids)
             previews = {row["id"]: row["preview"] for row in self._db.execute(
                 f"SELECT id,CASE WHEN kind='text' THEN substr(content,1,2000) ELSE content END AS preview FROM gallery_runs WHERE id IN ({marks})", preview_ids)}
-            for item in items:
-                if item.get("work", {}).get("id") in previews:
-                    item["work"]["preview"] = previews[item["work"]["id"]]
+            for work in preview_targets:
+                if work and work["id"] in previews:
+                    work["preview"] = previews[work["id"]]
+        items = latest
         deadlines = []
         if self.store.get_setting("modules", {}).get("benchmark") is True:
             shared = self._comparison_schedule()

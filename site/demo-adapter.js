@@ -135,6 +135,9 @@
       { id: 2, name: '工作日团队时段', account_ids: [6], start: '09:00', end: '18:00', timezone: 'Asia/Shanghai', weekdays: [0, 1, 2, 3, 4], enabled: false },
     ],
     rules: [{ id: 1, name: '30 天未使用提醒', days: 30, enabled: false, subject: '账户长期未使用提醒', body: '您好 {username}，您的账户已有 {days} 天未使用，请及时查看。', disable_after_email: false }],
+    email_templates: [
+      { id: 1, name: '账户续费提醒', subject: '账户额度与续费提醒', body: '您好 {username}，您的邮箱 {email} 关联账户最近使用时间为 {last_used_at}，如需调整套餐请及时联系管理员。' },
+    ],
     automations: [
       { id: 1, name: '临期订阅个人倍率', type: 'subscription_multiplier', enabled: true, timezone: 'Asia/Shanghai', group_id: 1, expires_within_days: 2, remaining_fraction_gt: .5, quota_period: 'month', multiplier: .5, scope: 'user_group', restore_on_exit: true },
       { id: 2, name: '上月用量前三名奖励', type: 'monthly_rewards', enabled: true, timezone: 'Asia/Shanghai', mode: 'approval', rewards: [{ rank: 1, amount: 30 }, { rank: 2, amount: 20 }, { rank: 3, amount: 10 }] },
@@ -218,20 +221,35 @@
   function comparisonDetail() {
     return { config: clone(comparisonConfig), round: clone(comparisonRound), timezone: 'Asia/Shanghai' };
   }
+  const demoBenchmarks = new Map([
+    [1, { verdict: 'stable', latest: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 920, status: 'ok', created_at: new Date(galleryStart - 10 * 60000).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 940, status: 'ok', created_at: new Date(galleryStart - 130 * 60000).toISOString() } }],
+    [2, { verdict: 'regressed', latest: { passed: 3, graded: 5, total: 5, error_count: 0, latency_ms: 1180, status: 'ok', created_at: new Date(galleryStart - 12 * 60000).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 1120, status: 'ok', created_at: new Date(galleryStart - 140 * 60000).toISOString() } }],
+    [3, { verdict: 'improved', latest: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 1050, status: 'ok', created_at: new Date(galleryStart - 14 * 60000).toISOString() }, previous: { passed: 4, graded: 5, total: 5, error_count: 0, latency_ms: 1080, status: 'ok', created_at: new Date(galleryStart - 150 * 60000).toISOString() } }],
+    [4, { verdict: 'no_baseline', latest: { passed: 4, graded: 5, total: 5, error_count: 0, latency_ms: 1210, status: 'ok', created_at: new Date(galleryStart - 16 * 60000).toISOString() }, previous: null }],
+    [5, { verdict: 'no_baseline', latest: null, previous: null }],
+  ]);
   function galleryFeed() {
-    const items = galleryGroups.flatMap(group => (galleryWorks.get(group.group_id) || []).map(work => ({
-      group_id: group.group_id, name: group.name, model: work.model, reasoning_effort: work.reasoning_effort,
-      status: work.status, created_at: work.created_at, round_id: work.round_id ?? null, work: workPreview(work),
-    }))).sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.work.id - left.work.id);
-    const seen = new Set(), latest = [], history = [];
-    for (const item of items) {
-      if (seen.has(item.group_id)) history.push(item);
-      else { seen.add(item.group_id); latest.push(item); }
-    }
+    const verdictRank = { regressed: 0, failed: 1, improved: 2, stable: 3, no_baseline: 4 };
+    const latest = galleryGroups.map(group => {
+      const works = galleryWorks.get(group.group_id) || [];
+      if (!works.length) return null;
+      const [head, ...rest] = works;
+      return {
+        group_id: group.group_id, name: group.name, model: head.model, reasoning_effort: head.reasoning_effort,
+        status: head.status, created_at: head.created_at, round_id: head.round_id ?? null,
+        work: workPreview(head),
+        history: rest.slice(0, 4).map(workPreview),
+        benchmark: clone(demoBenchmarks.get(group.group_id) || { verdict: 'no_baseline', latest: null, previous: null }),
+      };
+    }).filter(Boolean).sort((left, right) =>
+      (verdictRank[left.benchmark.verdict] ?? 4) - (verdictRank[right.benchmark.verdict] ?? 4) ||
+      Date.parse(right.created_at) - Date.parse(left.created_at) ||
+      right.work.id - left.work.id
+    );
     const due = [comparisonConfig?.enabled ? comparisonConfig.next_at : null,
       ...galleryGroups.filter(group => group.enabled && !comparisonConfig?.group_ids.includes(group.group_id)).map(group => group.next_at)]
       .filter(value => value && Number.isFinite(Date.parse(value))).sort((left, right) => Date.parse(left) - Date.parse(right));
-    return { items: [...latest, ...history], next_at: due[0] || null, timezone: 'Asia/Shanghai' };
+    return { items: latest, next_at: due[0] || null, timezone: 'Asia/Shanghai' };
   }
   function preview(rule) {
     if (rule.type === 'subscription_multiplier') return {
@@ -337,7 +355,14 @@
     if (native) {
       const user = users.find(item => item.id === Number(native[1]));
       if (!user) return bad('示例用户不存在。', 404);
-      if (!native[2] && method === 'GET') return clone(user);
+      if (!native[2] && method === 'GET') {
+        const templates = [
+          ...state.email_templates.map(item => ({ id: `template:${item.id}`, name: item.name, subject: item.subject, body: item.body, builtin: false })),
+          { id: 'builtin:inactive', name: '长期未使用提醒', subject: '账户长期未使用提醒', body: '您好 {username}，您的账户已较长时间未使用，如需继续使用请及时登录查看。', builtin: true },
+          { id: 'builtin:maintenance', name: '服务维护通知', subject: '服务维护通知', body: '您好 {username}，服务将进行例行维护，请提前做好安排。', builtin: true },
+        ];
+        return { ...clone(user), templates };
+      }
       if (native[2] && method === 'POST') {
         if (!data.subject?.trim() || !data.body?.trim()) return bad('请填写邮件标题和正文。');
         log('email.demo', user.id, '仅模拟发送邮件，没有连接 SMTP 或外部服务。');
@@ -348,30 +373,52 @@
     if (native) {
       const id = Number(native[1]), account = accounts.find(item => item.id === id);
       if (!account) return bad('示例账号不存在。', 404);
+      const isInWindow = rule => {
+        const parts = new Intl.DateTimeFormat('en-GB', { timeZone: rule.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' }).formatToParts(new Date());
+        const part = kind => parts.find(item => item.type === kind)?.value;
+        const day = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(part('weekday'));
+        const clock = part('hour') + ':' + part('minute');
+        return rule.start < rule.end ? rule.weekdays.includes(day) && clock >= rule.start && clock < rule.end : (clock >= rule.start && rule.weekdays.includes(day)) || (clock < rule.end && rule.weekdays.includes((day + 6) % 7));
+      };
       let plan = state.schedules.find(item => item.owner === 'native-account' && item.native_account_id === id);
-      const conflict = state.schedules.find(item => item.enabled && item.account_ids.includes(id) && item !== plan);
+      let conflict = state.schedules.find(item => item.enabled && item.account_ids.includes(id) && item !== plan);
       if (method === 'PUT') {
-        if (conflict) return bad('此账号由其他计划管理，请先在原计划中停用。', 409);
-        if (data.mode === 'window') {
+        if (data.mode === 'all_day' && data.remove_from_schedule_id) {
+          const target = state.schedules.find(item => item.id === data.remove_from_schedule_id && item !== plan);
+          if (!target || !target.account_ids.includes(id)) return bad('未找到包含该账号的时段规则。', 404);
+          target.account_ids = target.account_ids.filter(n => n !== id);
+          if (!target.account_ids.length) target.enabled = false;
+          account.schedulable = true;
+          conflict = undefined;
+        } else if (conflict && !(data.mode === 'rule' && data.schedule_id === conflict.id)) {
+          return bad('此账号由其他计划管理，请先在原计划中停用或移出。', 409);
+        } else if (data.mode === 'rule') {
+          const target = state.schedules.find(item => item.id === data.schedule_id && item.owner !== 'native-account');
+          if (!target) return bad('所选时段规则不存在。', 404);
+          if (plan) state.schedules.splice(state.schedules.indexOf(plan), 1);
+          plan = undefined;
+          if (!target.account_ids.includes(id)) target.account_ids.push(id);
+          if (target.enabled) { account.schedulable = isInWindow(target); conflict = target; }
+        } else if (data.mode === 'window') {
           if (!/^\d{2}:\d{2}$/.test(data.start || '') || !/^\d{2}:\d{2}$/.test(data.end || '') || data.start === data.end || !data.weekdays?.length) return bad('请填写有效时间，并至少选择一天。');
           try { new Intl.DateTimeFormat('en', { timeZone: data.timezone }).format(new Date()); } catch (_) { return bad('无效时区。'); }
           const saved = { ...clone(data), id: plan?.id || ++sequence, name: data.name?.trim() || plan?.name || (account.name + ' · 运行时段'), owner: 'native-account', native_account_id: id, account_ids: [id], enabled: true };
           if (plan) state.schedules.splice(state.schedules.indexOf(plan), 1, saved); else state.schedules.push(saved);
           plan = saved;
-          const parts = new Intl.DateTimeFormat('en-GB', { timeZone: plan.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', weekday: 'short' }).formatToParts(new Date());
-          const part = kind => parts.find(item => item.type === kind)?.value;
-          const day = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(part('weekday'));
-          const clock = part('hour') + ':' + part('minute');
-          account.schedulable = plan.start < plan.end ? plan.weekdays.includes(day) && clock >= plan.start && clock < plan.end : (clock >= plan.start && plan.weekdays.includes(day)) || (clock < plan.end && plan.weekdays.includes((day + 6) % 7));
+          account.schedulable = isInWindow(plan);
         } else if (data.mode === 'all_day') {
           account.schedulable = true;
           if (plan) state.schedules.splice(state.schedules.indexOf(plan), 1);
           plan = undefined;
-        } else return bad('请选择全天或指定时段。');
+        } else return bad('请选择全天、已有规则或指定时段。');
         log('schedule.demo', id);
         updateStatusCells();
       }
-      return { account_id: id, account_name: account.name, schedulable: account.schedulable, mode: plan ? 'window' : 'all_day', managed: !!plan, read_only: !!conflict, conflict: conflict ? '此账号由其他计划管理，请先在原计划中停用。' : null, name: plan?.name || (account.name + ' · 运行时段'), start: plan?.start || '23:00', end: plan?.end || '09:00', timezone: plan?.timezone || 'Asia/Shanghai', weekdays: plan?.weekdays || [0, 1, 2, 3, 4, 5, 6], last_error: null };
+      const available_schedules = state.schedules.filter(item => item.owner !== 'native-account').map(item => ({
+        id: item.id, name: item.name, start: item.start, end: item.end, timezone: item.timezone, weekdays: item.weekdays, account_count: item.account_ids.length, enabled: !!item.enabled,
+      }));
+      const shared_schedule = conflict ? { id: conflict.id, name: conflict.name, start: conflict.start, end: conflict.end, timezone: conflict.timezone, weekdays: conflict.weekdays, account_count: conflict.account_ids.length, enabled: !!conflict.enabled } : null;
+      return { account_id: id, account_name: account.name, schedulable: account.schedulable, mode: shared_schedule ? 'rule' : plan ? 'window' : 'all_day', managed: !!(plan || shared_schedule), read_only: !!conflict, conflict: conflict ? `此账号当前由规则「${conflict.name}」管理（共 ${conflict.account_ids.length} 个账号）。` : null, schedule_id: shared_schedule?.id ?? null, shared_schedule, available_schedules, name: plan?.name || (account.name + ' · 运行时段'), start: plan?.start || '23:00', end: plan?.end || '09:00', timezone: plan?.timezone || 'Asia/Shanghai', weekdays: plan?.weekdays || [0, 1, 2, 3, 4, 5, 6], last_error: null };
     }
     if (path === '/api/connection') return { upstream_url: fixtureUrl, configured: true, public_url: base, timezone: 'Asia/Shanghai', session: 'demo-session' };
     if (path === '/api/status') return { upstream_url: fixtureUrl, timezone: 'Asia/Shanghai', mail_configured: true, public_url: base, version: '演示', engine: { running: true, last_tick_at: '2026-11-17T09:20:00+08:00', last_error: null } };
@@ -413,9 +460,10 @@
       if (match[2] === 'status') { if (user.role === 'admin') return bad('示例管理员不能禁用。'); user.status = data.status; }
       log(match[2] === 'email' ? 'email.demo' : 'user.status', user.id, match[2] === 'email' ? '仅模拟邮件操作；没有发送邮件。' : '仅修改示例用户状态。'); return { ok: true, demo: true };
     }
-    match = path.match(/^\/api\/(schedules|rules|automations)(?:\/(\d+))?(?:\/(preview|run))?$/);
+    match = path.match(/^\/api\/(schedules|rules|automations|email-templates)(?:\/(\d+))?(?:\/(preview|run))?$/);
     if (match) {
-      const [, kind, rawId, action] = match, id = rawId ? Number(rawId) : null;
+      const [, rawKind, rawId, action] = match, id = rawId ? Number(rawId) : null;
+      const kind = rawKind === 'email-templates' ? 'email_templates' : rawKind;
       const collection = state[kind], item = collection.find(value => value.id === id);
       if (!rawId && method === 'GET') return collection;
       if (rawId && !item) return bad('示例规则不存在。', 404);
@@ -453,6 +501,9 @@
   };
   function pinDemoControls() {
     const key = document.getElementById('connection-key'), connect = document.getElementById('connect'), disconnect = document.getElementById('disconnect'), url = document.getElementById('connection-url'), feedback = document.getElementById('connection-feedback');
+    const toggle = document.getElementById('toggle-connection-form'), disconnectSummary = document.getElementById('disconnect-summary');
+    if (toggle && !toggle.hidden) toggle.hidden = true;
+    if (disconnectSummary && !disconnectSummary.hidden) disconnectSummary.hidden = true;
     if (!key || !connect) return;
     if (!key.disabled) key.disabled = true;
     if (key.value !== 'DEMO-NOT-A-REAL-KEY') key.value = 'DEMO-NOT-A-REAL-KEY';

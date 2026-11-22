@@ -290,6 +290,70 @@ class NativeApiTests(unittest.TestCase):
         self.assertEqual(self.upstream.users, before)
         self.assertEqual(self.mailer.sent, [])
 
+    def test_schedule_get_lists_available_rules_and_apply_rule_joins_and_reconciles(self):
+        rule = self.plan(owner="setup", native_account_id=None, account_ids=[2], name="夜间主力时段",
+                         start="22:00", end="08:00", weekdays=[4], enabled=True)
+        paused = self.plan(owner="setup", native_account_id=None, account_ids=[], name="停用规则", enabled=False)
+        native_other = self.plan(native_account_id=2, account_ids=[2], name="其他账号原生")
+        with patch("helper.native_api.datetime") as clock:
+            clock.now.return_value = datetime(2026, 11, 20, 23, 0, tzinfo=timezone.utc)
+            info = self.client.get(self.path).json()
+            ids = [item["id"] for item in info["available_schedules"]]
+            self.assertEqual(ids, [rule["id"], paused["id"]])
+            self.assertNotIn(native_other["id"], ids)
+            self.assertEqual(info["available_schedules"][0]["account_count"], 1)
+            # Disabled rule cannot be applied
+            self.assertEqual(self.client.put(self.path, json={"mode": "rule", "schedule_id": paused["id"]}).status_code, 409)
+            # Unknown or native-account rule rejected with 404
+            self.assertEqual(self.client.put(self.path, json={"mode": "rule", "schedule_id": native_other["id"]}).status_code, 404)
+            # Valid rule joins account 1 and reconciles schedulable
+            self.upstream.accounts[0]["schedulable"] = False
+            applied = self.client.put(self.path, json={"mode": "rule", "schedule_id": rule["id"]})
+            self.assertEqual(applied.status_code, 200, applied.text)
+            body = applied.json()
+            self.assertTrue(body["read_only"])
+            self.assertEqual(body["shared_schedule"]["id"], rule["id"])
+            self.assertTrue(body["schedulable"])
+            self.assertEqual(self.store.get("schedules", rule["id"])["account_ids"], [2, 1])
+
+    def test_explicit_remove_from_shared_rule_preserves_other_accounts(self):
+        shared = self.plan(owner="setup", native_account_id=None, account_ids=[1, 2], name="共享时段", enabled=True)
+        self.upstream.accounts[0]["schedulable"] = False
+        # Wrong rule ID rejected
+        self.assertEqual(
+            self.client.put(self.path, json={"mode": "all_day", "remove_from_schedule_id": 9999}).status_code,
+            409,
+        )
+        # Explicit removal removes only account 1 and enables it
+        removed = self.client.put(self.path, json={"mode": "all_day", "remove_from_schedule_id": shared["id"]})
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertFalse(removed.json()["read_only"])
+        self.assertTrue(removed.json()["schedulable"])
+        self.assertEqual(self.store.get("schedules", shared["id"])["account_ids"], [2])
+        self.assertTrue(self.store.get("schedules", shared["id"])["enabled"])
+
+    def test_removing_last_account_from_shared_rule_clears_account_ids_and_disables(self):
+        solo = self.plan(owner="setup", native_account_id=None, account_ids=[1], name="单账号共享时段", enabled=True)
+        self.upstream.accounts[0]["schedulable"] = False
+        removed = self.client.put(self.path, json={"mode": "all_day", "remove_from_schedule_id": solo["id"]})
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertFalse(removed.json()["read_only"])
+        self.assertTrue(removed.json()["schedulable"])
+        updated = self.store.get("schedules", solo["id"])
+        self.assertEqual(updated["account_ids"], [])
+        self.assertFalse(updated["enabled"])
+
+    def test_user_get_exposes_saved_email_templates(self):
+        tpl = self.store.create("email_templates", {"name": "维护预告", "subject": "你好 {username}", "body": "邮箱 {email}"})
+        user = self.client.get("/_helper/api/users/7").json()
+        self.assertIn("templates", user)
+        custom = [t for t in user["templates"] if not t["builtin"]]
+        builtin = [t for t in user["templates"] if t["builtin"]]
+        self.assertEqual(len(custom), 1)
+        self.assertGreaterEqual(len(builtin), 1)
+        self.assertEqual(custom[0]["id"], str(tpl["id"]))
+        self.assertEqual(custom[0]["name"], "维护预告")
+
 
 if __name__ == "__main__":
     unittest.main()

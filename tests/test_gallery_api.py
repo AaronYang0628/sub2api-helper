@@ -613,10 +613,13 @@ class GalleryApiTests(unittest.TestCase):
         snapshot.assert_called_once_with(allowed={3})
         self.assertEqual(self.upstream.available_calls, ["user-jwt"], "One aggregate feed must resolve current ACL only once")
         items = response.json()["items"]
-        self.assertEqual([item["work"]["id"] for item in items], [latest["id"], first["id"]])
+        self.assertEqual([item["work"]["id"] for item in items], [latest["id"]])
+        self.assertEqual([w["id"] for w in items[0]["history"]], [first["id"]])
+        self.assertEqual(items[0]["benchmark"]["verdict"], "no_baseline")
         self.assertTrue(all(item["group_id"] == 3 and item["name"] == "Visible Anthropic" for item in items))
         self.assertTrue(all(item["reasoning_effort"] == "high" and item["work"]["reasoning_effort"] == "high" for item in items))
-        self.assertTrue(all("preview" in item["work"] for item in items))
+        self.assertIn("preview", items[0]["work"])
+        self.assertIn("preview", items[0]["history"][0])
         for private in ("Private Kimi source", "private-kimi", "Hidden future instructions", CONFIG_PROMPT,
                         "key_id", "api_key", "content_bytes", MODEL_KEY, self.config.sub2api_admin_key):
             self.assertNotIn(private, response.text)
@@ -624,7 +627,7 @@ class GalleryApiTests(unittest.TestCase):
         self.upstream.available_calls.clear()
         admin = self.client.get("/_helper/api/admin/gallery/feed", headers=self.auth)
         self.assertEqual(admin.status_code, 200, admin.text)
-        self.assertEqual({item["work"]["id"] for item in admin.json()["items"][:2]}, {latest["id"], hidden["id"]}, "Latest source attempts precede older history")
+        self.assertEqual({item["work"]["id"] for item in admin.json()["items"]}, {latest["id"], hidden["id"]}, "One row per source with latest work")
         self.assertEqual(self.upstream.available_calls, [], "Management feed does not borrow an ordinary user's group access")
 
     def test_feed_hides_restricted_schedule_and_rechecks_revoked_group_access(self):
@@ -674,8 +677,9 @@ class GalleryApiTests(unittest.TestCase):
         self.assertEqual(set(response.json()), {"items", "next_at", "timezone"})
         self.assertEqual(len(response.json()["items"]), 1)
         item = response.json()["items"][0]
-        self.assertEqual(set(item), {"group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id", "work"})
+        self.assertEqual(set(item), {"group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id", "work", "history", "benchmark"})
         self.assertEqual(item["work"]["preview"], "<p>Safe preview</p>")
+        self.assertEqual(item["benchmark"], {"verdict": "no_baseline", "latest": None, "previous": None})
         for private in ("Unauthorized source", "unauthorized-model", "Private future prompt", "Private executed prompt", "key_id",
                         "api_key", "content_bytes", "future_internal", MODEL_KEY):
             self.assertNotIn(private, response.text)

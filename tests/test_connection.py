@@ -283,13 +283,39 @@ class ConnectionTests(unittest.TestCase):
             self.assertEqual(self.client.get("/_helper/api/admin/status", headers=auth).status_code, 401)
 
     def test_expired_connection_session_cannot_access_management(self):
-        issued_at = time.monotonic()
-        auth = self.bearer(self.connect())
-        with patch("helper.app.time", SimpleNamespace(monotonic=lambda: issued_at + 8 * 3600 + 1)):
+        issued_at = time.time()
+        mono_at = time.monotonic()
+        with patch("helper.app.time", SimpleNamespace(time=lambda: issued_at, monotonic=lambda: mono_at)):
+            auth = self.bearer(self.connect())
+        with patch("helper.app.time", SimpleNamespace(time=lambda: issued_at + 7 * 24 * 3600 + 1, monotonic=lambda: mono_at + 10)):
             self.assertEqual(self.client.get("/_helper/api/admin/status", headers=auth).status_code, 401)
         self.assertEqual(self.upstream.calls, [])
 
-    def test_persisted_binding_survives_restart_but_browser_sessions_do_not(self):
+    def test_cookie_session_requires_ui_header_for_mutations_and_survives_reload(self):
+        response = self.connect()
+        self.assertEqual(response.status_code, 200)
+        set_cookie = response.headers.get("set-cookie", "")
+        self.assertIn("helper_admin_session=", set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+        self.assertIn("SameSite=strict", set_cookie.lower().replace("samesite=strict", "SameSite=strict"))
+        self.assertIn("Path=/_helper", set_cookie)
+        # Cookie-only GET succeeds without Bearer
+        self.assertEqual(self.client.get("/_helper/api/admin/status").status_code, 200)
+        # Cookie-only non-GET without X-Helper-UI is blocked with 403
+        self.assertEqual(self.client.post("/_helper/api/admin/email-templates", json={
+            "name": "维护", "subject": "通知", "body": "内容",
+        }).status_code, 403)
+        # Cookie-only non-GET with X-Helper-UI succeeds
+        created = self.client.post("/_helper/api/admin/email-templates", headers={"X-Helper-UI": "1"}, json={
+            "name": "维护", "subject": "通知", "body": "内容",
+        })
+        self.assertEqual(created.status_code, 200, created.text)
+        # Cookie disconnect requires X-Helper-UI and revokes session
+        self.assertEqual(self.client.post("/_helper/api/admin/connection/disconnect").status_code, 403)
+        self.assertEqual(self.client.post("/_helper/api/admin/connection/disconnect", headers={"X-Helper-UI": "1"}).status_code, 200)
+        self.assertEqual(self.client.get("/_helper/api/admin/status").status_code, 401)
+
+    def test_persisted_binding_and_hashed_admin_sessions_survive_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "helper.db")
             config = replace(self.config, db_path=path)
@@ -299,9 +325,12 @@ class ConnectionTests(unittest.TestCase):
             with TestClient(first_app) as client:
                 response = client.post("/_helper/api/admin/connection", json={"url": URL, "admin_key": KEY, "helper_url": "https://helper.example.test"})
                 self.assertEqual(response.status_code, 200)
-                old_auth = {"Authorization": "Bearer " + response.json()["session"]}
+                token = response.json()["session"]
+                old_auth = {"Authorization": "Bearer " + token}
                 self.assertEqual(CredentialVault(store, path).read(), {"url": URL, "admin_key": KEY})
-                self.assertNotIn(KEY.encode(), Path(path).read_bytes())
+                raw_db = Path(path).read_bytes()
+                self.assertNotIn(KEY.encode(), raw_db)
+                self.assertNotIn(token.encode(), raw_db, "Only SHA-256 hash of session token may be persisted")
             second_store = Store(path)
             second_factory = CandidateFactory()
             second_app = create_app(config, store=second_store, upstream=BindingUpstream(URL, KEY), connector=second_factory, background=False)
@@ -312,12 +341,18 @@ class ConnectionTests(unittest.TestCase):
                 self.assertEqual(info.json()["upstream_url"], URL)
                 self.assertEqual(info.json()["public_url"], "https://helper.example.test")
                 self.assertNotIn(KEY, info.text)
-                self.assertEqual(client.get("/_helper/api/admin/status", headers=old_auth).status_code, 401)
+                # Hashed admin session survives restart (both Bearer and Cookie)
+                self.assertEqual(client.get("/_helper/api/admin/status", headers=old_auth).status_code, 200)
+                client.cookies.set("helper_admin_session", token)
+                self.assertEqual(client.get("/_helper/api/admin/status").status_code, 200)
                 wrong = client.post("/_helper/api/admin/connection", json={"url": "https://other.example.test", "admin_key": KEY})
                 self.assertEqual(wrong.status_code, 409)
                 self.assertEqual(second_factory.instances, [])
-                valid = client.post("/_helper/api/admin/connection", json={"url": URL, "admin_key": KEY})
+                # Rotating the admin key revokes previously persisted sessions
+                rotated = "rotated-admin-key-99999999"
+                valid = client.post("/_helper/api/admin/connection", json={"url": URL, "admin_key": rotated})
                 self.assertEqual(valid.status_code, 200)
+                self.assertEqual(client.get("/_helper/api/admin/status", headers=old_auth).status_code, 401)
 
     def test_configuration_can_bootstrap_without_environment_credentials(self):
         with patch.dict("os.environ", {}, clear=True):
