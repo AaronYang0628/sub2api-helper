@@ -39,6 +39,8 @@ PUBLIC_GROUP = ("group_id", "name", "model", "reasoning_effort", "enabled", "int
                 "comparison_member", "comparison_enabled", "comparison_next_at")
 PUBLIC_WORK = ("id", "group_id", "round_id", "title", "model", "reasoning_effort", "created_at", "finished_at", "latency_ms",
                "status", "kind", "preview", "content", "mime", "error")
+PUBLIC_BENCHMARK_RUN = ("passed", "graded", "total", "error_count", "latency_ms", "status", "created_at")
+PUBLIC_VERDICTS = frozenset(("regressed", "failed", "improved", "stable", "no_baseline"))
 
 
 def project_group(group):
@@ -50,15 +52,43 @@ def project_work(work, detail=False):
     return {key: work[key] for key in fields if key in work}
 
 
+def project_benchmark(summary):
+    if not isinstance(summary, dict):
+        return {"verdict": "no_baseline", "latest": None, "previous": None}
+    verdict = summary.get("verdict")
+    if verdict not in PUBLIC_VERDICTS:
+        verdict = "no_baseline"
+
+    def run_fields(entry):
+        if not isinstance(entry, dict):
+            return None
+        return {key: entry[key] for key in PUBLIC_BENCHMARK_RUN if key in entry}
+
+    return {
+        "verdict": verdict,
+        "latest": run_fields(summary.get("latest")),
+        "previous": run_fields(summary.get("previous")),
+    }
+
+
 def project_feed(data, allowed=None):
     fields = ("group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id")
     items = []
     for item in data["items"]:
-        if allowed is not None and item.get("group_id") not in allowed:
+        gid = item.get("group_id")
+        if allowed is not None and gid not in allowed:
             continue
         safe = {key: item.get(key) for key in fields}
         if isinstance(item.get("work"), dict):
             safe["work"] = project_work(item["work"])
+        history = []
+        for entry in item.get("history") or ():
+            if isinstance(entry, dict) and entry.get("group_id") in (None, gid):
+                history.append(project_work(entry))
+                if len(history) >= 4:
+                    break
+        safe["history"] = history
+        safe["benchmark"] = project_benchmark(item.get("benchmark"))
         items.append(safe)
     return {"items": items, "next_at": data.get("next_at")}
 

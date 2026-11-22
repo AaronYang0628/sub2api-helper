@@ -6,6 +6,7 @@
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
   const EFFORT_LABELS = new Map(Object.entries({ default: '模型默认', none: '关闭', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最高' }));
   const STATUS_LABELS = new Map(Object.entries({ queued: '排队中', running: '生成中', success: '已完成', partial: '部分完成', failed: '失败', interrupted: '已中断' }));
+  const VERDICT_ORDER = { regressed: 0, failed: 1, improved: 2, stable: 3, no_baseline: 4 };
   const str = value => value === undefined || value === null ? '' : String(value);
   function modelSettings(model, effort) { return [str(model), EFFORT_LABELS.has(effort) ? `思考强度：${EFFORT_LABELS.get(effort)}` : ''].filter(Boolean).join(' · '); }
   function el(tag, attrs = {}, ...children) {
@@ -61,26 +62,57 @@
   }
   function artwork(work, large = false) {
     const content = str(work.content ?? work.preview);
-    if (!content) return el('div', { class: 'helper-gallery-placeholder' }, work.status === 'failed' ? '生成失败，暂无预览' : work.status === 'running' ? '正在生成' : '点击查看完整作品');
+    if (!content) return el('div', { class: 'helper-gallery-placeholder' }, work.status === 'failed' ? '失败' : work.status === 'running' ? '生成中' : work.status === 'interrupted' ? '中断' : large ? '暂无作品内容' : '查看');
     if (['image', 'raster', 'gif'].includes(work.kind)) {
       const source = imageSource(work);
-      if (!source) return el('div', { class: 'helper-gallery-placeholder' }, '图片格式不受支持');
+      if (!source) return el('div', { class: 'helper-gallery-placeholder' }, '格式不支持');
       const img = el('img', { src: source, alt: str(work.title) || '模型生成作品', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
       img.addEventListener('error', () => img.replaceWith(el('div', { class: 'helper-gallery-placeholder' }, '图片无法显示')));
       return img;
     }
     if (work.kind === 'text') return el('pre', { class: 'helper-gallery-text-artwork' }, content);
-    if (!['html', 'svg'].includes(work.kind)) return el('div', { class: 'helper-gallery-placeholder' }, '暂无可显示的预览');
-    if (content.length > (large ? 512 : 128) * 1024) return el('div', { class: 'helper-gallery-placeholder' }, large ? '作品超出预览大小限制' : '点击查看完整作品');
+    if (!['html', 'svg'].includes(work.kind)) return el('div', { class: 'helper-gallery-placeholder' }, '无预览');
+    if (content.length > (large ? 512 : 128) * 1024) return el('div', { class: 'helper-gallery-placeholder' }, large ? '作品超出预览大小限制' : '点击查看');
     // The server removes these tags. Reject legacy navigation/embedded
     // documents before they are put into a sandboxed preview.
-    if (/<\s*(?:meta|base|iframe|frame|frameset|object|embed)\b/i.test(content)) return el('div', { class: 'helper-gallery-placeholder' }, '作品包含不支持的文档内容');
+    if (/<\s*(?:meta|base|iframe|frame|frameset|object|embed)\b/i.test(content)) return el('div', { class: 'helper-gallery-placeholder' }, '内容不支持');
     const frame = el('iframe', { class: 'helper-gallery-artwork', sandbox: '', title: str(work.title) || '模型生成作品', tabindex: '-1', referrerpolicy: 'no-referrer', inert: '', loading: large ? 'eager' : 'lazy' });
     const display = value => { frame.srcdoc = PREFIX + value + '</body></html>'; };
     if (/<\s*img\b/i.test(content)) {
       void prepareInlineImages(content).then(display, () => display('<p>作品中的图片无法显示。</p>'));
     } else display(content);
     return frame;
+  }
+  function scoreText(run) {
+    if (!run || typeof run !== 'object') return '';
+    const graded = Number(run.graded);
+    if (!Number.isFinite(graded) || graded <= 0) return '';
+    const passed = Number(run.passed);
+    if (!Number.isFinite(passed) || passed < 0) return '';
+    return `${passed}/${graded}`;
+  }
+  function resolveBenchmark(item, status) {
+    const raw = item && typeof item.benchmark === 'object' && item.benchmark ? item.benchmark : null;
+    const verdict = raw && Object.prototype.hasOwnProperty.call(VERDICT_ORDER, raw.verdict)
+      ? raw.verdict
+      : ['failed', 'interrupted'].includes(status) ? 'failed' : 'no_baseline';
+    return { verdict, latest: raw?.latest || null, previous: raw?.previous || null };
+  }
+  function verdictInfo(benchmark) {
+    const cur = scoreText(benchmark.latest);
+    const prev = scoreText(benchmark.previous);
+    switch (benchmark.verdict) {
+      case 'regressed':
+        return { cls: 'red', label: prev && cur ? `得分下降 · ${prev} → ${cur}` : '得分下降' };
+      case 'failed':
+        return { cls: 'red', label: '检测失败' };
+      case 'improved':
+        return { cls: 'green', label: prev && cur ? `提升 · ${prev} → ${cur}` : cur ? `正常 · ${cur}` : '提升' };
+      case 'stable':
+        return { cls: 'green', label: cur ? `正常 · ${cur}` : '正常' };
+      default:
+        return { cls: 'gray', label: cur ? `暂无基线 · 首次 ${cur}` : '暂无基线' };
+    }
   }
   window.helperGallery = function helperGallery(container, { request, timezone = 'Asia/Shanghai', settingsUrl } = {}) {
     if (!(container instanceof Element) || typeof request !== 'function') throw new Error('Gallery requires a container and a request function');
@@ -89,7 +121,7 @@
     const next = el('p', { class: 'helper-gallery-info', hidden: true });
     const refreshButton = button('刷新', () => refresh());
     const error = el('div', { class: 'helper-gallery-error', role: 'alert', hidden: true });
-    const works = el('div', { class: 'helper-gallery-grid' });
+    const works = el('div', { class: 'helper-gallery-list' });
     const empty = el('div', { class: 'helper-gallery-empty', role: 'status' }, '正在读取参测结果…');
     root.append(el('div', { class: 'helper-gallery-toolbar' }, next, refreshButton), error, works, empty);
     container.replaceChildren(root);
@@ -98,6 +130,11 @@
       const date = new Date(value);
       if (!value || !Number.isFinite(date.getTime())) return '时间未知';
       try { return new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(date); } catch (_) { return date.toLocaleString('zh-CN', { hour12: false }); }
+    }
+    function formatShortTime(value) {
+      const date = new Date(value);
+      if (!value || !Number.isFinite(date.getTime())) return '历史';
+      try { return new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(date); } catch (_) { return date.toLocaleString('zh-CN', { hour12: false }); }
     }
     function latency(value) { return value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) >= 1000 ? `${(Number(value) / 1000).toFixed(1)} 秒` : `${Math.round(Number(value))} ms` : '—'; }
     function statusLabel(value) { return STATUS_LABELS.get(value) || '等待作品'; }
@@ -113,40 +150,110 @@
       const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60), rest = seconds % 60;
       next.textContent = `下次生成：${hours ? `${hours}时 ` : ''}${String(minutes).padStart(2, '0')}分 ${String(rest).padStart(2, '0')}秒`;
     }
-    function workCard(item) {
-      const group = validGroup(item.group_id), work = item.work && typeof item.work === 'object' ? item.work : {};
-      const id = validWork(work.id), model = str(work.model || item.model), effort = work.reasoning_effort ?? item.reasoning_effort;
-      const title = str(work.title) || model || '等待作品', source = str(item.name) || `来源 #${group}`, status = item.status || work.status;
+    function makeThumb(group, work, primary, siblings, benchmark) {
+      const id = validWork(work?.id);
+      const title = str(work?.title) || str(work?.model) || (primary ? '最新作品' : '历史作品');
+      const status = work?.status;
+      const stage = el('div', { class: 'helper-gallery-thumb-stage' }, id ? artwork(work, false) : el('div', { class: 'helper-gallery-placeholder' }, statusLabel(status)));
+      const cls = primary ? 'helper-gallery-thumb helper-gallery-thumb-primary' : 'helper-gallery-thumb helper-gallery-thumb-mini';
+      if (!id) return el('div', { class: `${cls} helper-gallery-pending`, 'aria-label': statusLabel(status) }, stage);
+      const label = primary ? `查看作品：${title}` : `查看历史作品：${title}`;
+      const trigger = el('button', {
+        type: 'button',
+        class: cls,
+        'aria-label': label,
+        title: `${title} · ${formatDate(work.created_at)}（点击放大）`,
+        onclick: () => openWork(group, id, siblings, benchmark),
+      }, stage);
+      return trigger;
+    }
+    function workRow(item) {
+      const group = validGroup(item.group_id);
+      const work = item.work && typeof item.work === 'object' ? item.work : null;
+      const id = validWork(work?.id);
+      const model = str(work?.model || item.model) || '未指定模型';
+      const effort = work?.reasoning_effort ?? item.reasoning_effort;
+      const source = str(item.name) || `来源 #${group}`;
+      const status = item.status || work?.status;
+      const title = str(work?.title) || model;
+      const benchmark = resolveBenchmark(item, status);
+      const verdict = verdictInfo(benchmark);
+      const history = (Array.isArray(item.history) ? item.history : [])
+        .filter(entry => entry && typeof entry === 'object' && validWork(entry.id) && (!entry.group_id || str(entry.group_id) === group))
+        .slice(0, 4);
+      const siblings = [...(id ? [work] : []), ...history];
       const serial = ++cardSequence, sourceID = `helper-gallery-source-${serial}`, modelID = `helper-gallery-model-${serial}`;
-      const preview = id ? artwork({ ...work, status }) : el('div', { class: 'helper-gallery-placeholder' }, statusLabel(status));
-      const children = [
-        el('div', { class: 'helper-gallery-card-top' }, el('strong', { class: 'helper-gallery-source', id: sourceID }, source), statusBadge(status)),
-        el('div', { class: 'helper-gallery-preview' }, preview),
-        el('div', { class: 'helper-gallery-caption' }, el('div', { class: 'helper-gallery-title' }, el('h3', {}, title)), el('p', { class: 'helper-gallery-model', id: modelID }, modelSettings(model, effort)), el('div', { class: 'helper-gallery-meta' }, el('time', { datetime: str(work.created_at || item.created_at) }, formatDate(work.created_at || item.created_at)), el('span', {}, latency(work.latency_ms))), work.error ? el('p', { class: 'helper-gallery-card-error' }, str(work.error)) : null)
+      const metaTime = work?.created_at || item.created_at || benchmark.latest?.created_at;
+      const metaLatency = work?.latency_ms ?? benchmark.latest?.latency_ms;
+      const statusBadges = [
+        el('span', { class: `pill helper-gallery-verdict ${verdict.cls}` }, verdict.label),
+        ['queued', 'running'].includes(status) ? statusBadge(status) : null,
       ];
-      const card = id ? button(children, () => openWork(group, id), 'card helper-gallery-work') : el('article', { class: 'card helper-gallery-work helper-gallery-pending', tabindex: '-1' }, children);
-      card.setAttribute('data-group-id', group); card.setAttribute('aria-describedby', `${sourceID} ${modelID}`);
-      if (id) card.setAttribute('aria-label', `查看作品：${title}`);
-      return card;
+      const info = el('div', { class: 'helper-gallery-row-info' },
+        el('div', { class: 'helper-gallery-row-head' },
+          el('h3', { class: 'helper-gallery-model', id: modelID }, modelSettings(model, effort)),
+          el('span', { class: 'helper-gallery-source', id: sourceID }, source),
+        ),
+        el('div', { class: 'helper-gallery-row-status' },
+          statusBadges,
+          el('div', { class: 'helper-gallery-meta' },
+            metaTime ? el('time', { datetime: str(metaTime) }, formatDate(metaTime)) : null,
+            el('span', {}, `耗时 ${latency(metaLatency)}`),
+            id && work?.title ? el('span', { class: 'helper-gallery-work-title' }, title) : null,
+          ),
+        ),
+        work?.error ? el('p', { class: 'helper-gallery-card-error' }, str(work.error)) : null,
+      );
+      const thumbs = el('div', { class: 'helper-gallery-thumbs', 'aria-label': `${source} 作品缩略图` },
+        makeThumb(group, work ? { ...work, status } : { status }, true, siblings, benchmark),
+        history.length ? el('div', { class: 'helper-gallery-history', 'aria-label': '最近历史作品' }, history.map(entry => makeThumb(group, entry, false, siblings, benchmark))) : null,
+      );
+      const row = el('article', {
+        class: `card helper-gallery-work${id ? '' : ' helper-gallery-pending'}`,
+        'data-group-id': group,
+        'data-verdict': benchmark.verdict,
+        'aria-describedby': `${sourceID} ${modelID}`,
+        tabindex: '-1',
+      }, info, thumbs);
+      return row;
     }
     function draw(data) {
       if (typeof data.timezone === 'string' && data.timezone) timezone = data.timezone;
-      const items = data.items.filter(item => item && validGroup(item.group_id) && (!item.work?.group_id || str(item.work.group_id) === str(item.group_id)));
+      const rawItems = data.items.filter(item => item && validGroup(item.group_id) && (!item.work?.group_id || str(item.work.group_id) === str(item.group_id)));
+      const items = rawItems
+        .map((item, index) => ({ item, index, rank: VERDICT_ORDER[resolveBenchmark(item, item.status || item.work?.status).verdict] ?? 4 }))
+        .sort((a, b) => a.rank - b.rank || a.index - b.index)
+        .map(entry => entry.item);
       if (modalGroup && !items.some(item => str(item.group_id) === modalGroup)) closeModal();
       nextAt = data.next_at; updateCountdown(); error.hidden = true;
       const key = JSON.stringify([timezone, items]);
       if (key === feedKey) return;
       feedKey = key;
-      works.replaceChildren(...items.map(workCard));
+      works.replaceChildren(...items.map(workRow));
       empty.hidden = items.length > 0;
       empty.replaceChildren(el('p', {}, '暂无参测结果。'), settingsUrl ? el('a', { href: settingsUrl, class: 'btn btn-secondary btn-sm' }, '配置参测来源') : null);
     }
-    async function openWork(group, id) {
+    async function openWork(group, id, siblings = [], benchmark = null) {
       if (destroyed || !validGroup(group) || !validWork(id)) return;
       closeModal(); modalGroup = group;
       const sequence = modalSequence;
       const body = el('div', { class: 'modal-body helper-gallery-dialog-body' }, el('p', {}, '正在读取作品…'));
       const heading = el('h3', { class: 'modal-title' }, '作品详情');
+      const switcher = Array.isArray(siblings) && siblings.length > 1
+        ? el('div', { class: 'helper-gallery-switcher', role: 'group', 'aria-label': '切换同模型历史作品' },
+            siblings.map((entry, idx) => {
+              const entryId = validWork(entry?.id);
+              if (!entryId) return null;
+              const activeEntry = entryId === id;
+              const label = idx === 0 ? '最新' : formatShortTime(entry.created_at);
+              return el('button', {
+                type: 'button',
+                class: `btn btn-sm ${activeEntry ? 'btn-primary' : 'btn-secondary'}`,
+                'aria-pressed': activeEntry ? 'true' : 'false',
+                onclick: activeEntry ? null : () => openWork(group, entryId, siblings, benchmark),
+              }, label);
+            }))
+        : null;
       modal = el('dialog', { class: 'modal-content helper-gallery-dialog', 'aria-label': '作品详情' }, el('div', { class: 'modal-header' }, heading, button('关闭', closeModal)), body);
       modal.addEventListener('cancel', closeModal); document.body.append(modal); modal.showModal();
       try {
@@ -154,8 +261,18 @@
         if (!active() || !modal || modalSequence !== sequence) return;
         if (!work || str(work.id) !== id || (work.group_id != null && str(work.group_id) !== group)) throw new Error('作品身份响应不完整，已停止展示。');
         heading.textContent = str(work.title) || '未命名作品';
-        body.replaceChildren(el('div', { class: 'helper-gallery-large' }, artwork(work, true)), el('p', { class: 'helper-gallery-detail-meta' }, `${modelSettings(work.model, work.reasoning_effort) || '未知模型'} · ${formatDate(work.created_at)} · ${latency(work.latency_ms)}`), el('h4', {}, '生成提示词'), el('pre', { class: 'helper-gallery-prompt' }, str(work.prompt) || '暂无提示词记录'));
-      } catch (failure) { if (modal && modalSequence === sequence) body.replaceChildren(el('p', { class: 'helper-gallery-error', role: 'alert' }, str(failure?.message || '作品读取失败。'))); }
+        const info = benchmark ? verdictInfo(benchmark) : null;
+        body.replaceChildren(
+          switcher,
+          el('div', { class: 'helper-gallery-large' }, artwork(work, true)),
+          el('div', { class: 'helper-gallery-detail-meta' },
+            info ? el('span', { class: `pill ${info.cls}` }, info.label) : null,
+            el('span', {}, `${modelSettings(work.model, work.reasoning_effort) || '未知模型'} · ${formatDate(work.created_at)} · ${latency(work.latency_ms)}`),
+          ),
+          el('h4', {}, '生成提示词'),
+          el('pre', { class: 'helper-gallery-prompt' }, str(work.prompt) || '暂无提示词记录'),
+        );
+      } catch (failure) { if (modal && modalSequence === sequence) body.replaceChildren(switcher, el('p', { class: 'helper-gallery-error', role: 'alert' }, str(failure?.message || '作品读取失败。'))); }
     }
     function focusSource(value) {
       const id = validGroup(value);

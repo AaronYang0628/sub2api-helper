@@ -73,6 +73,17 @@ class Email(Input):
         return Rule.no_header_injection(value)
 
 
+class EmailTemplate(Input):
+    name: str = Field(min_length=1, max_length=100)
+    subject: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("subject")
+    @classmethod
+    def safe_subject(cls, value):
+        return Rule.no_header_injection(value)
+
+
 class Toggle(Input):
     schedulable: bool
 

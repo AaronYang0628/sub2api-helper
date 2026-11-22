@@ -111,9 +111,28 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
   const html = '<style>@keyframes fly{from{transform:translateX(0)}to{transform:translateX(40px)}}body{background:#ecfeff}.scene{height:100vh;display:grid;place-items:center}#bird{width:70px;height:40px;background:#14b8a6;border-radius:50%;animation:fly .3s linear infinite alternate}</style><main class="scene"><div id="bird"></div></main><script>parent.PWNED=1;fetch("/leak")</script><img src="/leak" onerror="parent.PWNED=2"><img src="/old-asset.png" alt="旧图"><img src="' + corruptInlineImage + '" alt="损坏内嵌图"><picture><source srcset="/old-asset.png"><img id="valid-inline-image" src="' + validInlineImage + '" srcset="/old-asset.png 2x" alt="有效内嵌动图"></picture>';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 240"><rect width="320" height="240" fill="#0f172a"/><circle id="moon" cx="230" cy="60" r="30" fill="#fef3c7"/><path id="boat" d="M60 155L155 120L225 155Z" fill="#14b8a6"/><text x="25" y="210" fill="white">月夜纸船</text></svg>';
   function work(group, n) { return { id: `${group === 1 ? 'html' : group === 2 ? 'svg' : 'failed'}-${n}`, group_id: group, round_id: n ? `past-round-${n}` : 'latest-round', title: group === 1 ? `白鹭单车 ${n + 1}` : group === 2 ? `月夜纸船 ${n + 1}` : '失败作品', model: groups[group - 1].model, status: group === 3 ? 'failed' : 'success', reasoning_effort: groups[group - 1].reasoning_effort, created_at: new Date(fixtureCreatedAt - n * 60000).toISOString(), latency_ms: group === 3 ? null : 1200 + n, kind: 'html', ...(group === 3 ? { error: 'Fixture generation failed.' } : { content: group === 1 ? n === 0 ? html : '<style>body{background:#ccfbf1}</style><h2>静态作品</h2>' : svg }) }; }
-  function feedItem(group, n = 0) {
-    const item = { ...groups[group - 1], status: group === 4 ? 'queued' : group === 3 ? 'failed' : 'success', created_at: new Date(fixtureCreatedAt - n * 60000).toISOString(), round_id: n ? `past-round-${n}` : 'latest-round' };
-    if (group !== 4) { item.work = work(group, n); item.work.preview = item.work.content; delete item.work.content; }
+  function previewWork(group, n) {
+    const item = work(group, n);
+    item.preview = item.content;
+    delete item.content;
+    return item;
+  }
+  const fixtureBenchmarks = {
+    1: { verdict: 'stable', latest: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 920, status: 'ok', created_at: new Date(fixtureCreatedAt).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 940, status: 'ok', created_at: new Date(fixtureCreatedAt - 3600000).toISOString() } },
+    2: { verdict: 'regressed', latest: { passed: 3, graded: 5, total: 5, error_count: 0, latency_ms: 1180, status: 'ok', created_at: new Date(fixtureCreatedAt).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 1100, status: 'ok', created_at: new Date(fixtureCreatedAt - 3600000).toISOString() } },
+    3: { verdict: 'failed', latest: null, previous: null },
+    4: { verdict: 'no_baseline', latest: null, previous: null },
+  };
+  function feedItem(group) {
+    const item = {
+      ...groups[group - 1],
+      status: group === 4 ? 'queued' : group === 3 ? 'failed' : 'success',
+      created_at: new Date(fixtureCreatedAt).toISOString(),
+      round_id: 'latest-round',
+      benchmark: fixtureBenchmarks[group],
+      history: group === 1 ? Array.from({ length: 6 }, (_, n) => previewWork(1, n + 1)) : group === 2 ? Array.from({ length: 3 }, (_, n) => previewWork(2, n + 1)) : [],
+    };
+    if (group !== 4) item.work = previewWork(group, 0);
     return item;
   }
   const server = http.createServer(async (req, res) => {
@@ -147,8 +166,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
         if (fail) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: '示例服务暂时不可用' })); return; }
         const available = empty || noWorks ? [] : onlyFirst ? [1] : [1, 2, 3, 4];
         const latest = available.map(group => feedItem(group));
-        const history = [1, 2].filter(group => available.includes(group)).flatMap(group => Array.from({ length: group === 1 ? 11 : 3 }, (_, n) => feedItem(group, n + 1))).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-        value = { items: [...latest, ...history], next_at: empty ? null : new Date(Date.now() + 3600000).toISOString(), timezone: 'Asia/Shanghai' };
+        value = { items: latest, next_at: empty ? null : new Date(Date.now() + 3600000).toISOString(), timezone: 'Asia/Shanghai' };
       }
       else {
         const match = url.pathname.match(/\/gallery\/(\d+)(?:\/works\/([\w-]+))?$/), group = Number(match?.[1]);
@@ -173,17 +191,21 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor();
     assert.equal(await page.locator('#feature-main h1,.page-head,select,[role="tab"],[role="tablist"]').count(), 0, 'embedded feed has no duplicate title, source picker or tabs');
     assert.equal(await page.locator('.helper-gallery-stat,.helper-gallery-shared-prompt').count(), 0, 'the feed contains works and a next-run line, without summary blocks');
-    assert.equal(await page.locator('.helper-gallery-work').count(), 18, 'latest participants plus bounded recent history are visible together');
-    assert.deepEqual(await page.locator('.helper-gallery-work').evaluateAll(nodes => nodes.slice(0, 4).map(node => node.dataset.groupId)), ['1', '2', '3', '4'], 'latest attempt for every participant is ahead of old history');
-    assert.equal(await page.locator('.helper-gallery-work[data-group-id="1"]').count(), 12);
-    assert.equal(await page.locator('.helper-gallery-work[data-group-id="2"]').count(), 4);
+    assert.equal(await page.locator('.helper-gallery-work').count(), 4, 'compact feed renders one row per participant');
+    assert.deepEqual(await page.locator('.helper-gallery-work').evaluateAll(nodes => nodes.map(node => node.dataset.groupId)), ['2', '3', '1', '4'], 'anomaly-first order places regressed and failed models ahead of stable and no-baseline');
+    assert.equal(await page.locator('.helper-gallery-work[data-group-id="1"] .helper-gallery-thumb-mini').count(), 4, 'history strip caps at 4 thumbnails per model row');
+    assert.equal(await page.locator('.helper-gallery-work[data-group-id="2"] .helper-gallery-thumb-mini').count(), 3);
+    assert((await page.locator('.helper-gallery-work[data-group-id="2"] .helper-gallery-verdict').textContent()).includes('得分下降 · 5/5 → 3/5'));
+    assert((await page.locator('.helper-gallery-work[data-group-id="1"] .helper-gallery-verdict').textContent()).includes('正常 · 5/5'));
     assert((await page.locator('.helper-gallery-work[data-group-id="1"]').first().locator('.helper-gallery-source').textContent()).includes('白鹭单车分组'));
     assert((await page.locator('.helper-gallery-work[data-group-id="1"]').first().locator('.helper-gallery-model').textContent()).includes('思考强度：高'));
-    assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('失败'));
+    assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('检测失败'));
+    assert(!(await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('得分下降'), 'failed generation is never mislabeled as regression');
     assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('fixture-failed'));
     const queued = page.locator('.helper-gallery-work[data-group-id="4"]');
+    assert.match(await queued.textContent(), /暂无基线/);
     assert.match(await queued.textContent(), /等待|排队/);
-    assert.equal(await queued.evaluate(node => node.tagName), 'ARTICLE', 'an intended participant without a work is a non-clickable queued card');
+    assert.equal(await queued.locator('button').count(), 0, 'an intended participant without a work has no clickable thumb button');
     assert.equal(calls.filter(value => value === '/_helper/api/portal/gallery/feed').length, 1, 'initial gallery uses one aggregate feed request');
     assert.equal(calls.filter(value => value.includes('/works/')).length, 0, 'previews do not prefetch private work details');
     assert.equal(calls.filter(value => value === '/_helper/api/portal/gallery' || value.endsWith('/gallery/comparison') || /\/gallery\/\d+$/.test(value)).length, 0, 'flat feed does not fan out into legacy group/comparison reads');
@@ -208,21 +230,25 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click();
     await page.getByRole('dialog', { name: '作品详情', exact: true }).waitFor();
     await page.getByText('生成提示词', { exact: true }).waitFor();
+    assert.equal(await page.locator('.helper-gallery-switcher button').count(), 4, 'detail modal exposes latest plus history switcher');
     assert.equal(await page.locator('.helper-gallery-dialog .helper-gallery-prompt').textContent(), sharedPrompt);
     assert.equal(await page.locator('.helper-gallery-prompt img').count(), 0);
     assert.equal(calls.filter(value => value.endsWith('/works/svg-0')).length, 1);
+    await page.locator('.helper-gallery-switcher button').nth(1).click();
+    await page.waitForFunction(() => document.querySelector('.helper-gallery-dialog .modal-title')?.textContent?.includes('月夜纸船 2'));
+    assert.equal(calls.filter(value => value.endsWith('/works/svg-1')).length, 1, 'history switcher loads previous work on demand');
     const box = await page.locator('.helper-gallery-dialog').boundingBox(); assert(box.width <= 1152 && box.height <= 1012 && box.y >= 0); await page.screenshot({ path: path.join(directory, 'gallery-detail.png'), fullPage: true }); await page.getByRole('button', { name: '关闭', exact: true }).click();
     const beforePoll = calls.filter(value => value === '/_helper/api/portal/gallery/feed').length;
     await page.clock.fastForward(30000); await page.waitForTimeout(100);
     assert(calls.filter(value => value === '/_helper/api/portal/gallery/feed').length > beforePoll, 'one aggregate feed refresh replaces per-group polling');
-    assert.equal(await page.locator('.helper-gallery-work').count(), 18);
+    assert.equal(await page.locator('.helper-gallery-work').count(), 4);
     assert.equal(await artworkHandle.evaluate(node => node.isConnected), true, 'unchanged aggregate refresh preserves iframe animation instead of rebuilding thumbnails');
     await page.setViewportSize({ width: 390, height: 844 }); await page.evaluate(() => document.documentElement.classList.add('dark')); await page.waitForTimeout(350);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'flat feed fits a narrow embedded page');
     await page.screenshot({ path: path.join(directory, 'gallery-mobile-dark.png'), fullPage: true });
     await page.getByRole('button', { name: '查看作品：月夜纸船 1', exact: true }).click(); await page.getByText('生成提示词', { exact: true }).waitFor();
     onlyFirst = true; await page.clock.fastForward(30000);
-    await page.waitForFunction(() => document.querySelectorAll('.helper-gallery-work').length === 12);
+    await page.waitForFunction(() => document.querySelectorAll('.helper-gallery-work').length === 1);
     assert.equal(await page.locator('.helper-gallery-work[data-group-id="2"],.helper-gallery-work[data-group-id="3"],.helper-gallery-work[data-group-id="4"]').count(), 0);
     assert.equal(await page.locator('dialog').count(), 0, 'revoked source closes its stale detail and disappears on feed refresh');
     await page.evaluate(() => document.querySelector('.helper-gallery').parentElement.remove()); const afterDetach = calls.length; await page.clock.fastForward(60000); await page.waitForTimeout(80); assert.equal(calls.length, afterDetach, 'detached view stops timers/requests');
@@ -271,7 +297,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       assert.equal(new URL(directFrame.url()).search, '', 'the actual feature page removes query JWT before API calls');
       const storage = await directFrame.evaluate(() => ['localStorage', 'sessionStorage'].map(name => { try { return window[name].length; } catch (error) { if (error.name === 'SecurityError') return 'blocked'; throw error; } }));
       assert(storage.every(value => value === 0 || value === 'blocked'), 'portal JWT/session stays in memory even when third-party storage is blocked');
-      await menu().locator('.helper-gallery-work').first().click();
+      await menu().locator('.helper-gallery-work .helper-gallery-thumb-primary').first().click();
       await menu().getByText('生成提示词', { exact: true }).waitFor();
       assert.equal(await menu().locator('.helper-gallery-dialog .helper-gallery-prompt').textContent(), 'Fixture immutable executed prompt');
       await menu().getByRole('button', { name: '关闭', exact: true }).click();

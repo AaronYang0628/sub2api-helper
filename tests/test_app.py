@@ -332,6 +332,35 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 422)
         self.assertEqual(self.upstream.model_tokens, [])
 
+    def test_email_templates_crud_and_benchmark_summary_persistence(self):
+        created = self.client.post("/_helper/api/admin/email-templates", json={
+            "name": "维护通知", "subject": "计划维护 {username}", "body": "请知悉 {email}",
+        }, headers=self.auth)
+        self.assertEqual(created.status_code, 200, created.text)
+        tid = created.json()["id"]
+        listed = self.client.get("/_helper/api/admin/email-templates", headers=self.auth).json()
+        self.assertEqual([t["id"] for t in listed], [tid])
+        updated = self.client.put(f"/_helper/api/admin/email-templates/{tid}", json={
+            "name": "紧急通知", "subject": "更新主题", "body": "更新正文",
+        }, headers=self.auth)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["name"], "紧急通知")
+        self.assertEqual(self.client.delete(f"/_helper/api/admin/email-templates/{tid}", headers=self.auth).status_code, 200)
+        self.assertEqual(self.client.get("/_helper/api/admin/email-templates", headers=self.auth).json(), [])
+        # Benchmark run recording keeps minimal summary only (no key/prompts/answers) and prunes to 20
+        for idx in range(22):
+            self.store.record_benchmark_run(
+                group_id=3, model="gpt-5", api_format="responses",
+                passed=4 if idx < 21 else 2, graded=5, total=5, error_count=0, latency_ms=120, status="ok",
+            )
+        count = self.store._db.execute(
+            "SELECT COUNT(*) FROM benchmark_runs WHERE group_id=? AND model=?", (3, "gpt-5")
+        ).fetchone()[0]
+        self.assertEqual(count, 20)
+        summary = self.store.benchmark_summaries([3])[(3, "gpt-5")]
+        self.assertEqual(len(summary["graded"]), 2)
+        self.assertEqual((summary["graded"][0]["passed"], summary["graded"][1]["passed"]), (2, 4))
+
 
 class SchedulerConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_schedule_edit_waits_for_an_inflight_reconciliation(self):

@@ -24,7 +24,8 @@
 .helper-benchmark-gallery { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,16rem),1fr)); align-items: start; gap: 1rem; margin-top: 1rem; }
 .helper-benchmark-media { overflow: hidden; border: 1px solid #e5e7eb; border-radius: .75rem; padding: .75rem; min-width: 0; }
 .dark .helper-benchmark-media { border-color: #334155; }
-.helper-benchmark-image img { display: block; width: auto; max-width: 100%; height: auto; max-height: 32rem; margin: 0 auto; }
+.helper-benchmark-image img { display: block; width: auto; max-width: 100%; height: auto; max-height: 12rem; margin: 0 auto; cursor: zoom-in; }
+.helper-benchmark-image.is-expanded img { max-height: none; cursor: zoom-out; }
 .helper-benchmark-media figcaption { margin-top: .5rem; font-size: .75rem; line-height: 1.5; color: #64748b; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dark .helper-benchmark-media figcaption { color: #94a3b8; }
 .helper-benchmark-format { display: inline-block; margin-left: .5rem; font-size: .625rem; }

@@ -51,7 +51,7 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     page.on('pageerror', error => errors.push(error.message)); page.on('console', value => { if (value.type() === 'error' && !/Failed to load resource/.test(value.text())) errors.push(value.text()); }); page.on('dialog', value => value.accept());
     let remoteCalls = 0;
     await page.route('https://media.example.invalid/**', async route => { remoteCalls++; assert.equal(route.request().headers().referer, undefined); assert.equal(route.request().headers().authorization, undefined); await route.fulfill({ contentType: 'image/gif', body: gif, headers: { 'Cache-Control': 'no-store' } }); });
-    await page.addInitScript(() => sessionStorage.setItem('helper_session', 'fixture-opaque-session'));
+    await page.addInitScript(() => sessionStorage.setItem('helper_setup_session', 'fixture-opaque-session'));
     await page.goto(origin + '/_helper/setup#analytics'); await page.getByText('固定题自检', { exact: true }).click();
     const quiz = page.locator('.benchmark-form');
     await quiz.locator('[name=model]').fill('my-model'); await quiz.locator('[name=group_id]').selectOption('2'); await quiz.locator('[name=api_format]').selectOption('responses');
@@ -61,6 +61,10 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     assert.equal(await page.locator('.helper-benchmark-results script,.helper-benchmark-results iframe,.helper-benchmark-results svg,.helper-benchmark-results a,.helper-benchmark-results object').count(), 0);
     assert.equal(await page.evaluate(() => window.PWNED), undefined); assert((await page.locator('.helper-benchmark-text').first().textContent()).includes('<img'));
     const embedded = page.locator('.helper-benchmark-results img'); assert.equal(await embedded.count(), 2); await page.waitForFunction(() => [...document.querySelectorAll('.helper-benchmark-results img')].some(img => img.src.startsWith('data:image/png') && img.naturalWidth === 2));
+    assert.equal(await embedded.first().evaluate(node => getComputedStyle(node).maxHeight), '192px', 'benchmark images default to compact 12rem max-height');
+    await embedded.first().click();
+    assert.equal(await embedded.first().evaluate(node => getComputedStyle(node).maxHeight), 'none', 'clicking benchmark image expands full height');
+    await embedded.first().click();
     const gifImage = page.locator('img[alt="两帧循环动图"]'); await gifImage.scrollIntoViewIfNeeded(); await page.waitForFunction(() => document.querySelector('img[alt="两帧循环动图"]').naturalWidth === 1);
     assert.equal(await gifImage.getAttribute('src'), gifURI, 'GIF remains the original animated image, never flattened');
     await page.getByText('已忽略 2 项不支持或超出限制的媒体内容。仅展示 PNG、JPEG、WebP、GIF 及无 URL 凭据的 HTTPS 图片。', { exact: true }).waitFor();
@@ -69,7 +73,7 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     assert.equal(await page.locator('.helper-benchmark-remote img').getAttribute('referrerpolicy'), 'no-referrer'); assert.equal(await page.locator('.helper-benchmark-remote img').getAttribute('crossorigin'), null);
     await page.screenshot({ path: path.join(directory, 'mixed-results.png'), fullPage: true });
     await page.getByRole('button', { name: '返回配置', exact: true }).click(); assert.equal(await quiz.isVisible(), true); assert.equal(await quiz.locator('[name=model]').inputValue(), 'my-model'); assert.equal(await quiz.locator('[name=group_id]').inputValue(), '2'); assert.equal(await quiz.locator('[name=key_id]').inputValue(), '20'); assert.equal(await quiz.locator('[name=api_format]').inputValue(), 'responses'); assert.equal(await page.locator('.helper-benchmark-results').count(), 0);
-    assert.equal(new URL(page.url()).search, ''); assert.deepEqual(await page.evaluate(() => [Object.keys(localStorage), Object.keys(sessionStorage)]), [[], ['helper_session']], 'only the login session is stored');
+    assert.equal(new URL(page.url()).search, ''); assert.deepEqual(await page.evaluate(() => [Object.keys(localStorage), Object.keys(sessionStorage)]), [[], ['helper_setup_session']], 'only the login session is stored');
     assert.deepEqual(posts.find(value => value.path.endsWith('/benchmark')).body, { model: 'my-model', key_id: 20, group_id: 2, api_format: 'responses' });
     await page.goto(origin + '/renderer'); await page.waitForFunction(() => typeof helperBenchmarkResults === 'function');
     await page.evaluate(data => document.getElementById('result').replaceChildren(helperBenchmarkResults(data)), { total: 1, completed: 1, results: [{ question: '媒体题', answer: '', scored: false, passed: false, media: [{ src: gifURI, mime: 'image/gif' }] }] });

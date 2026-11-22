@@ -12,9 +12,10 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'helper-console-ui-'));
   let publicOrigin = 'https://api.example.test', syncedOrigin = publicOrigin;
   let modules = { benchmark: true, pricing: false, ranking: true };
-  let rejectSave = false, rejectSync = false;
+  let rejectSave = false, rejectSync = false, unverified = false;
   let schedules = [];
   let rules = [{ id: '1', name: '旧闲置提醒规则', days: 30, subject: '账户长期未使用提醒', body: '您好 {username}', disable_after_email: false, enabled: false }];
+  let emailTemplates = [];
   let automations = [
     { id: '1', name: '旧订阅倍率规则', type: 'subscription_multiplier', timezone: 'Europe/London', enabled: false, group_id: 88, expires_within_days: 2, remaining_fraction_gt: 0.5, quota_period: 'month', multiplier: 0.5, scope: 'user_group', restore_on_exit: false },
     { id: '2', name: '旧月度奖励规则', type: 'monthly_rewards', timezone: 'Europe/London', enabled: false, mode: 'approval', rewards: [{ rank: 1, amount: 50 }, { rank: 2, amount: 30 }, { rank: 3, amount: 10 }] }
@@ -32,8 +33,11 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
       let result = {}, code = 200;
       const route = url.pathname.slice('/_helper/api/admin'.length);
       if (route.startsWith('/analytics/')) { pendingMetrics.push(res); return; }
-      if (route === '/connection') result = { upstream_url: 'https://api.example.test', public_url: publicOrigin };
-      else if (route === '/status') result = { upstream_url: 'https://api.example.test', public_url: publicOrigin, timezone: 'America/New_York', mail_configured: true, version: 'fixture', engine: { running: true } };
+      if (route === '/connection') result = { configured: true, upstream_url: 'https://api.example.test', public_url: publicOrigin };
+      else if (route === '/status') {
+        if (unverified) { code = 401; result = { detail: '未授权' }; }
+        else result = { upstream_url: 'https://api.example.test', public_url: publicOrigin, timezone: 'America/New_York', mail_configured: true, version: 'fixture', engine: { running: true } };
+      }
       else if (route === '/modules') { if (req.method === 'PUT') { modules = body; syncedOrigin = publicOrigin; } result = modules; }
       else if (route === '/menu-settings') { if (req.method === 'PUT') { if (rejectSave) { code = 422; result = { detail: '此地址不能供用户访问' }; } else publicOrigin = body.public_origin; } if (code === 200) result = settings(); }
       else if (route === '/menu-settings/sync') { if (rejectSync) { code = 502; result = { detail: '上游菜单回读不一致' }; } else { const changed = syncedOrigin !== publicOrigin; syncedOrigin = publicOrigin; result = { ...settings(), sync_status: 'verified', changed }; } }
@@ -47,6 +51,12 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
       ];
       else if (route === '/gallery') result = { groups: [], timezone: 'Asia/Shanghai' };
       else if (route === '/benchmark/options') result = { keys: [] };
+      else if (route === '/email-templates' || route.startsWith('/email-templates/')) {
+        if (req.method === 'GET') result = emailTemplates;
+        else if (req.method === 'POST') { const created = { id: String(emailTemplates.length + 1), ...body }; emailTemplates.push(created); result = created; }
+        else if (req.method === 'PUT') { const id = route.split('/')[2]; const idx = emailTemplates.findIndex(t => String(t.id) === id); emailTemplates[idx] = { ...emailTemplates[idx], ...body, id }; result = emailTemplates[idx]; }
+        else if (req.method === 'DELETE') { const id = route.split('/')[2]; emailTemplates = emailTemplates.filter(t => String(t.id) !== id); result = { ok: true }; }
+      }
       else if (route === '/schedules' || route.startsWith('/schedules/')) {
         if (req.method === 'GET') result = schedules;
         else if (req.method === 'POST') { const created = { id: String(schedules.length + 1), ...body }; schedules.push(created); result = created; }
@@ -93,9 +103,15 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     page.on('response', response => { if (response.url().includes('/_helper/static/')) resources.push({ status: response.status(), url: response.url() }); });
     page.on('request', request => assert.equal(new URL(request.url()).origin, origin, 'console assets never request placeholder/external images'));
     page.on('dialog', dialog => dialog.accept());
-    await page.addInitScript(() => sessionStorage.setItem('helper_session', 'fixture-only'));
+    await page.addInitScript(() => {
+      sessionStorage.setItem('helper_setup_session', 'fixture-only');
+      sessionStorage.setItem('helper_native_console_session', 'fixture-native-only');
+    });
     await page.goto(origin + '/_helper/setup#modules');
     await page.getByText('上游菜单与已保存的配置一致。', { exact: true }).waitFor();
+    assert.deepEqual(await page.locator('#navigation .nav-item').evaluateAll(nodes => nodes.map(n => n.textContent.trim())), ['规则', '功能与菜单', '智商检测', '运行与系统'], 'setup navigation consolidates to 4 tabs');
+    assert.equal(await page.locator('#connection-summary').isVisible(), true, 'connected setup shows compact connection summary bar');
+    assert.equal(await page.locator('#connection-form').isVisible(), false, 'connected setup hides credential input form by default');
     const switches = page.locator('.module-bottom .helper-switch');
     assert.equal(await switches.count(), 3);
     const measureSwitches = async () => {
@@ -134,49 +150,59 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     await page.getByRole('button', { name: '关闭通知', exact: true }).click();
     for (const width of [390, 320]) { await page.setViewportSize({ width, height: 844 }); await measureSwitches(); assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no page-wide overflow at narrow widths'); await page.locator('.module-card').last().scrollIntoViewIfNeeded(); await page.getByRole('link', { name: '功能与菜单', exact: true }).scrollIntoViewIfNeeded(); assert.equal(await page.getByRole('link', { name: '功能与菜单', exact: true }).getAttribute('aria-current'), 'page'); }
     await page.evaluate(() => document.documentElement.classList.add('dark')); await page.waitForTimeout(350); assert.equal(await page.locator('.module-card').first().evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(30, 41, 59, 0.5)'); await page.screenshot({ path: path.join(directory, 'modules-mobile-dark.png'), fullPage: true });
-    await page.goto(origin + '/_helper/setup#accounts'); await page.getByRole('heading', { name: '账号管理', exact: true }).waitFor();
+    await page.goto(origin + '/_helper/setup#accounts'); await page.getByRole('heading', { name: '账号管理（备用入口）', exact: true }).waitFor();
     const tableStyle = await page.locator('th').first().evaluate(node => { const s = getComputedStyle(node); return { font: s.fontSize, line: s.lineHeight, x: s.paddingLeft, y: s.paddingTop }; });
     assert.deepEqual(tableStyle, { font: '14px', line: '20px', x: '20px', y: '16px' }, 'native TablePageLayout.vue admin cell typography and spacing');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    await page.goto(origin + '/_helper/setup#schedules'); await page.getByRole('button', { name: '新建调度', exact: true }).click();
+    const schedulesSection = page.locator('#rules-schedules');
+    const usersSection = page.locator('#rules-users');
+    const automationsSection = page.locator('#rules-automations');
+    await page.goto(origin + '/_helper/setup#schedules'); await schedulesSection.getByRole('button', { name: /新建调度/ }).click();
     const dialog = page.locator('#editor'); await dialog.waitFor(); const modalPadding = await dialog.locator('.dialog-header').evaluate(node => getComputedStyle(node).paddingLeft); assert.equal(modalPadding, '16px'); assert.equal(await dialog.locator('h2').evaluate(node => getComputedStyle(node).fontSize), '18px');
     assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false, 'schedule more-settings collapsed by default');
     await dialog.locator('input[name="account_ids"][value="1"]').check();
     assert.equal(await dialog.locator('[data-schedule-summary]').textContent(), '跨夜免费额度账号 每天 23:00 开启、次日 09:00 关闭（America/New_York）');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
-    await page.getByText('跨夜免费额度账号 23:00-09:00', { exact: true }).waitFor();
+    await schedulesSection.getByText('跨夜免费额度账号 23:00-09:00', { exact: true }).waitFor();
     assert.deepEqual(schedules[0], { id: '1', name: '跨夜免费额度账号 23:00-09:00', start: '23:00', end: '09:00', timezone: 'America/New_York', account_ids: [1], weekdays: [0, 1, 2, 3, 4, 5, 6], enabled: true }, 'new schedule uses configured default timezone');
     schedules[0] = { id: '1', name: '旧自定义跨夜计划', start: '23:00', end: '09:00', timezone: 'Europe/London', account_ids: [1, 99], weekdays: [0, 2, 4], enabled: true };
     await page.reload();
-    await page.getByText('旧自定义跨夜计划', { exact: true }).waitFor();
-    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await schedulesSection.getByText('旧自定义跨夜计划', { exact: true }).waitFor();
+    await schedulesSection.getByRole('button', { name: '编辑', exact: true }).click();
     await dialog.locator('[data-schedule-summary]').waitFor();
     assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false, 'legacy schedule edit keeps more-settings collapsed');
     assert.equal(await dialog.locator('[data-schedule-summary]').textContent(), '跨夜免费额度账号 等 2 个账号 周一、周三、周五 23:00 开启、次日 09:00 关闭（Europe/London）');
     await dialog.locator('input[name="end"]').fill('08:30');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
-    await page.getByText('旧自定义跨夜计划', { exact: true }).waitFor();
+    await schedulesSection.getByText('旧自定义跨夜计划', { exact: true }).waitFor();
     assert.deepEqual(schedules[0], { id: '1', name: '旧自定义跨夜计划', start: '23:00', end: '08:30', timezone: 'Europe/London', account_ids: [1, 99], weekdays: [0, 2, 4], enabled: true }, 'collapsed save preserves legacy name, weekdays, third timezone, and unreturned account_id');
-    await page.locator('table .helper-switch input').first().uncheck();
+    await schedulesSection.locator('table .helper-switch input').first().uncheck();
     await page.getByText('规则已暂停', { exact: true }).waitFor();
     assert.equal(schedules[0].enabled, false);
-    await page.locator('table .helper-switch input').first().check();
+    await schedulesSection.locator('table .helper-switch input').first().check();
     await page.getByText('规则已启用', { exact: true }).waitFor();
     assert.equal(schedules[0].enabled, true);
 
-    await page.goto(origin + '/_helper/setup#rules'); await page.getByText('旧闲置提醒规则', { exact: true }).waitFor();
-    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.goto(origin + '/_helper/setup#rules'); await usersSection.getByText('旧闲置提醒规则', { exact: true }).waitFor();
+    await usersSection.getByRole('button', { name: '编辑', exact: true }).first().click();
     assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false);
     await dialog.locator('input[name="days"]').fill('45');
     await dialog.locator('input[name="disable_after_email"]').check();
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
-    await page.getByText('超过 45 天未使用', { exact: true }).waitFor();
+    await usersSection.getByText('超过 45 天未使用', { exact: true }).waitFor();
     assert.equal(rules[0].name, '旧闲置提醒规则');
     assert.equal(rules[0].days, 45);
     assert.equal(rules[0].disable_after_email, true);
+    await usersSection.getByRole('button', { name: '新建邮件模板', exact: true }).click();
+    await dialog.locator('input[name="name"]').fill('节假日维护模板');
+    await dialog.locator('input[name="subject"]').fill('维护通知 · {username}');
+    await dialog.locator('textarea[name="body"]').fill('您好 {username}，系统将在晚间维护。');
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await usersSection.getByText('节假日维护模板', { exact: true }).waitFor();
+    assert.equal(emailTemplates.length, 1);
 
-    await page.goto(origin + '/_helper/setup#automations'); await page.getByText('旧订阅倍率规则', { exact: true }).waitFor();
-    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    await page.goto(origin + '/_helper/setup#automations'); await automationsSection.getByText('旧订阅倍率规则', { exact: true }).waitFor();
+    await automationsSection.getByRole('button', { name: '编辑', exact: true }).first().click();
     assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false);
     await dialog.locator('input[name="multiplier"]').fill('0.4');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
@@ -187,7 +213,7 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     assert.equal(automations[0].restore_on_exit, false);
     assert.equal(automations[0].multiplier, 0.4);
     const previewCallsBefore = writes.filter(w => w.path.endsWith('/preview')).length;
-    await page.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
+    await automationsSection.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
     assert.equal(await dialog.locator('details.more-settings').evaluate(node => node.open), false);
     assert.equal(writes.filter(w => w.path.endsWith('/preview')).length, previewCallsBefore, 'opening monthly rewards editor does not auto-request preview');
     await dialog.getByRole('button', { name: '加载预览', exact: true }).click();
@@ -199,12 +225,12 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     assert.equal(await dialog.locator('[data-preview-stale]').textContent(), '规则参数已修改，请保存后重新预览。');
     assert.equal(writes.filter(w => w.path.endsWith('/run')).length, 0, 'preview and edit never call execute endpoint');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
-    await page.getByText(/第 1 名 \$80/).waitFor();
+    await automationsSection.getByText(/第 1 名 \$80/).waitFor();
     assert.equal(automations[1].name, '旧月度奖励规则');
     assert.equal(automations[1].timezone, 'Europe/London');
     assert.equal(automations[1].rewards[0].amount, 80);
     // Verify in-flight preview response is ignored if parameters are edited before it returns
-    await page.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
+    await automationsSection.getByRole('button', { name: '编辑', exact: true }).nth(1).click();
     delayPreviewMs = 200;
     await dialog.getByRole('button', { name: '加载预览', exact: true }).click();
     await dialog.getByText('正在加载已保存规则的执行预览…', { exact: true }).waitFor();
@@ -215,17 +241,21 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     assert.equal(await dialog.locator('[data-automation-inline-preview] table').count(), 0, 'late in-flight preview response is ignored after parameter edit');
     assert.equal(writes.filter(w => w.path.endsWith('/run')).length, 0, 'no execute endpoint called during in-flight preview cancellation');
     await dialog.getByRole('button', { name: '取消', exact: true }).click();
-    await page.getByRole('button', { name: '新建规则', exact: true }).click();
+    await automationsSection.getByRole('button', { name: /新建自动化/ }).click();
     await dialog.locator('select[name="group_id"]').selectOption('2');
     await dialog.locator('input[name="multiplier"]').fill('0.75');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await page.getByText('自动化规则已保存', { exact: true }).waitFor();
     assert.equal(automations[2].timezone, 'America/New_York', 'new automation uses configured default timezone');
     assert(automations[2].name.length <= 100 && automations[2].name.endsWith('到期倍率 0.75x'), `auto-generated name respects 100-char limit: len=${automations[2].name.length}`);
-    await page.getByRole('button', { name: '预览 / 执行', exact: true }).nth(1).click();
+    await automationsSection.getByRole('button', { name: '预览 / 执行', exact: true }).nth(1).click();
     await dialog.getByText('规则预览 · 旧月度奖励规则', { exact: true }).waitFor();
     await dialog.getByRole('button', { name: '关闭', exact: true }).first().click();
-    await page.goto(origin + '/_helper/setup#analytics'); await page.getByRole('heading', { name: '统计与检测', exact: true }).waitFor(); await page.locator('.helper-gallery-admin-catalog').waitFor(); assert.equal(await page.getByText('正在读取统计数据…', { exact: true }).count(), 2, 'slow optional metrics do not block gallery mount');
+    await page.goto(origin + '/_helper/setup#analytics'); await page.getByRole('heading', { name: '智商检测', exact: true }).waitFor(); await page.locator('.helper-gallery-admin-catalog').waitFor();
+    assert.equal(pendingMetrics.length, 0, 'secondary cost/ranking metrics stay lazy until expanded');
+    await page.getByText('费用与用量统计（模型维度费用 · 用户用量排名）', { exact: true }).click();
+    await page.getByText('正在读取统计数据…', { exact: true }).first().waitFor();
+    assert.equal(await page.getByText('正在读取统计数据…', { exact: true }).count(), 2, 'slow optional metrics do not block gallery mount');
     await page.waitForFunction(() => document.querySelectorAll('.helper-gallery-admin-catalog').length === 1);
     for (const response of pendingMetrics.splice(0)) { response.writeHead(403, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ detail: '此统计暂不可用' })); }
     await page.getByText('此统计暂不可用', { exact: true }).first().waitFor(); assert.equal(await page.locator('.helper-gallery-admin-catalog').count(), 1, 'denied metrics keep gallery available');
@@ -251,6 +281,13 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     assert(Math.abs(zoomed - nativeZoomed / 2) < 1, `browser zoom keeps iframe CSS controls at native rem sizes: iframe=${zoomed}, native=${nativeZoomed}`);
     assert.equal(await embedded.locator('.helper-switch').first().locator('span').last().evaluate(node => getComputedStyle(node).whiteSpace), 'nowrap');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); await page.screenshot({ path: path.join(directory, 'modules-iframe-zoom.png'), fullPage: true });
+    unverified = true;
+    await page.evaluate(() => { document.body.style.zoom = ''; sessionStorage.removeItem('helper_setup_session'); });
+    await page.goto(origin + '/_helper/setup#rules');
+    await page.getByText('已绑定 · 待验证', { exact: true }).first().waitFor();
+    assert.equal(await page.locator('#connection-url').evaluate(node => node.readOnly), true, 'bound-unverified locks URL input');
+    assert.equal(await page.locator('#connect').textContent(), '验证管理员身份');
+    unverified = false;
     assert(resources.length >= 9 && resources.every(item => item.status === 200)); assert.deepEqual(errors, []);
     assert(writes.some(item => item.path.endsWith('/menu-settings') && item.method === 'PUT')); assert(writes.some(item => item.path.endsWith('/menu-settings/sync')));
     console.log(JSON.stringify({ passed: true, screenshots: directory, nativeButton: reference, nativeInput, tableStyle, checks: ['horizontal switches at320/390', 'native iframe typography and zoom', 'table and modal metrics', 'local SVG assets', 'origin draft/save/autodetect', 'explicit verified sync/errors', 'slow or denied metrics never block gallery', 'native controls remain interactive'] }, null, 2));

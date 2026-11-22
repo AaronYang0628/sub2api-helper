@@ -11,7 +11,12 @@
   const TABLE = '.table-page-layout .table-scroll-container';
   const BUTTON = 'helper-native-action shrink-0 whitespace-nowrap flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400';
   const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-  const ADVANCED = { automations: '自动化规则', rules: '闲置提醒', modules: '功能菜单', analytics: '统计检测', audit: '执行记录', compatibility: '兼容性' };
+  const CONSOLE_SESSION_KEY = 'helper_native_console_session';
+  const ADVANCED = { rules: '规则管理', modules: '功能与菜单', analytics: '智商检测', system: '运行与系统' };
+  const DEFAULT_TEMPLATES = [
+    { id: 'builtin:inactive', name: '长期未使用提醒', subject: '账户长期未使用提醒', body: '您好 {username}，您的账户近期未使用，请及时登录查看。如有疑问请联系管理员。', builtin: true },
+    { id: 'builtin:maintenance', name: '服务维护通知', subject: '服务维护通知', body: '您好 {username}，服务将进行维护，请留意管理员后续通知。', builtin: true },
+  ];
   const state = { key: '', phase: 'idle', status: {}, error: '', scheduled: false, dialog: null, generation: 0, observedToken: undefined };
   const paths = {
     clock: 'M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z',
@@ -74,7 +79,7 @@
       throw error;
     } finally { clearTimeout(timer); }
   }
-  function clearConsoleSession() { try { sessionStorage.removeItem('helper_session'); } catch (_) { /* Storage may be unavailable. */ } }
+  function clearConsoleSession() { try { sessionStorage.removeItem(CONSOLE_SESSION_KEY); } catch (_) { /* Storage may be unavailable. */ } }
   function revokeNativeSession(credential) {
     // Logout remains entirely upstream-owned. This separate request only
     // invalidates Helper sessions associated with the previously observed JWT.
@@ -119,7 +124,7 @@
         const result = await request('/session', 'POST', {});
         if (!view.current()) return;
         if (typeof result.session !== 'string' || !result.session) throw new Error('助手未返回有效会话。');
-        try { sessionStorage.setItem('helper_session', result.session); } catch (_) { throw new Error('浏览器阻止保存助手会话，暂时无法打开高级功能。'); }
+        try { sessionStorage.setItem(CONSOLE_SESSION_KEY, result.session); } catch (_) { throw new Error('浏览器阻止保存助手会话，暂时无法打开高级功能。'); }
         const route = select.value;
         const panel = openDialog(ADVANCED[route], true);
         const url = new URL('/_helper/console', location.origin);
@@ -131,6 +136,20 @@
     });
     return element('details', { class: 'helper-native-advanced' }, element('summary', {}, '高级功能'), element('div', { class: 'helper-native-advanced-row' }, select, open), feedback);
   }
+  function formatWeekdays(weekdays) {
+    const list = Array.isArray(weekdays) ? weekdays : [];
+    return list.length === 7 ? '每天' : list.length ? list.map(n => DAYS[n]).filter(Boolean).join('、') : '未选择星期';
+  }
+  function formatScheduleWindow(start, end, tz, weekdays) {
+    const overnight = end && start && end < start;
+    return `${formatWeekdays(weekdays)} ${start || '23:00'} 开启、${overnight ? '次日 ' : ''}${end || '09:00'} 关闭（${tz}）`;
+  }
+  function renderEmailTemplate(text, user) {
+    return String(text || '')
+      .replaceAll('{username}', user.username || user.email || '')
+      .replaceAll('{email}', user.email || '')
+      .replaceAll('{last_used_at}', user.last_used_at || '暂无记录');
+  }
   async function accountDialog(id) {
     const view = openDialog('账号定时调度');
     try {
@@ -141,21 +160,48 @@
       view.heading.textContent = `账号定时 · ${data.account_name || `#${id}`}`;
       const readOnly = data.read_only === true || !!data.conflict;
       const defaultZone = state.status.timezone || 'Asia/Shanghai';
-      const allDay = input('mode', 'all_day', 'radio', { checked: data.mode !== 'window', disabled: readOnly });
+      const availableSchedules = Array.isArray(data.available_schedules) ? data.available_schedules : [];
+      const enabledSchedules = availableSchedules.filter(item => item && item.enabled);
+      const shared = data.shared_schedule && typeof data.shared_schedule === 'object' ? data.shared_schedule : null;
+      const useRule = input('mode', 'rule', 'radio', { checked: data.mode === 'rule', disabled: readOnly || !enabledSchedules.length });
       const windowed = input('mode', 'window', 'radio', { checked: data.mode === 'window', disabled: readOnly });
+      const allDay = input('mode', 'all_day', 'radio', { checked: data.mode !== 'window' && data.mode !== 'rule', disabled: readOnly });
+      const ruleSelect = element('select', { class: 'input', name: 'schedule_id', 'aria-label': '已有时段规则' },
+        availableSchedules.length
+          ? availableSchedules.map(item => element('option', {
+            value: String(item.id),
+            disabled: !item.enabled,
+            selected: shared ? item.id === shared.id : (enabledSchedules[0] && item.id === enabledSchedules[0].id),
+          }, `${item.name}（${item.start}–${item.end}${item.enabled ? '' : ' · 未启用'}）`))
+          : [element('option', { value: '', disabled: true, selected: true }, '暂无可用时段规则')]);
+      const rulePreview = element('p', { class: 'helper-native-summary', 'data-helper-rule-preview': 'true', role: 'status' });
       const start = input('start', data.start || '23:00', 'time', { required: true });
       const end = input('end', data.end || '09:00', 'time', { required: true });
       const ruleName = input('name', typeof data.name === 'string' ? data.name : '', 'text', { maxlength: 100, placeholder: `账号 #${id} 定时调度` });
       const zone = input('timezone', data.timezone || defaultZone, 'text', { required: true });
       const weekdays = element('div', { class: 'helper-native-weekdays' }, DAYS.map((day, n) => element('label', {}, input('weekdays', String(n), 'checkbox', { checked: (data.weekdays || [0, 1, 2, 3, 4, 5, 6]).includes(n) }), day)));
       const summary = element('p', { class: 'helper-native-summary', 'data-helper-schedule-summary': 'true', role: 'status' });
+      const allDayPreview = element('p', { class: 'helper-native-summary', 'data-helper-allday-preview': 'true', role: 'status' });
+      const updateRulePreview = () => {
+        const chosen = availableSchedules.find(item => String(item.id) === ruleSelect.value && item.enabled);
+        if (!chosen) {
+          rulePreview.textContent = '暂无已启用的时段规则，请先在「高级功能 → 规则管理」中创建并启用。';
+          return;
+        }
+        const actionText = chosen.in_window_now ? '开启调度' : '关闭调度';
+        rulePreview.textContent = `预览：将 ${accountLabel}（#${id}）加入「${chosen.name}」（${formatScheduleWindow(chosen.start, chosen.end, chosen.timezone || defaultZone, chosen.weekdays)}，当前共 ${chosen.account_count || 0} 个账号），保存后当前将设为${actionText}。不会修改规则内的其他账号。`;
+      };
       const updateSummary = () => {
         const selectedDays = [...weekdays.querySelectorAll('input:checked')].map(control => Number(control.value));
-        const dayText = selectedDays.length === 7 ? '每天' : selectedDays.length ? selectedDays.map(n => DAYS[n]).join('、') : '未选择星期';
-        const overnight = end.value && start.value && end.value < start.value;
         const tz = zone.value.trim() || defaultZone;
-        summary.textContent = `${accountLabel} ${dayText} ${start.value || '23:00'} 开启、${overnight ? '次日 ' : ''}${end.value || '09:00'} 关闭（${tz}）`;
+        summary.textContent = `${accountLabel} ${formatScheduleWindow(start.value || '23:00', end.value || '09:00', tz, selectedDays)}`;
       };
+      const updateAllDayPreview = () => {
+        allDayPreview.textContent = `预览：保存后将把 ${accountLabel}（#${id}）设为开启调度${data.managed ? '，并移除本账号的独立定时计划' : ''}。`;
+      };
+      const ruleFields = element('div', { class: 'helper-native-window' },
+        field('选择已有时段规则', ruleSelect, '规则在助手「规则管理」中统一维护；仅启用状态的规则可直接应用。'),
+        rulePreview);
       const moreSettings = element('details', { class: 'helper-native-more' },
         element('summary', {}, '更多设置'),
         element('div', { class: 'helper-native-more-body' },
@@ -171,24 +217,67 @@
       const formId = 'helper-native-account-form';
       const submit = element('button', { type: 'submit', form: formId, class: 'btn btn-primary', disabled: readOnly }, '保存设置');
       const form = element('form', { id: formId, class: 'helper-native-form' });
+      let sharedCard = null;
+      if (shared) {
+        const otherCount = Number(shared.other_account_count) || 0;
+        const removePreview = otherCount > 0
+          ? `移出预览：仅把 ${accountLabel}（#${id}）从「${shared.name}」移出并设为开启调度，其余 ${otherCount} 个账号保持不变。`
+          : `移出预览：将把 ${accountLabel}（#${id}）从「${shared.name}」移出并设为开启调度；移除后该规则将自动停用。`;
+        const removeButton = button('仅将此账号移出规则并改为全天', async () => {
+          removeButton.disabled = true; feedback.hidden = true;
+          try {
+            await request(`/accounts/${id}/schedule`, 'PUT', { mode: 'all_day', remove_from_schedule_id: shared.id });
+            if (!view.current()) return;
+            view.body.replaceChildren(message(`已将 ${accountLabel} 从「${shared.name}」移出并设为全天运行。原生列表将在下次刷新时同步。`, 'success'));
+            view.footer.replaceChildren(advancedControls(view), button('关闭', closeDialog));
+          } catch (error) {
+            if (view.current()) { feedback.textContent = errorMessage(error); feedback.hidden = false; removeButton.disabled = false; }
+          }
+        }, 'btn btn-secondary btn-sm');
+        sharedCard = element('div', { class: 'helper-native-shared', 'data-helper-shared-schedule': String(shared.id) },
+          element('div', { class: 'helper-native-shared-title' }, `当前所属规则：${shared.name}`),
+          message(`规则时段：${formatScheduleWindow(shared.start, shared.end, shared.timezone || defaultZone, shared.weekdays)}（当前${shared.in_window_now ? '处于开启时段' : '处于关闭时段'}）。`),
+          message(`为避免影响同一规则下的其他账号，此处不直接修改该规则。${removePreview}`),
+          element('div', { class: 'helper-native-shared-actions' }, removeButton));
+      }
       const updateMode = () => {
+        ruleFields.hidden = !useRule.checked;
         windowFields.hidden = !windowed.checked;
+        allDayPreview.hidden = readOnly || !allDay.checked;
+        ruleSelect.disabled = readOnly || !useRule.checked || !enabledSchedules.length;
         for (const control of windowFields.querySelectorAll('input')) control.disabled = readOnly || !windowed.checked;
-        updateSummary();
+        submit.disabled = readOnly || (useRule.checked && !enabledSchedules.length);
+        updateRulePreview(); updateSummary(); updateAllDayPreview();
       };
-      allDay.addEventListener('change', updateMode); windowed.addEventListener('change', updateMode);
+      useRule.addEventListener('change', updateMode); allDay.addEventListener('change', updateMode); windowed.addEventListener('change', updateMode);
+      ruleSelect.addEventListener('change', updateRulePreview);
       start.addEventListener('input', updateSummary); end.addEventListener('input', updateSummary);
       zone.addEventListener('input', updateSummary); weekdays.addEventListener('change', updateSummary);
       updateMode();
       form.append(...[message(`账号 #${id} · 当前参与调度：${data.schedulable ? '开启' : '关闭'}。打开窗口不会改变当前状态。`),
         data.conflict ? message(data.conflict, 'warning') : null,
+        sharedCard,
         data.last_error ? message(`最近执行错误：${data.last_error}，请检查执行记录。`, 'warning') : null,
-        element('div', { class: 'helper-native-mode' }, element('label', {}, allDay, data.managed ? '全天运行' : '全天（未接管）'), element('label', {}, windowed, '按时段调度')),
-        message('全天模式默认不创建定时计划，保留原生手动开关。只有明确保存时，才会开启参与调度并移除本账号由助手接管的定时计划。'), windowFields, feedback].filter(Boolean));
+        element('div', { class: 'helper-native-mode' },
+          element('label', {}, useRule, enabledSchedules.length ? '应用已有时段规则' : '应用已有时段规则（暂无启用规则）'),
+          element('label', {}, windowed, '自定义此账号时段'),
+          element('label', {}, allDay, data.managed ? '全天运行' : '全天（未接管）')),
+        message('全天模式默认不创建定时计划，保留原生手动开关。只有明确保存时，才会开启参与调度并移除本账号由助手接管的定时计划。'),
+        ruleFields, windowFields, allDayPreview, feedback].filter(Boolean));
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (readOnly) return;
-        const trimmedName = ruleName.value.trim();
-        const value = windowed.checked ? { mode: 'window', ...(trimmedName ? { name: trimmedName } : {}), start: start.value, end: end.value, timezone: zone.value.trim() || defaultZone, weekdays: [...weekdays.querySelectorAll('input:checked')].map(control => Number(control.value)) } : { mode: 'all_day' };
+        let value;
+        if (useRule.checked) {
+          const scheduleId = Number(ruleSelect.value);
+          const chosen = enabledSchedules.find(item => item.id === scheduleId);
+          if (!chosen) { feedback.textContent = '请选择一条已启用的时段规则。'; feedback.hidden = false; return; }
+          value = { mode: 'rule', schedule_id: chosen.id };
+        } else if (windowed.checked) {
+          const trimmedName = ruleName.value.trim();
+          value = { mode: 'window', ...(trimmedName ? { name: trimmedName } : {}), start: start.value, end: end.value, timezone: zone.value.trim() || defaultZone, weekdays: [...weekdays.querySelectorAll('input:checked')].map(control => Number(control.value)) };
+        } else {
+          value = { mode: 'all_day' };
+        }
         feedback.hidden = true;
         if (value.mode === 'window' && !value.weekdays.length) { feedback.textContent = '请至少选择一个开启日期。'; feedback.hidden = false; return; }
         submit.disabled = true;
@@ -198,7 +287,7 @@
           view.body.replaceChildren(message('设置已保存。原生列表的调度状态将在下次刷新时同步。', 'success'));
           view.footer.replaceChildren(advancedControls(view), button('关闭', closeDialog));
         } catch (error) { if (view.current()) { feedback.textContent = errorMessage(error); feedback.hidden = false; } }
-        finally { submit.disabled = readOnly; }
+        finally { submit.disabled = readOnly || (useRule.checked && !enabledSchedules.length); }
       });
       view.body.replaceChildren(form);
       view.footer.replaceChildren(advancedControls(view), button('取消', closeDialog), submit);
@@ -211,13 +300,36 @@
       if (!view.current()) return;
       if (String(user.id) !== id || typeof user.email !== 'string' || !user.email) throw new Error('用户身份或邮箱响应不完整，已停止操作。');
       view.heading.textContent = `发送邮件 · 用户 #${id}`;
+      const templates = Array.isArray(user.templates) && user.templates.length ? user.templates : DEFAULT_TEMPLATES;
       const subject = input('subject', '', 'text', { required: true, maxlength: 200 });
       const body = element('textarea', { class: 'input', name: 'body', rows: '6', required: true, maxlength: '20000' });
-      const template = element('select', { class: 'input', name: 'template', 'aria-label': '邮件模板' }, [['custom', '自定义邮件'], ['inactive', '长期未使用提醒'], ['maintenance', '服务维护通知']].map(([value, text]) => element('option', { value }, text)));
+      const template = element('select', { class: 'input', name: 'template', 'aria-label': '邮件模板' }, [
+        element('option', { value: 'custom' }, '自定义邮件'),
+        ...templates.map(item => element('option', { value: String(item.id) }, `${item.name}${item.builtin ? '（内置）' : '（规则模板）'}`)),
+      ]);
+      const previewSubject = element('div', {});
+      const previewBody = element('pre', { class: 'helper-native-preview-body' });
+      const updatePreview = () => {
+        previewSubject.textContent = `主题：${subject.value.trim() || '（未填写）'}`;
+        previewBody.textContent = body.value.trim() || '（未填写）';
+      };
       template.addEventListener('change', () => {
-        if (template.value === 'inactive') { subject.value = '账户长期未使用提醒'; body.value = `您好 ${user.username || user.email}，您的账户近期未使用，请及时登录查看。如有疑问请联系管理员。`; }
-        if (template.value === 'maintenance') { subject.value = '服务维护通知'; body.value = `您好 ${user.username || user.email}，服务将进行维护，请留意管理员后续通知。`; }
+        if (template.value === 'custom') { updatePreview(); return; }
+        const chosen = templates.find(item => String(item.id) === template.value || String(item.id) === `builtin:${template.value}`);
+        if (chosen) {
+          subject.value = renderEmailTemplate(chosen.subject, user);
+          body.value = renderEmailTemplate(chosen.body, user);
+          updatePreview();
+        }
       });
+      subject.addEventListener('input', updatePreview);
+      body.addEventListener('input', updatePreview);
+      updatePreview();
+      const previewBox = element('div', { class: 'helper-native-preview', 'data-helper-email-preview': 'true' },
+        element('div', { class: 'helper-native-preview-title' }, '发送前预览'),
+        element('div', {}, `收件人：${user.email}（用户 #${id}${user.username ? ` · ${user.username}` : ''}）`),
+        previewSubject,
+        previewBody);
       const feedback = message('', 'error'); feedback.hidden = true;
       const formId = 'helper-native-user-form';
       const submit = element('button', { class: 'btn btn-primary', type: 'submit', form: formId, disabled: !state.status.mail_configured }, '发送邮件');
@@ -225,7 +337,11 @@
         element('div', { class: 'helper-native-recipient' }, element('strong', {}, user.email), element('span', {}, `用户 #${id}${user.username ? ` · ${user.username}` : ''}`)),
         message('仅向当前选中的用户发信，不批量发送、不自动修改用户状态。'),
         !state.status.mail_configured ? message('邮件服务尚未配置，请先配置 Helper 的 SMTP 环境变量。', 'warning') : null,
-        field('邮件模板', template), field('主题', subject), field('正文', body, '以纯文本邮件发送。'), feedback);
+        field('邮件模板', template, '可在「高级功能 → 规则管理」中新增或编辑可复用模板。'),
+        field('主题', subject),
+        field('正文', body, '以纯文本邮件发送。'),
+        previewBox,
+        feedback);
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (!state.status.mail_configured) return;
         submit.disabled = true; feedback.hidden = true;

@@ -627,6 +627,24 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, [])
         await recovered.close()
 
+    async def test_feed_history_keeps_same_model_only_and_zero_score_is_failed(self):
+        self.configure(1, model="model-old")
+        await self.complete(1)
+        self.clock.advance(minutes=5)
+        self.configure(1, model="model-new")
+        await self.complete(1)
+        self.clock.advance(minutes=5)
+        await self.complete(1)
+        self.store.record_benchmark_run(1, "model-new", "chat", 5, 5, 5, 0, 200, "ok", created_at="2026-11-20T01:00:00+00:00")
+        self.store.record_benchmark_run(1, "model-new", "chat", 0, 5, 5, 0, 210, "ok", created_at="2026-11-20T02:00:00+00:00")
+        feed = self.gallery.feed()
+        self.assertEqual(len(feed["items"]), 1)
+        item = feed["items"][0]
+        self.assertEqual(item["model"], "model-new")
+        self.assertEqual(len(item["history"]), 1)
+        self.assertTrue(all(work["model"] == "model-new" for work in item["history"]))
+        self.assertEqual(item["benchmark"]["verdict"], "failed")
+
     async def test_comparison_intent_commits_before_each_callback(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / "gallery.db")
@@ -769,13 +787,42 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.configure(name="Renamed first", model="next-model", reasoning_effort="none")
         before = self.store._db.total_changes
         feed = self.gallery.feed()
-        self.assertEqual([item["work"]["id"] for item in feed["items"]], [newest["id"], second["id"], middle["id"], oldest["id"]])
+        self.assertEqual([item["work"]["id"] for item in feed["items"]], [newest["id"], second["id"]])
+        self.assertEqual([w["id"] for w in feed["items"][0]["history"]], [middle["id"], oldest["id"]])
+        self.assertEqual(feed["items"][1]["history"], [])
         self.assertEqual(feed["items"][0]["name"], "Renamed first")
         self.assertEqual((feed["items"][0]["model"], feed["items"][0]["reasoning_effort"]), ("example-model", "high"))
-        self.assertEqual(len({item["work"]["id"] for item in feed["items"]}), 4)
+        all_ids = [item["work"]["id"] for item in feed["items"]] + [w["id"] for item in feed["items"] for w in item["history"]]
+        self.assertEqual(len(set(all_ids)), 4)
         self.assertNotIn('"prompt"', json.dumps(feed))
         self.assertNotIn('"key_id"', json.dumps(feed))
         self.assertEqual(self.store._db.total_changes, before)
+
+    async def test_feed_benchmark_verdict_and_anomaly_first_sorting(self):
+        self.configure(1, name="Stable Model", model="model-a")
+        self.configure(2, name="Regressed Model", model="model-b")
+        self.configure(3, name="Failed Model", model="model-c")
+        self.configure(4, name="No Baseline", model="model-d")
+        for gid in (1, 2, 3, 4):
+            self.clock.advance(seconds=1)
+            await self.complete(gid)
+        # Group 1: 4/4 -> 4/4 (stable)
+        self.store.record_benchmark_run(1, "model-a", "openai_responses", 4, 4, 4, 0, 120, "ok")
+        self.store.record_benchmark_run(1, "model-a", "openai_responses", 4, 4, 4, 0, 110, "ok")
+        # Group 2: 4/4 -> 2/4 (regressed)
+        self.store.record_benchmark_run(2, "model-b", "openai_responses", 4, 4, 4, 0, 100, "ok")
+        self.store.record_benchmark_run(2, "model-b", "openai_responses", 2, 4, 4, 0, 150, "ok")
+        # Group 3: 4/4 -> failed run (failed, NOT regressed)
+        self.store.record_benchmark_run(3, "model-c", "openai_responses", 4, 4, 4, 0, 100, "ok")
+        self.store.record_benchmark_run(3, "model-c", "openai_responses", 0, 0, 4, 4, None, "failed")
+        # Group 4: only 1 run -> no_baseline (NOT regressed)
+        self.store.record_benchmark_run(4, "model-d", "openai_responses", 2, 4, 4, 0, 100, "ok")
+        feed = self.gallery.feed()
+        self.assertEqual([item["group_id"] for item in feed["items"]], [2, 3, 1, 4])
+        verdicts = {item["group_id"]: item["benchmark"]["verdict"] for item in feed["items"]}
+        self.assertEqual(verdicts, {2: "regressed", 3: "failed", 1: "stable", 4: "no_baseline"})
+        self.assertEqual(feed["items"][0]["benchmark"]["latest"]["passed"], 2)
+        self.assertEqual(feed["items"][0]["benchmark"]["previous"]["passed"], 4)
 
     async def test_feed_filters_hidden_groups_and_uses_only_visible_active_deadlines(self):
         self.configure(name="Visible", enabled=True, interval_minutes=30)
@@ -817,18 +864,22 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         started = await self.gallery.start_comparison()
         await entered.wait()
         feed = self.gallery.feed()
-        latest = {item["group_id"]: item for item in feed["items"][:3]}
+        latest = {item["group_id"]: item for item in feed["items"]}
         self.assertEqual({group_id: item["status"] for group_id, item in latest.items()}, {1: "failed", 2: "running", 3: "queued"})
         self.assertNotIn("work", latest[3])
         self.assertTrue(all(item["round_id"] == started["round"]["id"] for item in latest.values()))
-        self.assertEqual(feed["items"][-1]["work"]["id"], previous["id"])
+        self.assertEqual([w["id"] for w in latest[1]["history"]], [previous["id"]])
+        self.assertEqual(latest[1]["benchmark"]["verdict"], "failed")
         self.assertNotIn(4, {item["group_id"] for item in feed["items"]})
         self.assertEqual([item["group_id"] for item in self.gallery.feed(allowed={3})["items"]], [3])
         release.set()
         await asyncio.gather(*list(self.gallery._tasks.values()))
-        self.assertEqual(len(self.gallery.feed()["items"]), 4)
+        done = self.gallery.feed()
+        self.assertEqual(len(done["items"]), 3)
+        done_by_group = {item["group_id"]: item for item in done["items"]}
+        self.assertEqual([w["id"] for w in done_by_group[1]["history"]], [previous["id"]])
 
-    async def test_feed_is_bounded_to_twelve_per_group_and_one_global_preview_budget(self):
+    async def test_feed_is_bounded_to_four_history_per_group_and_one_global_preview_budget(self):
         self.configure()
         self.configure(2)
         for group_id in (1, 2):
@@ -837,12 +888,11 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
                 await self.complete(group_id)
         with patch.object(self.gallery, "_stats", side_effect=AssertionError("feed must not calculate per-group stats")), patch("helper.gallery.MAX_PREVIEW_BYTES", len(self.result["content"].encode()) * 2):
             feed = self.gallery.feed()
-        self.assertEqual(len(feed["items"]), 24)
-        self.assertEqual([item["group_id"] for item in feed["items"][:2]], [2, 1])
-        previews = [item["work"].get("preview") for item in feed["items"]]
-        self.assertEqual(previews[:2], [self.result["content"], self.result["content"]])
-        self.assertTrue(all(preview is None for preview in previews[2:]))
-        self.assertTrue(all(len([item for item in feed["items"] if item["group_id"] == group_id]) == 12 for group_id in (1, 2)))
+        self.assertEqual(len(feed["items"]), 2)
+        self.assertEqual([item["group_id"] for item in feed["items"]], [2, 1])
+        self.assertTrue(all(len(item["history"]) == 4 for item in feed["items"]))
+        self.assertEqual([item["work"].get("preview") for item in feed["items"]], [self.result["content"], self.result["content"]])
+        self.assertTrue(all(w.get("preview") is None for item in feed["items"] for w in item["history"]))
 
     async def test_feed_read_snapshot_stays_consistent_with_another_database_writer(self):
         with tempfile.TemporaryDirectory() as directory:

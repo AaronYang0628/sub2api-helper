@@ -49,9 +49,13 @@
     } catch (_) { return null; }
   }
   function image(source, loaded, failed) {
-    const img = el('img', { alt: source.alt, loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
+    const img = el('img', { alt: source.alt, title: '点击展开或收起原图', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
     if (loaded) img.addEventListener('load', loaded, { once: true });
     if (failed) img.addEventListener('error', failed, { once: true });
+    img.addEventListener('click', () => {
+      const wrap = img.closest('.helper-benchmark-image');
+      if (wrap) wrap.classList.toggle('is-expanded');
+    });
     img.src = source.src;
     return img;
   }
