@@ -697,7 +697,7 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["model"], "model-new")
         self.assertEqual(len(item["history"]), 1)
         self.assertTrue(all(work["model"] == "model-new" for work in item["history"]))
-        self.assertEqual(item["benchmark"]["verdict"], "failed")
+        self.assertNotIn("benchmark", item)
 
     async def test_comparison_intent_commits_before_each_callback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -852,32 +852,6 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"key_id"', json.dumps(feed))
         self.assertEqual(self.store._db.total_changes, before)
 
-    async def test_feed_benchmark_verdict_and_anomaly_first_sorting(self):
-        self.configure(1, name="Stable Model", model="model-a")
-        self.configure(2, name="Regressed Model", model="model-b")
-        self.configure(3, name="Failed Model", model="model-c")
-        self.configure(4, name="No Baseline", model="model-d")
-        for gid in (1, 2, 3, 4):
-            self.clock.advance(seconds=1)
-            await self.complete(gid)
-        # Group 1: 4/4 -> 4/4 (stable)
-        self.store.record_benchmark_run(1, "model-a", "openai_responses", 4, 4, 4, 0, 120, "ok")
-        self.store.record_benchmark_run(1, "model-a", "openai_responses", 4, 4, 4, 0, 110, "ok")
-        # Group 2: 4/4 -> 2/4 (regressed)
-        self.store.record_benchmark_run(2, "model-b", "openai_responses", 4, 4, 4, 0, 100, "ok")
-        self.store.record_benchmark_run(2, "model-b", "openai_responses", 2, 4, 4, 0, 150, "ok")
-        # Group 3: 4/4 -> failed run (failed, NOT regressed)
-        self.store.record_benchmark_run(3, "model-c", "openai_responses", 4, 4, 4, 0, 100, "ok")
-        self.store.record_benchmark_run(3, "model-c", "openai_responses", 0, 0, 4, 4, None, "failed")
-        # Group 4: only 1 run -> no_baseline (NOT regressed)
-        self.store.record_benchmark_run(4, "model-d", "openai_responses", 2, 4, 4, 0, 100, "ok")
-        feed = self.gallery.feed()
-        self.assertEqual([item["group_id"] for item in feed["items"]], [2, 3, 1, 4])
-        verdicts = {item["group_id"]: item["benchmark"]["verdict"] for item in feed["items"]}
-        self.assertEqual(verdicts, {2: "regressed", 3: "failed", 1: "stable", 4: "no_baseline"})
-        self.assertEqual(feed["items"][0]["benchmark"]["latest"]["passed"], 2)
-        self.assertEqual(feed["items"][0]["benchmark"]["previous"]["passed"], 4)
-
     async def test_feed_filters_hidden_groups_and_uses_only_visible_active_deadlines(self):
         self.configure(name="Visible", enabled=True, interval_minutes=30)
         self.configure(2, name="Hidden", model="private-hidden-model", enabled=True, interval_minutes=5)
@@ -923,7 +897,7 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("work", latest[3])
         self.assertTrue(all(item["round_id"] == started["round"]["id"] for item in latest.values()))
         self.assertEqual([w["id"] for w in latest[1]["history"]], [previous["id"]])
-        self.assertEqual(latest[1]["benchmark"]["verdict"], "failed")
+        self.assertNotIn("benchmark", latest[1])
         self.assertNotIn(4, {item["group_id"] for item in feed["items"]})
         self.assertEqual([item["group_id"] for item in self.gallery.feed(allowed={3})["items"]], [3])
         release.set()

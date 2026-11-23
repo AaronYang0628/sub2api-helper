@@ -12,8 +12,14 @@ import httpx
 
 from helper.app import create_app
 from helper.config import Config
+from helper.pricing_catalog import PriceCatalog
 from helper.store import Store
 from helper.upstream import UpstreamError
+
+
+def json_text(value):
+    import json
+    return json.dumps(value, ensure_ascii=False)
 
 
 class FakeUpstream:
@@ -30,6 +36,8 @@ class FakeUpstream:
         self.settings_data = {"custom_menu_items": [{"id": "existing-docs", "label": "Docs", "url": "https://docs.example.test", "visibility": "user", "extra": "preserve"}], "session_binding_enabled": False}
         self.profile_tokens = []
         self.model_tokens = []
+        self.model_groups = []
+        self.ranking_windows = []
         self.writes = []
         self.menu_write_applies = True
         self.menu_error = None
@@ -77,11 +85,21 @@ class FakeUpstream:
             raise UpstreamError("Invalid user token", 401)
         return await self.get_user(identities[token])
 
-    async def models(self, start_date, end_date, token=None):
+    async def models(self, start_date, end_date, token=None, group_id=None):
         self.model_tokens.append(token)
-        return {"models": [{"model": "sample", "requests": 5 if token else 500}], "scope": "user" if token else "admin"}
+        self.model_groups.append(group_id)
+        return {"models": [{"model": "gpt-sample", "requests": 5 if token else 500, "input_tokens": 1000, "output_tokens": 500,
+                            "cache_creation_tokens": 200, "cache_read_tokens": 4000, "total_tokens": 5700,
+                            "cost": 2.0, "actual_cost": 1.0, "account_cost": 99.0}], "scope": "user" if token else "admin"}
 
-    async def ranking(self, start_date, end_date):
+    async def list_groups(self):
+        return [{"id": 3, "name": "OpenAI 主力", "platform": "openai", "status": "active", "secret": "x"}]
+
+    async def available_group_rows(self, token):
+        return [{"id": 3, "name": "OpenAI 主力", "platform": "openai", "status": "active"}]
+
+    async def ranking(self, start_date, end_date, limit=50):
+        self.ranking_windows.append((start_date, end_date))
         return {
             "ranking": [
                 {"user_id": 8, "username": "Bob", "email": "bob@example.test", "requests": 200, "tokens": 900, "actual_cost": 2.5, "private_future_field": "secret"},
@@ -118,7 +136,12 @@ class AppTests(unittest.TestCase):
         self.store = Store(self.config.db_path)
         self.upstream = FakeUpstream()
         self.mailer = FakeMailer()
-        self.app = create_app(self.config, upstream=self.upstream, store=self.store, mailer=self.mailer, background=False)
+        self.catalog = PriceCatalog("")
+        self.catalog.models = {"gpt-sample": {"input_cost_per_token": 1e-06, "output_cost_per_token": 4e-06,
+                                              "cache_read_input_token_cost": 1e-07, "cache_creation_input_token_cost": 2e-06}}
+        self.catalog.loaded_at = 0.0
+        self.catalog.ttl = float("inf")
+        self.app = create_app(self.config, upstream=self.upstream, store=self.store, mailer=self.mailer, background=False, price_catalog=self.catalog)
         self.client = TestClient(self.app, raise_server_exceptions=False)
         self.client.__enter__()
         self.auth = {"Authorization": "Bearer " + self.config.admin_token}
@@ -262,15 +285,37 @@ class AppTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 502)
                 self.assertNotIn("session", response.json())
 
-    def test_user_models_use_user_bearer_instead_of_admin_analytics(self):
+    def test_user_models_use_user_bearer_and_expose_official_vs_effective_prices(self):
         self.enable_modules(pricing=True)
-        portal = self.portal()
-        response = self.client.get("/_helper/api/portal/models?start_date=2026-11-01&end_date=2026-11-17", headers=portal)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["scope"], "user")
+        response = self.client.get("/_helper/api/portal/models?start_date=2026-11-01&end_date=2026-11-17&group_id=3", headers=self.portal())
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
         self.assertEqual(self.upstream.model_tokens, ["user-jwt"])
+        self.assertEqual(self.upstream.model_groups, [3])
+        self.assertEqual(body["groups"], [{"id": 3, "name": "OpenAI 主力", "platform": "openai"}])
+        row = body["models"][0]
+        self.assertEqual(row["multiplier"], 0.5)
+        self.assertEqual(row["official"], {"input": 1.0, "output": 4.0, "cache_read": 0.1, "cache_write": 2.0})
+        self.assertEqual(row["actual"], {"input": 0.5, "output": 2.0, "cache_read": 0.05, "cache_write": 1.0})
+        self.assertNotIn("account_cost", response.text)
         self.assertEqual(self.client.get("/_helper/api/admin/analytics/models", headers=self.auth).status_code, 200)
         self.assertEqual(self.upstream.model_tokens, ["user-jwt", None])
+
+    def test_models_reject_groups_the_user_cannot_use_but_admin_may_query_any(self):
+        self.enable_modules(pricing=True)
+        self.assertEqual(self.client.get("/_helper/api/portal/models?group_id=4", headers=self.portal()).status_code, 403)
+        self.assertEqual(self.client.get("/_helper/api/portal/models?group_id=0", headers=self.portal()).status_code, 422)
+        self.assertEqual(self.upstream.model_tokens, [])
+        response = self.client.get("/_helper/api/portal/models?group_id=4", headers=self.portal("admin-jwt"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.upstream.model_tokens, [None])
+
+    def test_models_without_catalog_entry_show_no_official_price(self):
+        self.enable_modules(pricing=True)
+        self.catalog.models = {}
+        row = self.client.get("/_helper/api/portal/models", headers=self.portal()).json()["models"][0]
+        self.assertIsNone(row["official"])
+        self.assertIsNone(row["actual"])
 
     def test_user_ranking_is_anonymous_projection_and_marks_self(self):
         self.enable_modules(ranking=True)
@@ -278,16 +323,35 @@ class AppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         ranking = response.json()["ranking"]
         self.assertEqual([row["is_me"] for row in ranking], [False, True])
-        self.assertEqual([row["username"] for row in ranking], ["用户 #1", "用户 #2"])
+        self.assertEqual([row["label"] for row in ranking], ["用户 #1", "用户 #2"])
         for forbidden in ("Alice", "Bob", "email", "user_id", "private_future_field", "total_cost", "admin_future_field"):
             self.assertNotIn(forbidden, response.text)
-        self.assertEqual(set(response.json()), {"ranking"})
+        self.assertEqual(set(response.json()), {"start_date", "end_date", "timezone", "ranking", "rewards"})
+        self.assertIsNone(response.json()["rewards"])
+        start, end = self.upstream.ranking_windows[0]
+        self.assertTrue(start.endswith("-01") and start[:7] == end[:7])
 
-    def test_admin_portal_ranking_keeps_admin_visibility(self):
+    def test_ranking_lists_only_reward_eligible_users_and_exposes_reward_summary(self):
+        self.enable_modules(ranking=True)
+        self.upstream.users[1]["status"] = "disabled"
+        self.store.create("automations", {"type": "monthly_rewards", "enabled": True, "timezone": "Asia/Shanghai", "mode": "approval",
+                                       "rewards": [{"rank": 1, "amount": "30"}, {"rank": 2, "amount": "20"}, {"rank": 3, "amount": "10"}],
+                                       "enabled_at": "2026-01-01T00:00:00+00:00", "last_error": "private"})
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertEqual([row["rank"] for row in body["ranking"]], [1])
+        rewards = body["rewards"]
+        self.assertEqual(rewards["rewards"], [{"rank": 1, "amount": "30"}, {"rank": 2, "amount": "20"}, {"rank": 3, "amount": "10"}])
+        self.assertEqual((rewards["mode"], rewards["timezone"]), ("approval", "Asia/Shanghai"))
+        self.assertRegex(rewards["settlement_at"], r"^\d{4}-\d{2}-01T00:00:00\+08:00$")
+        self.assertNotIn("private", json_text(body))
+        self.assertNotIn("enabled_at", json_text(body))
+
+    def test_admin_portal_ranking_shows_real_names(self):
         self.enable_modules(ranking=True)
         response = self.client.get("/_helper/api/portal/ranking", headers=self.portal("admin-jwt"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["ranking"][0]["email"], "bob@example.test")
+        self.assertEqual([row["label"] for row in response.json()["ranking"]], ["Bob", "Alice"])
+        self.assertNotIn("email", response.text)
 
     def test_disabled_module_denies_portal_data_and_page(self):
         portal = self.portal()

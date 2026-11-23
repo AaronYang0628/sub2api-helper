@@ -37,6 +37,7 @@ class Config:
     native_ui: bool = False
     legacy_routes: bool = False
     gallery_timeout_seconds: int = 240
+    price_catalog_url: str = "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
 
     @classmethod
     def from_env(cls):
@@ -79,6 +80,7 @@ class Config:
             sub2api_public_url=_url(os.environ.get("SUB2API_PUBLIC_URL", ""), "SUB2API_PUBLIC_URL", False),
             db_path=os.environ.get("HELPER_DB_PATH", "/data/helper.db"),
             gallery_timeout_seconds=gallery_timeout,
+            price_catalog_url=_url(os.environ.get("HELPER_PRICE_CATALOG_URL", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"), "HELPER_PRICE_CATALOG_URL", False),
             timezone=timezone,
             smtp_host=smtp_host,
             smtp_port=port,

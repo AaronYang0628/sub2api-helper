@@ -3,22 +3,39 @@
 .feature-context { margin: 0 0 .5rem; font-size: .875rem; line-height: 1.25rem; color: #6b7280; overflow-wrap: anywhere; }
 .dark .feature-context { color: #94a3b8; }
 .helper-gallery { min-width: 0; }
-.helper-gallery-toolbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .5rem 1rem; margin-bottom: .75rem; }
-.helper-gallery-info { flex: 1; margin: 0; color: #6b7280; font-size: .75rem; line-height: 1rem; overflow-wrap: anywhere; }
+.helper-gallery-info { margin: 0 0 .5rem; text-align: right; color: #6b7280; font-size: .75rem; line-height: 1rem; overflow-wrap: anywhere; }
 .dark .helper-gallery-info { color: #94a3b8; }
+/* Group badge: palette mirrors upstream sub2api GroupBadge.vue (standard groups). */
+.helper-group-badge { display: inline-flex; align-items: center; max-width: 100%; padding: .125rem .625rem; border-radius: .5rem; font-size: .75rem; line-height: 1.125rem; font-weight: 600; overflow-wrap: anywhere; background: #d1fae5; color: #047857; }
+.helper-group-anthropic { background: #fffbeb; color: #b45309; }
+.helper-group-openai { background: #f0fdf4; color: #15803d; }
+.helper-group-gemini { background: #f0f9ff; color: #0369a1; }
+.helper-group-antigravity { background: #fdf4ff; color: #a21caf; }
+.helper-group-grok { background: #f4f4f5; color: #3f3f46; }
+.helper-group-kimi { background: #fdf2f8; color: #be185d; }
+.helper-group-zhipu { background: #eef2ff; color: #4338ca; }
+.helper-group-deepseek { background: #f0fdfa; color: #0f766e; }
+.helper-group-minimax { background: #fff1f2; color: #be123c; }
+.helper-group-composite { background: #ecfeff; color: #155e75; }
+.dark .helper-group-badge { background: rgba(6,78,59,.3); color: #34d399; }
+.dark .helper-group-anthropic { background: rgba(120,53,15,.2); color: #fbbf24; }
+.dark .helper-group-openai { background: rgba(20,83,45,.2); color: #4ade80; }
+.dark .helper-group-gemini { background: rgba(12,74,110,.2); color: #38bdf8; }
+.dark .helper-group-antigravity { background: rgba(112,26,117,.2); color: #e879f9; }
+.dark .helper-group-grok { background: #27272a; color: #e4e4e7; }
+.dark .helper-group-kimi { background: rgba(131,24,67,.2); color: #f472b6; }
+.dark .helper-group-zhipu { background: rgba(49,46,129,.2); color: #818cf8; }
+.dark .helper-group-deepseek { background: rgba(19,78,74,.2); color: #2dd4bf; }
+.dark .helper-group-minimax { background: rgba(136,19,55,.2); color: #fb7185; }
+.dark .helper-group-composite { background: rgba(22,78,99,.2); color: #67e8f9; }
 .helper-gallery-list { display: flex; flex-direction: column; gap: .625rem; min-width: 0; }
 .helper-gallery-work { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; min-width: 0; padding: .625rem .875rem; margin: 0; text-align: left; }
 .helper-gallery-work:focus-visible { outline: 2px solid #14b8a6; outline-offset: 2px; }
-.helper-gallery-work[data-verdict="regressed"] { border-color: #fca5a5; }
-.dark .helper-gallery-work[data-verdict="regressed"] { border-color: rgba(248,113,113,.45); }
 .helper-gallery-row-info { flex: 1 1 16rem; min-width: 0; display: flex; flex-direction: column; gap: .375rem; }
-.helper-gallery-row-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem .625rem; min-width: 0; }
+.helper-gallery-row-head { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem .625rem; min-width: 0; }
 .helper-gallery-model { margin: 0; font-size: .9375rem; line-height: 1.35rem; font-weight: 600; color: #111827; overflow-wrap: anywhere; }
 .dark .helper-gallery-model { color: #f8fafc; }
-.helper-gallery-source { font-size: .75rem; line-height: 1.125rem; color: #64748b; overflow-wrap: anywhere; }
-.dark .helper-gallery-source { color: #94a3b8; }
 .helper-gallery-row-status { display: flex; align-items: center; flex-wrap: wrap; gap: .375rem .625rem; min-width: 0; }
-.helper-gallery-verdict { flex-shrink: 0; font-weight: 600; }
 .helper-gallery-meta { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem .625rem; color: #6b7280; font-size: .75rem; line-height: 1rem; min-width: 0; }
 .dark .helper-gallery-meta { color: #94a3b8; }
 .helper-gallery-work-title { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

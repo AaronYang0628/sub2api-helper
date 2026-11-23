@@ -69,6 +69,10 @@ class GalleryUpstream(FakeUpstream):
             raise result
         return list(result)
 
+    async def available_group_rows(self, token):
+        return [{"id": gid, "name": f"Group {gid}", "platform": "openai", "status": "active"}
+                for gid in await self.available_groups(token)]
+
 
 class GalleryApiTests(unittest.TestCase):
     def setUp(self):
@@ -657,7 +661,8 @@ class GalleryApiTests(unittest.TestCase):
         items = response.json()["items"]
         self.assertEqual([item["work"]["id"] for item in items], [latest["id"]])
         self.assertEqual([w["id"] for w in items[0]["history"]], [first["id"]])
-        self.assertEqual(items[0]["benchmark"]["verdict"], "no_baseline")
+        self.assertNotIn("benchmark", items[0])
+        self.assertEqual((items[0]["group_name"], items[0]["platform"]), ("Group 3", "openai"))
         self.assertTrue(all(item["group_id"] == 3 and item["name"] == "Visible Anthropic" for item in items))
         self.assertTrue(all(item["reasoning_effort"] == "high" and item["work"]["reasoning_effort"] == "high" for item in items))
         self.assertIn("preview", items[0]["work"])
@@ -719,9 +724,8 @@ class GalleryApiTests(unittest.TestCase):
         self.assertEqual(set(response.json()), {"items", "next_at", "timezone"})
         self.assertEqual(len(response.json()["items"]), 1)
         item = response.json()["items"][0]
-        self.assertEqual(set(item), {"group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id", "work", "history", "benchmark"})
+        self.assertEqual(set(item), {"group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id", "work", "history", "group_name", "platform"})
         self.assertEqual(item["work"]["preview"], "<p>Safe preview</p>")
-        self.assertEqual(item["benchmark"], {"verdict": "no_baseline", "latest": None, "previous": None})
         for private in ("Unauthorized source", "unauthorized-model", "Private future prompt", "Private executed prompt", "key_id",
                         "api_key", "content_bytes", "future_internal", MODEL_KEY):
             self.assertNotIn(private, response.text)

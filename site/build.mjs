@@ -97,7 +97,6 @@ await writeFile(join(target, 'gallery.html'), `<!doctype html>
   <div class="feature-shell">
     <main class="feature-main">
       <div class="demo-native-toolbar"><a class="btn btn-secondary btn-sm" href="./admin/accounts/">返回账号列表</a><div class="demo-links"><a class="btn btn-secondary btn-sm" href="./results.html">固定题集结果</a><button id="demo-theme" type="button" class="btn btn-ghost btn-sm">深色</button></div></div>
-      <p class="demo-native-note">离线演示，作品为固定示例。</p>
       <section id="demo-gallery-main" aria-label="模型展示画廊"></section>
     </main>
   </div>

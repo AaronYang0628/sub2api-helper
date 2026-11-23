@@ -40,8 +40,6 @@ PUBLIC_GROUP = ("group_id", "name", "model", "reasoning_effort", "enabled", "int
                 "comparison_member", "comparison_enabled", "comparison_next_at")
 PUBLIC_WORK = ("id", "group_id", "round_id", "title", "model", "reasoning_effort", "created_at", "finished_at", "latency_ms",
                "status", "kind", "preview", "content", "mime", "error")
-PUBLIC_BENCHMARK_RUN = ("passed", "graded", "total", "error_count", "latency_ms", "status", "created_at")
-PUBLIC_VERDICTS = frozenset(("regressed", "failed", "improved", "stable", "no_baseline"))
 
 
 def project_group(group):
@@ -53,26 +51,7 @@ def project_work(work, detail=False):
     return {key: work[key] for key in fields if key in work}
 
 
-def project_benchmark(summary):
-    if not isinstance(summary, dict):
-        return {"verdict": "no_baseline", "latest": None, "previous": None}
-    verdict = summary.get("verdict")
-    if verdict not in PUBLIC_VERDICTS:
-        verdict = "no_baseline"
-
-    def run_fields(entry):
-        if not isinstance(entry, dict):
-            return None
-        return {key: entry[key] for key in PUBLIC_BENCHMARK_RUN if key in entry}
-
-    return {
-        "verdict": verdict,
-        "latest": run_fields(summary.get("latest")),
-        "previous": run_fields(summary.get("previous")),
-    }
-
-
-def project_feed(data, allowed=None):
+def project_feed(data, allowed=None, directory=None):
     fields = ("group_id", "name", "model", "reasoning_effort", "status", "created_at", "round_id")
     items = []
     for item in data["items"]:
@@ -80,6 +59,9 @@ def project_feed(data, allowed=None):
         if allowed is not None and gid not in allowed:
             continue
         safe = {key: item.get(key) for key in fields}
+        group = (directory or {}).get(gid) or {}
+        safe["group_name"] = group.get("name") or item.get("name")
+        safe["platform"] = group.get("platform")
         if isinstance(item.get("work"), dict):
             safe["work"] = project_work(item["work"])
         history = []
@@ -89,7 +71,6 @@ def project_feed(data, allowed=None):
                 if len(history) >= 4:
                     break
         safe["history"] = history
-        safe["benchmark"] = project_benchmark(item.get("benchmark"))
         items.append(safe)
     return {"items": items, "next_at": data.get("next_at")}
 
@@ -131,11 +112,20 @@ def project_comparison(data, allowed):
 
 
 def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provider, admin, portal, enabled, limit):
-    async def visible_groups(identity):
+    async def visible(identity):
+        """Return (allowed ids or None for admins, id -> public name/platform)."""
         enabled("benchmark")
         if identity["profile"]["role"] == "admin":
-            return None
-        return set(await upstream.available_groups(identity["token"]))
+            try:
+                rows = await upstream.list_groups()
+            except UpstreamError:
+                rows = []
+            return None, {row["id"]: row for row in rows if isinstance(row, dict) and type(row.get("id")) is int}
+        rows = await upstream.available_group_rows(identity["token"])
+        return {row["id"] for row in rows if row.get("status") == "active"}, {row["id"]: row for row in rows}
+
+    async def visible_groups(identity):
+        return (await visible(identity))[0]
 
     async def check_access(identity, group_id):
         allowed = await visible_groups(identity)
@@ -164,7 +154,11 @@ def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provide
 
     @admin_api.get("/gallery/feed", dependencies=[Depends(admin)])
     async def admin_gallery_feed():
-        return {**project_feed(gallery.feed()), "timezone": config_provider().timezone}
+        try:
+            directory = {row["id"]: row for row in await upstream.list_groups() if isinstance(row, dict) and type(row.get("id")) is int}
+        except UpstreamError:
+            directory = {}
+        return {**project_feed(gallery.feed(), None, directory), "timezone": config_provider().timezone}
 
     @admin_api.get("/gallery/comparison", dependencies=[Depends(admin)])
     async def get_comparison():
@@ -237,8 +231,8 @@ def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provide
     async def portal_gallery_feed(identity=Depends(portal)):
         # Resolve current group access once before any artwork or scheduling
         # reads, so hidden groups cannot affect even the returned next time.
-        allowed = await visible_groups(identity)
-        return {**project_feed(gallery.feed(allowed=allowed), allowed), "timezone": config_provider().timezone}
+        allowed, directory = await visible(identity)
+        return {**project_feed(gallery.feed(allowed=allowed), allowed, directory), "timezone": config_provider().timezone}
 
     @portal_api.get("/gallery/comparison")
     async def portal_comparison(identity=Depends(portal)):

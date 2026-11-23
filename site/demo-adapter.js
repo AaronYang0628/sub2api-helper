@@ -221,15 +221,7 @@
   function comparisonDetail() {
     return { config: clone(comparisonConfig), round: clone(comparisonRound), timezone: 'Asia/Shanghai' };
   }
-  const demoBenchmarks = new Map([
-    [1, { verdict: 'stable', latest: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 920, status: 'ok', created_at: new Date(galleryStart - 10 * 60000).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 940, status: 'ok', created_at: new Date(galleryStart - 130 * 60000).toISOString() } }],
-    [2, { verdict: 'regressed', latest: { passed: 3, graded: 5, total: 5, error_count: 0, latency_ms: 1180, status: 'ok', created_at: new Date(galleryStart - 12 * 60000).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 1120, status: 'ok', created_at: new Date(galleryStart - 140 * 60000).toISOString() } }],
-    [3, { verdict: 'improved', latest: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 1050, status: 'ok', created_at: new Date(galleryStart - 14 * 60000).toISOString() }, previous: { passed: 4, graded: 5, total: 5, error_count: 0, latency_ms: 1080, status: 'ok', created_at: new Date(galleryStart - 150 * 60000).toISOString() } }],
-    [4, { verdict: 'no_baseline', latest: { passed: 4, graded: 5, total: 5, error_count: 0, latency_ms: 1210, status: 'ok', created_at: new Date(galleryStart - 16 * 60000).toISOString() }, previous: null }],
-    [5, { verdict: 'no_baseline', latest: null, previous: null }],
-  ]);
   function galleryFeed() {
-    const verdictRank = { regressed: 0, failed: 1, improved: 2, stable: 3, no_baseline: 4 };
     const latest = galleryGroups.map(group => {
       const works = galleryWorks.get(group.group_id) || [];
       if (!works.length) return null;
@@ -239,10 +231,10 @@
         status: head.status, created_at: head.created_at, round_id: head.round_id ?? null,
         work: workPreview(head),
         history: rest.slice(0, 4).map(workPreview),
-        benchmark: clone(demoBenchmarks.get(group.group_id) || { verdict: 'no_baseline', latest: null, previous: null }),
+        group_name: galleryDirectory.find(entry => entry.id === group.group_id)?.name || group.name,
+        platform: galleryDirectory.find(entry => entry.id === group.group_id)?.platform || null,
       };
     }).filter(Boolean).sort((left, right) =>
-      (verdictRank[left.benchmark.verdict] ?? 4) - (verdictRank[right.benchmark.verdict] ?? 4) ||
       Date.parse(right.created_at) - Date.parse(left.created_at) ||
       right.work.id - left.work.id
     );
@@ -276,8 +268,11 @@
     if (path.startsWith('/_helper/api/portal/')) {
       const endpoint = path.slice('/_helper/api/portal/'.length);
       if (endpoint === 'session' && method === 'POST') return { session: 'demo-portal-session' };
-      if (endpoint === 'models' && method === 'GET') return { models: metrics.models };
-      if (endpoint === 'ranking' && method === 'GET') return { ranking: metrics.ranking.map(({ username, user_id, ...item }) => item) };
+      if (endpoint === 'models' && method === 'GET') return { groups: galleryDirectory.slice(0, 4).map(({ id, name, platform }) => ({ id, name, platform })), catalog: true,
+        models: metrics.models.map(row => ({ ...row, cache_read_tokens: 0, cache_write_tokens: 0, multiplier: row.cost ? row.actual_cost / row.cost : null,
+          official: { input: 1.25, output: 10, cache_read: 0.125, cache_write: null }, actual: row.cost ? { input: 1.25 * row.actual_cost / row.cost, output: 10 * row.actual_cost / row.cost, cache_read: null, cache_write: null } : null })) };
+      if (endpoint === 'ranking' && method === 'GET') return { start_date: '2026-11-01', end_date: '2026-11-23', timezone: 'Asia/Shanghai', rewards: null,
+        ranking: metrics.ranking.map(({ username, user_id, ...item }, index) => ({ ...item, rank: index + 1, label: `用户 #${index + 1}`, is_me: index === 1 })) };
       return route('/api/' + endpoint, method, data);
     }
     if (path === '/_helper/api/session/revoke' && method === 'POST') return { ok: true };

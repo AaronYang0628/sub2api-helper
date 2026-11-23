@@ -6,7 +6,8 @@
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
   const EFFORT_LABELS = new Map(Object.entries({ default: '模型默认', none: '关闭', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最高' }));
   const STATUS_LABELS = new Map(Object.entries({ queued: '排队中', running: '生成中', success: '已完成', partial: '部分完成', failed: '失败', interrupted: '已中断' }));
-  const VERDICT_ORDER = { regressed: 0, failed: 1, improved: 2, stable: 3, no_baseline: 4 };
+  const PLATFORMS = new Set(['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'kimi', 'zhipu', 'deepseek', 'minimax', 'composite']);
+  const platformClass = value => PLATFORMS.has(str(value).toLowerCase()) ? str(value).toLowerCase() : 'default';
   const str = value => value === undefined || value === null ? '' : String(value);
   function modelSettings(model, effort) { return [str(model), EFFORT_LABELS.has(effort) ? `思考强度：${EFFORT_LABELS.get(effort)}` : ''].filter(Boolean).join(' · '); }
   function el(tag, attrs = {}, ...children) {
@@ -83,47 +84,15 @@
     } else display(content);
     return frame;
   }
-  function scoreText(run) {
-    if (!run || typeof run !== 'object') return '';
-    const graded = Number(run.graded);
-    if (!Number.isFinite(graded) || graded <= 0) return '';
-    const passed = Number(run.passed);
-    if (!Number.isFinite(passed) || passed < 0) return '';
-    return `${passed}/${graded}`;
-  }
-  function resolveBenchmark(item, status) {
-    const raw = item && typeof item.benchmark === 'object' && item.benchmark ? item.benchmark : null;
-    const verdict = raw && Object.prototype.hasOwnProperty.call(VERDICT_ORDER, raw.verdict)
-      ? raw.verdict
-      : ['failed', 'interrupted'].includes(status) ? 'failed' : 'no_baseline';
-    return { verdict, latest: raw?.latest || null, previous: raw?.previous || null };
-  }
-  function verdictInfo(benchmark) {
-    const cur = scoreText(benchmark.latest);
-    const prev = scoreText(benchmark.previous);
-    switch (benchmark.verdict) {
-      case 'regressed':
-        return { cls: 'red', label: prev && cur ? `得分下降 · ${prev} → ${cur}` : '得分下降' };
-      case 'failed':
-        return { cls: 'red', label: '检测失败' };
-      case 'improved':
-        return { cls: 'green', label: prev && cur ? `提升 · ${prev} → ${cur}` : cur ? `正常 · ${cur}` : '提升' };
-      case 'stable':
-        return { cls: 'green', label: cur ? `正常 · ${cur}` : '正常' };
-      default:
-        return { cls: 'gray', label: cur ? `暂无基线 · 首次 ${cur}` : '暂无基线' };
-    }
-  }
   window.helperGallery = function helperGallery(container, { request, timezone = 'Asia/Shanghai', settingsUrl } = {}) {
     if (!(container instanceof Element) || typeof request !== 'function') throw new Error('Gallery requires a container and a request function');
     let destroyed = false, connected = container.isConnected, refreshPromise = null, modal = null, modalGroup = null, modalSequence = 0, cardSequence = 0, feedKey = null, nextAt = null;
     const root = el('section', { class: 'helper-gallery', 'aria-label': '模型生成作品' });
     const next = el('p', { class: 'helper-gallery-info', hidden: true });
-    const refreshButton = button('刷新', () => refresh());
     const error = el('div', { class: 'helper-gallery-error', role: 'alert', hidden: true });
     const works = el('div', { class: 'helper-gallery-list' });
-    const empty = el('div', { class: 'helper-gallery-empty', role: 'status' }, '正在读取参测结果…');
-    root.append(el('div', { class: 'helper-gallery-toolbar' }, next, refreshButton), error, works, empty);
+    const empty = el('div', { class: 'helper-gallery-empty', role: 'status' }, '');
+    root.append(next, error, works, empty);
     container.replaceChildren(root);
     function active() { return !destroyed && (!connected || container.isConnected); }
     function formatDate(value) {
@@ -144,13 +113,12 @@
       const due = Date.parse(nextAt || '');
       next.hidden = !Number.isFinite(due);
       if (next.hidden) { next.textContent = ''; return; }
-      next.title = `${formatDate(nextAt)} · ${timezone}`;
       const seconds = Math.ceil((due - Date.now()) / 1000);
       if (seconds <= 0) { next.textContent = '下次生成：等待生成'; return; }
       const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60), rest = seconds % 60;
       next.textContent = `下次生成：${hours ? `${hours}时 ` : ''}${String(minutes).padStart(2, '0')}分 ${String(rest).padStart(2, '0')}秒`;
     }
-    function makeThumb(group, work, primary, siblings, benchmark) {
+    function makeThumb(group, work, primary, siblings) {
       const id = validWork(work?.id);
       const title = str(work?.title) || str(work?.model) || (primary ? '最新作品' : '历史作品');
       const status = work?.status;
@@ -162,8 +130,7 @@
         type: 'button',
         class: cls,
         'aria-label': label,
-        title: `${title} · ${formatDate(work.created_at)}（点击放大）`,
-        onclick: () => openWork(group, id, siblings, benchmark),
+        onclick: () => openWork(group, id, siblings),
       }, stage);
       return trigger;
     }
@@ -173,26 +140,24 @@
       const id = validWork(work?.id);
       const model = str(work?.model || item.model) || '未指定模型';
       const effort = work?.reasoning_effort ?? item.reasoning_effort;
-      const source = str(item.name) || `来源 #${group}`;
+      const source = str(item.group_name) || str(item.name) || `分组 #${group}`;
       const status = item.status || work?.status;
       const title = str(work?.title) || model;
-      const benchmark = resolveBenchmark(item, status);
-      const verdict = verdictInfo(benchmark);
       const history = (Array.isArray(item.history) ? item.history : [])
         .filter(entry => entry && typeof entry === 'object' && validWork(entry.id) && (!entry.group_id || str(entry.group_id) === group))
         .slice(0, 4);
       const siblings = [...(id ? [work] : []), ...history];
       const serial = ++cardSequence, sourceID = `helper-gallery-source-${serial}`, modelID = `helper-gallery-model-${serial}`;
-      const metaTime = work?.created_at || item.created_at || benchmark.latest?.created_at;
-      const metaLatency = work?.latency_ms ?? benchmark.latest?.latency_ms;
+      const metaTime = work?.created_at || item.created_at;
+      const metaLatency = work?.latency_ms;
       const statusBadges = [
-        el('span', { class: `pill helper-gallery-verdict ${verdict.cls}` }, verdict.label),
         ['queued', 'running'].includes(status) ? statusBadge(status) : null,
+        ['failed', 'interrupted'].includes(status) ? statusBadge(status) : null,
       ];
       const info = el('div', { class: 'helper-gallery-row-info' },
         el('div', { class: 'helper-gallery-row-head' },
+          el('span', { class: `helper-group-badge helper-group-${platformClass(item.platform)}`, id: sourceID }, source),
           el('h3', { class: 'helper-gallery-model', id: modelID }, modelSettings(model, effort)),
-          el('span', { class: 'helper-gallery-source', id: sourceID }, source),
         ),
         el('div', { class: 'helper-gallery-row-status' },
           statusBadges,
@@ -205,13 +170,12 @@
         work?.error ? el('p', { class: 'helper-gallery-card-error' }, str(work.error)) : null,
       );
       const thumbs = el('div', { class: 'helper-gallery-thumbs', 'aria-label': `${source} 作品缩略图` },
-        makeThumb(group, work ? { ...work, status } : { status }, true, siblings, benchmark),
-        history.length ? el('div', { class: 'helper-gallery-history', 'aria-label': '最近历史作品' }, history.map(entry => makeThumb(group, entry, false, siblings, benchmark))) : null,
+        makeThumb(group, work ? { ...work, status } : { status }, true, siblings),
+        history.length ? el('div', { class: 'helper-gallery-history', 'aria-label': '最近历史作品' }, history.map(entry => makeThumb(group, entry, false, siblings))) : null,
       );
       const row = el('article', {
         class: `card helper-gallery-work${id ? '' : ' helper-gallery-pending'}`,
         'data-group-id': group,
-        'data-verdict': benchmark.verdict,
         'aria-describedby': `${sourceID} ${modelID}`,
         tabindex: '-1',
       }, info, thumbs);
@@ -220,10 +184,7 @@
     function draw(data) {
       if (typeof data.timezone === 'string' && data.timezone) timezone = data.timezone;
       const rawItems = data.items.filter(item => item && validGroup(item.group_id) && (!item.work?.group_id || str(item.work.group_id) === str(item.group_id)));
-      const items = rawItems
-        .map((item, index) => ({ item, index, rank: VERDICT_ORDER[resolveBenchmark(item, item.status || item.work?.status).verdict] ?? 4 }))
-        .sort((a, b) => a.rank - b.rank || a.index - b.index)
-        .map(entry => entry.item);
+      const items = rawItems;
       if (modalGroup && !items.some(item => str(item.group_id) === modalGroup)) closeModal();
       nextAt = data.next_at; updateCountdown(); error.hidden = true;
       const key = JSON.stringify([timezone, items]);
@@ -231,13 +192,13 @@
       feedKey = key;
       works.replaceChildren(...items.map(workRow));
       empty.hidden = items.length > 0;
-      empty.replaceChildren(el('p', {}, '暂无参测结果。'), settingsUrl ? el('a', { href: settingsUrl, class: 'btn btn-secondary btn-sm' }, '配置参测来源') : null);
+      empty.replaceChildren(el('p', {}, '暂无参测结果'), settingsUrl ? el('a', { href: settingsUrl, class: 'btn btn-secondary btn-sm' }, '配置参测来源') : null);
     }
-    async function openWork(group, id, siblings = [], benchmark = null) {
+    async function openWork(group, id, siblings = []) {
       if (destroyed || !validGroup(group) || !validWork(id)) return;
       closeModal(); modalGroup = group;
       const sequence = modalSequence;
-      const body = el('div', { class: 'modal-body helper-gallery-dialog-body' }, el('p', {}, '正在读取作品…'));
+      const body = el('div', { class: 'modal-body helper-gallery-dialog-body' }, el('p', {}, '…'));
       const heading = el('h3', { class: 'modal-title' }, '作品详情');
       const switcher = Array.isArray(siblings) && siblings.length > 1
         ? el('div', { class: 'helper-gallery-switcher', role: 'group', 'aria-label': '切换同模型历史作品' },
@@ -250,7 +211,7 @@
                 type: 'button',
                 class: `btn btn-sm ${activeEntry ? 'btn-primary' : 'btn-secondary'}`,
                 'aria-pressed': activeEntry ? 'true' : 'false',
-                onclick: activeEntry ? null : () => openWork(group, entryId, siblings, benchmark),
+                onclick: activeEntry ? null : () => openWork(group, entryId, siblings),
               }, label);
             }))
         : null;
@@ -261,12 +222,10 @@
         if (!active() || !modal || modalSequence !== sequence) return;
         if (!work || str(work.id) !== id || (work.group_id != null && str(work.group_id) !== group)) throw new Error('作品身份响应不完整，已停止展示。');
         heading.textContent = str(work.title) || '未命名作品';
-        const info = benchmark ? verdictInfo(benchmark) : null;
         body.replaceChildren(
           switcher,
           el('div', { class: 'helper-gallery-large' }, artwork(work, true)),
           el('div', { class: 'helper-gallery-detail-meta' },
-            info ? el('span', { class: `pill ${info.cls}` }, info.label) : null,
             el('span', {}, `${modelSettings(work.model, work.reasoning_effort) || '未知模型'} · ${formatDate(work.created_at)} · ${latency(work.latency_ms)}`),
           ),
           el('h4', {}, '生成提示词'),
@@ -284,7 +243,6 @@
     function refresh() {
       if (destroyed) return Promise.resolve();
       if (refreshPromise) return refreshPromise;
-      refreshButton.disabled = true;
       refreshPromise = (async () => {
         try {
           const data = await request('/gallery/feed');
@@ -293,7 +251,7 @@
           draw(data);
         } catch (failure) {
           if (active()) { closeModal(); feedKey = null; nextAt = null; works.replaceChildren(); next.hidden = true; empty.hidden = true; error.textContent = str(failure?.message || '作品读取失败，请稍后重试。'); error.hidden = false; }
-        } finally { if (active()) refreshButton.disabled = false; refreshPromise = null; }
+        } finally { refreshPromise = null; }
       })();
       return refreshPromise;
     }

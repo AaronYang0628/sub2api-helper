@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response, Path as ApiPath
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, Response, Path as ApiPath
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -33,6 +33,7 @@ from .gallery_generation import GenerationFailure, generate_artwork
 from .mailer import Mailer
 from .native_proxy import NativeProxy, is_document_request
 from .native_api import install_native_api
+from .pricing_catalog import PriceCatalog, model_row
 from .schemas import Automation, Benchmark, BenchmarkSelection, Connection, Email, EmailTemplate, Modules, Rule, Schedule, Session, Toggle, UserStatus
 from .store import Store
 from .upstream import Upstream, UpstreamError
@@ -143,7 +144,7 @@ def _default_public_origin(candidate):
     return ""
 
 
-def create_app(config=None, upstream=None, store=None, mailer=None, background=True, connector=None, native_proxy=None):
+def create_app(config=None, upstream=None, store=None, mailer=None, background=True, connector=None, native_proxy=None, price_catalog=None):
     config = config or Config.from_env()
     environment_public_origin = config.public_url
     store = store or Store(config.db_path)
@@ -162,6 +163,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     if not config.public_url:
         config = replace(config, public_url=_default_public_origin(config))
     upstream = upstream or Upstream(config)
+    price_catalog = price_catalog or PriceCatalog(config.price_catalog_url)
     mailer = mailer or Mailer(config)
     engine = Engine(store, upstream, mailer)
     native_proxy = native_proxy or NativeProxy(lambda: config.sub2api_url,
@@ -202,6 +204,7 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
                 await task
         await gallery.close()
         await upstream.close()
+        await price_catalog.close()
         await native_proxy.close()
         store.close()
 
@@ -1040,24 +1043,76 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     async def portal_modules(identity=Depends(portal)):
         return Modules(**store.get_setting("modules", {})).model_dump()
 
+    def month_window(timezone_name):
+        today = datetime.now(ZoneInfo(timezone_name)).date()
+        return today.replace(day=1), today
+
+    def rewards_summary():
+        rule = next((item for item in store.list("automations") if item.get("enabled") and item.get("type") == "monthly_rewards"), None)
+        if not rule:
+            return None
+        zone = rule.get("timezone") or config.timezone
+        now = datetime.now(ZoneInfo(zone))
+        boundary = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + timedelta(days=32)).replace(day=1)
+        amounts = {int(item["rank"]): item["amount"] for item in rule.get("rewards", []) if "rank" in item}
+        return {
+            "rewards": [{"rank": rank, "amount": str(amounts.get(rank, 0))} for rank in (1, 2, 3)],
+            "timezone": zone,
+            "mode": rule.get("mode", "automatic"),
+            "settlement_at": boundary.isoformat(),
+        }
+
     @portal_api.get("/models")
-    async def portal_models(start_date: str | None = None, end_date: str | None = None, identity=Depends(portal)):
+    async def portal_models(start_date: str | None = None, end_date: str | None = None,
+                            group_id: int | None = Query(default=None, gt=0), identity=Depends(portal)):
         enabled("pricing")
-        return await upstream.models(*dates(start_date, end_date), token=identity["token"])
+        is_admin = identity["profile"].get("role") == "admin"
+        if is_admin:
+            try:
+                rows = await upstream.list_groups()
+            except UpstreamError:
+                rows = []
+            allowed = None
+        else:
+            rows = [row for row in await upstream.available_group_rows(identity["token"]) if row.get("status") == "active"]
+            allowed = {row["id"] for row in rows}
+        groups = [{key: row.get(key) for key in ("id", "name", "platform")} for row in rows
+                  if isinstance(row, dict) and type(row.get("id")) is int]
+        if group_id is not None and allowed is not None and group_id not in allowed:
+            raise HTTPException(403, "无权查看该分组")
+        start, end = dates(start_date, end_date)
+        result = await upstream.models(start, end, token=None if is_admin else identity["token"], group_id=group_id)
+        stats = result.get("models") if isinstance(result, dict) else None
+        has_catalog = await price_catalog.ensure()
+        models = [model_row(stat, price_catalog) for stat in stats or [] if isinstance(stat, dict)]
+        models.sort(key=lambda row: (-row["actual_cost"], row["model"]))
+        return {"start_date": start, "end_date": end, "group_id": group_id, "groups": groups,
+                "catalog": has_catalog, "models": models}
 
     @portal_api.get("/ranking")
-    async def portal_ranking(start_date: str | None = None, end_date: str | None = None, identity=Depends(portal)):
+    async def portal_ranking(identity=Depends(portal)):
         enabled("ranking")
-        result = await upstream.ranking(*dates(start_date, end_date))
-        if identity["profile"].get("role") == "admin":
-            return result
-        # Explicit projection, never return upstream totals or unknown future fields.
-        return {"ranking": [
-            {"rank": i + 1, "username": f"用户 #{i+1}",
-             "requests": item.get("requests", 0), "tokens": item.get("tokens", 0),
-             "actual_cost": item.get("actual_cost", 0),
-             "is_me": item.get("user_id") == identity["profile"].get("id")}
-            for i, item in enumerate(result.get("ranking", []))]}
+        summary = rewards_summary()
+        zone = summary["timezone"] if summary else config.timezone
+        first, today = month_window(zone)
+        result = await upstream.ranking(first.isoformat(), today.isoformat())
+        # Only ordinary active users are eligible for rewards, so the table lists exactly them.
+        eligible = {user["id"] for user in await upstream.list_users()
+                    if isinstance(user, dict) and user.get("role") == "user" and user.get("status") == "active"
+                    and type(user.get("id")) is int}
+        is_admin = identity["profile"].get("role") == "admin"
+        rows = []
+        for item in result.get("ranking", []):
+            if item.get("user_id") not in eligible:
+                continue
+            rank = len(rows) + 1
+            label = f"用户 #{rank}"
+            if is_admin:
+                label = item.get("username") or item.get("email") or f"用户 {item.get('user_id')}"
+            rows.append({"rank": rank, "label": label, "requests": item.get("requests", 0), "tokens": item.get("tokens", 0),
+                         "actual_cost": item.get("actual_cost", 0), "is_me": item.get("user_id") == identity["profile"].get("id")})
+        return {"start_date": first.isoformat(), "end_date": today.isoformat(), "timezone": zone,
+                "ranking": rows, "rewards": summary}
 
     @portal_api.post("/benchmark")
     async def portal_benchmark(value: BenchmarkSelection, request: Request, identity=Depends(portal)):

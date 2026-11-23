@@ -22,7 +22,9 @@
 | 作品画廊分组可见性 | `GET /api/v1/groups/available` | 使用当前用户 JWT，取有效分组 `id`，详情也重新验证 |
 | 管理模型统计 | `GET /api/v1/admin/dashboard/models` | `data.models` |
 | 本人模型统计 | `GET /api/v1/usage/dashboard/models` | 使用用户 JWT，仅本人数据 |
-| 用量排名 | `GET /api/v1/admin/dashboard/users-ranking` | `data.ranking`、总成本、请求数与 token 数 |
+| 用量排名 | `GET /api/v1/admin/dashboard/users-ranking` | `data.ranking`、总成本、请求数与 token 数；Helper 排名页取规则时区的本自然月，并用 `GET /api/v1/admin/users` 仅保留可参与评奖的正常普通用户 |
+| 模型统计（含分组过滤） | `GET /api/v1/admin/dashboard/models`、`GET /api/v1/usage/dashboard/models` | 价格页传入 `group_id`；使用 `cost`（标准计费）与 `actual_cost` 推算实际倍率，实际单价 = 官方价 × 倍率；不使用 `account_cost` |
+| 官方模型价格 | 外部：`Wei-Shaw/model-price-repo` 的 `model_prices_and_context_window.json` 与同名 `.sha256` | 每 token 价格，Helper 换算为每百万 Token；先校验哈希再使用，6 小时内存缓存，失败时沿用旧缓存，不发送用户或部署信息 |
 | 默认模型单价 | `GET /api/v1/admin/channels/model-pricing?model=...` | `found,input_price,output_price,cache_write_price,cache_read_price` |
 | 版本 | `GET /api/v1/admin/system/version` | `data.version` |
 | 模型检测 | `POST /v1/chat/completions` | 使用普通用户 API Key，OpenAI 兼容协议 |

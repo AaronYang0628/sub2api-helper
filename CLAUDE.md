@@ -57,7 +57,7 @@ python3 tests/ingress_smoke.py sub2api-helper:test
 三种鉴权路径，session 均为内存态：
 - 管理端 `/_helper/api/admin/*`：`HELPER_ADMIN_TOKEN` 或绑定后的管理 Key 换取会话 token。
 - 原生行按钮 `/_helper/api/*`（native_api.py）：浏览器中已登录的 sub2api 管理员 JWT；要求上游 `session_binding_enabled` 明确为 `false`，且逐次向上游重新验证身份。
-- 用户门户 `/_helper/api/portal/*`（自定义菜单内嵌页）：sub2api 用户 JWT 换会话。普通用户看到脱敏榜单（"用户 #N"、仅本人有 `is_me` 标记），管理员返回完整数据——脱敏面向的是已登录普通用户，不是匿名开放访问。
+- 用户门户 `/_helper/api/portal/*`（自定义菜单内嵌页）：sub2api 用户 JWT 换会话。普通用户看到脱敏榜单（"用户 #N"、仅本人有 `is_me` 标记），管理员看到真实名称；榜单窗口为规则时区的本自然月，仅列出可评奖的正常普通用户，并附带只读的奖项摘要 `rewards`（金额、结算时间、模式，不含规则内部字段）。价格页（`/portal/models`）按 `group_id` 对比实际与官方单价，官方价由 `helper/pricing_catalog.py` 从公开价格库拉取并校验 SHA-256，实际价为官方价 × (`actual_cost`/`cost`) 的推算值——脱敏面向的是已登录普通用户，不是匿名开放访问。
 
 菜单同步（app.py `sync_menu_modules`）只管理固定前缀 `sub2api-helper-<key>` 的 custom_menu_items 项，保留其他菜单，写后回读确认。
 

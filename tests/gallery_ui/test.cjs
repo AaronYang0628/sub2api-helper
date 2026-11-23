@@ -37,6 +37,9 @@ class FixtureUpstream(FakeUpstream):
     async def available_groups(self, token):
         return {3} if token == 'real-feature-user-jwt' else set()
 
+    async def available_group_rows(self, token):
+        return [{'id': gid, 'name': 'OpenAI 主力', 'platform': 'openai', 'status': 'active'} for gid in await self.available_groups(token)]
+
     async def benchmark_key(self, key_id, group_id):
         return 'fixture-model-key-never-rendered'
 
@@ -48,7 +51,12 @@ store = Store(str(Path(__file__).with_name('real-feature.db')))
 config = Config(sub2api_url='http://127.0.0.1:9', sub2api_public_url=sys.argv[2],
                 sub2api_admin_key='fixture-bound-admin-key', admin_token='fixture-helper-admin-token',
                 native_ui=False, db_path=str(Path(__file__).with_name('real-feature.db')))
-app = app_module.create_app(config, store=store, upstream=FixtureUpstream(), mailer=FakeMailer(), background=False)
+from helper.pricing_catalog import PriceCatalog
+catalog = PriceCatalog('')
+catalog.models = {'gpt-sample': {'input_cost_per_token': 1e-06, 'output_cost_per_token': 4e-06, 'cache_read_input_token_cost': 1e-07}}
+catalog.loaded_at = 0.0
+catalog.ttl = float('inf')
+app = app_module.create_app(config, store=store, upstream=FixtureUpstream(), mailer=FakeMailer(), background=False, price_catalog=catalog)
 store.set_setting('modules', {'benchmark': True, 'pricing': True, 'ranking': True})
 for group_id, name, model, effort in [(3, '实际菜单可见分组', 'fixture-loopback-model', 'high'), (4, '禁止泄露分组', 'restricted-model', 'none')]:
     app.state.gallery.configure(group_id, {'name': name, 'model': model, 'key_id': group_id,
@@ -117,19 +125,14 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     delete item.content;
     return item;
   }
-  const fixtureBenchmarks = {
-    1: { verdict: 'stable', latest: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 920, status: 'ok', created_at: new Date(fixtureCreatedAt).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 940, status: 'ok', created_at: new Date(fixtureCreatedAt - 3600000).toISOString() } },
-    2: { verdict: 'regressed', latest: { passed: 3, graded: 5, total: 5, error_count: 0, latency_ms: 1180, status: 'ok', created_at: new Date(fixtureCreatedAt).toISOString() }, previous: { passed: 5, graded: 5, total: 5, error_count: 0, latency_ms: 1100, status: 'ok', created_at: new Date(fixtureCreatedAt - 3600000).toISOString() } },
-    3: { verdict: 'failed', latest: null, previous: null },
-    4: { verdict: 'no_baseline', latest: null, previous: null },
-  };
   function feedItem(group) {
     const item = {
       ...groups[group - 1],
       status: group === 4 ? 'queued' : group === 3 ? 'failed' : 'success',
       created_at: new Date(fixtureCreatedAt).toISOString(),
       round_id: 'latest-round',
-      benchmark: fixtureBenchmarks[group],
+      group_name: ['OpenAI 主力', 'Claude 专线', 'Gemini 备用', 'Antigravity'][group - 1],
+      platform: ['openai', 'anthropic', 'gemini', 'antigravity'][group - 1],
       history: group === 1 ? Array.from({ length: 6 }, (_, n) => previewWork(1, n + 1)) : group === 2 ? Array.from({ length: 3 }, (_, n) => previewWork(2, n + 1)) : [],
     };
     if (group !== 4) item.work = previewWork(group, 0);
@@ -192,18 +195,20 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await page.locator('#feature-main h1,.page-head,select,[role="tab"],[role="tablist"]').count(), 0, 'embedded feed has no duplicate title, source picker or tabs');
     assert.equal(await page.locator('.helper-gallery-stat,.helper-gallery-shared-prompt').count(), 0, 'the feed contains works and a next-run line, without summary blocks');
     assert.equal(await page.locator('.helper-gallery-work').count(), 4, 'compact feed renders one row per participant');
-    assert.deepEqual(await page.locator('.helper-gallery-work').evaluateAll(nodes => nodes.map(node => node.dataset.groupId)), ['2', '3', '1', '4'], 'anomaly-first order places regressed and failed models ahead of stable and no-baseline');
+    assert.deepEqual(await page.locator('.helper-gallery-work').evaluateAll(nodes => nodes.map(node => node.dataset.groupId)), ['1', '2', '3', '4'], 'rows keep the server order without any baseline-based reordering');
     assert.equal(await page.locator('.helper-gallery-work[data-group-id="1"] .helper-gallery-thumb-mini').count(), 4, 'history strip caps at 4 thumbnails per model row');
     assert.equal(await page.locator('.helper-gallery-work[data-group-id="2"] .helper-gallery-thumb-mini').count(), 3);
-    assert((await page.locator('.helper-gallery-work[data-group-id="2"] .helper-gallery-verdict').textContent()).includes('得分下降 · 5/5 → 3/5'));
-    assert((await page.locator('.helper-gallery-work[data-group-id="1"] .helper-gallery-verdict').textContent()).includes('正常 · 5/5'));
-    assert((await page.locator('.helper-gallery-work[data-group-id="1"]').first().locator('.helper-gallery-source').textContent()).includes('白鹭单车分组'));
+    assert.equal(await page.locator('.helper-gallery-verdict,[data-verdict]').count(), 0, 'no baseline or verdict badge exists');
+    assert.equal(await page.getByRole('button', { name: '刷新', exact: true }).count(), 0, 'no manual refresh button');
+    assert.equal(await page.getByText('暂无基线').count(), 0);
+    const badge = page.locator('.helper-gallery-work[data-group-id="1"] .helper-group-badge');
+    assert.equal((await badge.textContent()).trim(), 'OpenAI 主力', 'the official group name is shown');
+    assert(await badge.evaluate(node => node.classList.contains('helper-group-openai')));
+    assert.notEqual(await badge.evaluate(node => getComputedStyle(node).backgroundColor), await page.locator('.helper-gallery-work[data-group-id="2"] .helper-group-badge').evaluate(node => getComputedStyle(node).backgroundColor), 'platforms use distinct official colors');
     assert((await page.locator('.helper-gallery-work[data-group-id="1"]').first().locator('.helper-gallery-model').textContent()).includes('思考强度：高'));
-    assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('检测失败'));
-    assert(!(await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('得分下降'), 'failed generation is never mislabeled as regression');
+    assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('失败'));
     assert((await page.locator('.helper-gallery-work[data-group-id="3"]').textContent()).includes('fixture-failed'));
     const queued = page.locator('.helper-gallery-work[data-group-id="4"]');
-    assert.match(await queued.textContent(), /暂无基线/);
     assert.match(await queued.textContent(), /等待|排队/);
     assert.equal(await queued.locator('button').count(), 0, 'an intended participant without a work has no clickable thumb button');
     assert.equal(calls.filter(value => value === '/_helper/api/portal/gallery/feed').length, 1, 'initial gallery uses one aggregate feed request');
@@ -254,7 +259,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     await page.evaluate(() => document.querySelector('.helper-gallery').parentElement.remove()); const afterDetach = calls.length; await page.clock.fastForward(60000); await page.waitForTimeout(80); assert.equal(calls.length, afterDetach, 'detached view stops timers/requests');
 
     empty = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt');
-    await page.locator('.helper-gallery-empty').waitFor();
+    await page.locator('.helper-gallery-empty', { hasText: '暂无参测结果' }).waitFor();
     assert((await page.locator('.helper-gallery-empty').textContent()).trim());
     assert.equal(await page.locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0);
     assert((await page.locator('.helper-gallery-empty').boundingBox()).height <= 120, 'empty gallery stays compact inside its menu frame');
@@ -262,8 +267,8 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     await page.goto(origin + '/_helper/features/benchmark?token=fixture-admin-jwt');
     await page.getByRole('link', { name: '配置参测来源', exact: true }).waitFor();
     assert.equal(await page.getByRole('link', { name: '配置参测来源', exact: true }).getAttribute('href'), '/_helper/setup#analytics', 'fresh admin can enter setup with a visible connection form');
-    empty = false; fail = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('示例服务暂时不可用', { exact: true }).waitFor(); fail = false; await page.getByRole('button', { name: '刷新', exact: true }).click(); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor();
-    onlyFirst = false; noWorks = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.locator('.helper-gallery-empty').waitFor();
+    empty = false; fail = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByText('示例服务暂时不可用', { exact: true }).waitFor(); fail = false; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.getByRole('button', { name: '查看作品：白鹭单车 1', exact: true }).waitFor();
+    onlyFirst = false; noWorks = true; await page.goto(origin + '/_helper/features/benchmark?token=fixture-jwt'); await page.locator('.helper-gallery-empty', { hasText: '暂无参测结果' }).waitFor();
     assert.equal(await page.locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0, 'configured sources without work do not become invented participants or metric blocks');
     assert((await page.locator('.helper-gallery-empty').boundingBox()).height <= 120);
     noWorks = false;
@@ -302,7 +307,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       assert.equal(await menu().locator('.helper-gallery-dialog .helper-gallery-prompt').textContent(), 'Fixture immutable executed prompt');
       await menu().getByRole('button', { name: '关闭', exact: true }).click();
     }
-    const expectedAssets = ['feature.js', 'gallery-view.js', 'style.css', 'gallery-view.css'];
+    const expectedAssets = ['feature.js', 'gallery-view.js', 'style.css', 'gallery-view.css', 'feature-view.css'];
     for (const asset of expectedAssets) assert(assetResponses.some(response => response.path.endsWith('/' + asset) && response.status === 200), `real menu must load ${asset}`);
     assert(assetResponses.every(response => response.status === 200), JSON.stringify(assetResponses));
     for (const request of traffic.filter(value => new URL(value.url).pathname.startsWith('/_helper/static/'))) {
@@ -311,19 +316,19 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       assert(!request.headers.referer, 'initial parser asset fetches must not leak the iframe JWT in Referer');
     }
     await livePage.goto(parentOrigin + '/real-menu?mode=cross&auth=empty');
-    await menu().locator('.helper-gallery-empty').waitFor();
+    await menu().locator('.helper-gallery-empty', { hasText: '暂无参测结果' }).waitFor();
     assert((await menu().locator('.helper-gallery-empty').textContent()).trim());
     assert((await menu().locator('.helper-gallery-empty').boundingBox()).height <= 120);
     assert.equal(await menu().locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0);
     assert.equal(await menu().getByRole('link', { name: '配置参测来源', exact: true }).count(), 0);
     for (const [feature, expectedTitle, expectedContent] of [
-      ['pricing', '模型价格统计', 'sample'], ['ranking', '用户用量排名', '用户 #1']
+      ['pricing', '模型价格统计', 'gpt-sample'], ['ranking', '用户用量排名', '用户 #1']
     ]) {
       await livePage.goto(parentOrigin + `/real-menu?mode=cross&auth=user&feature=${feature}`);
       await menu().locator('table').waitFor();
       assert.equal(await menu().locator('#feature-main h1,.page-head').count(), 0, `${feature} iframe must not duplicate the host title or intro`);
       assert.equal(await menu().getByText(expectedTitle, { exact: true }).count(), 0);
-      assert((await menu().locator('table').textContent()).includes(expectedContent));
+      assert((await menu().locator('#feature-main').textContent()).includes(expectedContent));
       const childFrame = await livePage.locator('#feature-menu').elementHandle().then(handle => handle.contentFrame());
       assert((await childFrame.title()).includes(expectedTitle), 'feature identity remains accessible through document title');
       if (feature === 'ranking') assert(!/Alice|Bob|alice@example|bob@example/.test(await menu().locator('table').textContent()), 'ordinary ranking stays anonymous');

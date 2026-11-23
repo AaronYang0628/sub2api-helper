@@ -295,9 +295,12 @@ class Upstream:
             raise ValueError("开始日期不得晚于结束日期")
         return {"start_date": start_date, "end_date": end_date, "timezone": self.timezone}
 
-    async def models(self, start_date: str, end_date: str, token: str | None = None) -> dict[str, Any]:
+    async def models(self, start_date: str, end_date: str, token: str | None = None, group_id: int | None = None) -> dict[str, Any]:
         path = "/api/v1/usage/dashboard/models" if token is not None else "/api/v1/admin/dashboard/models"
-        return await self.request("GET", path, params=self._dates(start_date, end_date), token=token)
+        params = self._dates(start_date, end_date)
+        if group_id is not None:
+            params["group_id"] = self._id(group_id)
+        return await self.request("GET", path, params=params, token=token)
 
     async def ranking(self, start_date: str, end_date: str, limit: int = 50) -> dict[str, Any]:
         if type(limit) is not int or not 1 <= limit <= 100:
@@ -307,12 +310,15 @@ class Upstream:
     async def profile(self, token: str) -> dict[str, Any]:
         return await self.request("GET", "/api/v1/user/profile", token=token)
 
-    async def available_groups(self, token: str) -> set[int]:
+    async def available_group_rows(self, token: str) -> list[dict[str, Any]]:
         rows = await self.request("GET", "/api/v1/groups/available", token=token)
         if not isinstance(rows, list) or any(not isinstance(row, dict) or type(row.get("id")) is not int
                                              or row["id"] <= 0 for row in rows):
             raise UpstreamError("上游可用分组响应不兼容")
-        return {row["id"] for row in rows if row.get("status") == "active"}
+        return [{key: row.get(key) for key in ("id", "name", "platform", "status", "rate_multiplier")} for row in rows]
+
+    async def available_groups(self, token: str) -> set[int]:
+        return {row["id"] for row in await self.available_group_rows(token) if row.get("status") == "active"}
 
     async def benchmark_completion(self, api_key: str, model: str, prompt: str) -> dict[str, Any]:
         """One bounded OpenAI-compatible request, authenticated by a user key."""
