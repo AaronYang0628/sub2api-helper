@@ -2,7 +2,7 @@
 'use strict';
 (() => {
   const DEFAULT_PROMPT = '请创作一幅完整的 SVG 作品。只输出 SVG 源码，不要解释或 Markdown 代码块。';
-  const fields = ['name', 'model', 'key_id', 'api_format', 'reasoning_effort', 'interval_minutes', 'enabled', 'prompt'];
+  const fields = ['name', 'model', 'key_id', 'api_format', 'reasoning_effort', 'interval_minutes', 'timeout_seconds', 'enabled', 'prompt'];
   const EFFORTS = { default: '默认', none: '无', minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' };
   const id = value => (typeof value === 'number' || (typeof value === 'string' && /^[1-9][0-9]*$/.test(value)))
     && Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null;
@@ -26,13 +26,13 @@
   const input = (name, value, attributes = {}) => el('input', { class: 'input', name, value, ...attributes });
   const detailGroup = detail => detail && typeof detail.group === 'object' && detail.group !== null ? detail.group : null;
   function configPayload(group) {
-    return Object.fromEntries(fields.map(key => [key, key === 'reasoning_effort' ? group[key] || 'default' : group[key]]));
+    return Object.fromEntries(fields.map(key => [key, key === 'reasoning_effort' ? group[key] || 'default' : key === 'timeout_seconds' ? group[key] ?? null : group[key]]));
   }
   function errorText(error) { return error?.message || '操作未完成，请稍后重试。'; }
 
   window.helperGalleryAdmin = function helperGalleryAdmin(container, { request } = {}) {
     if (!(container instanceof Element) || typeof request !== 'function') throw new TypeError('Gallery administration requires a container and request function');
-    const state = { keys: [], optionsGroups: [], groups: [], timezone: 'Asia/Shanghai', groupID: null, saved: null, detail: null,
+    const state = { keys: [], optionsGroups: [], groups: [], timezone: 'Asia/Shanghai', defaultTimeout: 240, groupID: null, saved: null, detail: null,
       catalogLoaded: false, catalogError: null, optionsLoaded: false, groupError: null, keyError: null, editorOpen: false, adding: false,
       dirty: false, busy: false, pendingEnabled: null, epoch: 0, destroyed: false, poll: null, polls: 0, viewer: null, controls: null };
     const comparison = { data: null, loaded: false, dirty: false, busy: false, pendingEnabled: null, revision: 0, poll: null, polls: 0, controls: null };
@@ -196,7 +196,7 @@
       controls.fieldset.disabled = busy;
       controls.save.disabled = busy || !liveKey(controls.key.value) || (state.adding && (!!state.catalogError || state.groups.some(group => id(group.group_id) === state.groupID)));
       controls.run.hidden = member; controls.switch.hidden = member; controls.promptField.hidden = member; controls.intervalField.hidden = member; controls.scheduleNote.hidden = member;
-      controls.costNote.textContent = member ? '此处只修改分组的模型与 Key；同题提示词和生成间隔请在上方设置。' : '生成会实际调用所选模型并消耗该分组 Key 的额度。手动生成使用已保存的配置；暂停只停止后续定时生成。';
+      controls.costNote.textContent = member ? '此处修改分组的模型、Key 与生成超时；同题对比沿用各组已保存的超时，提示词和生成间隔请在上方设置。' : '生成会实际调用所选模型并消耗该分组 Key 的额度。手动生成使用已保存的配置；暂停只停止后续定时生成。';
       controls.run.disabled = busy || member || !state.saved || state.dirty || !!state.saved.running || !liveKey(state.saved.key_id);
       controls.toggle.disabled = busy || member || !state.saved || (!state.saved.enabled && (state.dirty || !liveKey(state.saved.key_id)));
       controls.toggle.checked = typeof state.pendingEnabled === 'boolean' ? state.pendingEnabled : state.saved?.enabled === true;
@@ -339,7 +339,8 @@
           await readComparison(revision);
           if (state.destroyed || revision !== comparison.revision) return;
           if (comparisonRunning()) {
-            if (comparison.polls++ < 180) pollComparison(revision);
+            const maximumSeconds = Math.max(1, comparison.data?.config?.group_ids?.length || comparison.data?.round?.items?.length || 1) * 930;
+            if (comparison.polls++ < Math.ceil(maximumSeconds / 2)) pollComparison(revision);
             else comparisonSay('本轮仍在生成，可刷新分组继续查看进度。');
           } else {
             const status = comparison.data?.round?.status;
@@ -368,7 +369,7 @@
       const key = liveKeys(groupID)[0];
       const official = state.optionsGroups.find(group => id(group.id) === groupID);
       return { group_id: groupID, name: official?.name || key?.group_name || `分组 #${groupID}`, model: '', key_id: id(key?.id),
-        api_format: 'chat', reasoning_effort: 'default', interval_minutes: 30, enabled: false, prompt: DEFAULT_PROMPT };
+        api_format: 'chat', reasoning_effort: 'default', interval_minutes: 30, timeout_seconds: null, enabled: false, prompt: DEFAULT_PROMPT };
     }
     function populateKeys(control, selected) {
       control.replaceChildren(...liveKeys().map(option => el('option', { value: id(option.id) }, `${option.name || 'API Key'} · #${id(option.id)}`)));
@@ -388,6 +389,7 @@
       const effort = el('select', { class: 'input', name: 'gallery_reasoning_effort' }, Object.entries(EFFORTS).map(([value, label]) => el('option', { value }, label)));
       effort.value = Object.hasOwn(EFFORTS, group.reasoning_effort) ? group.reasoning_effort : 'default';
       const interval = input('gallery_interval_minutes', group.interval_minutes ?? 30, { type: 'number', min: 5, max: 1440, step: 1, required: true });
+      const timeout = input('gallery_timeout_seconds', group.timeout_seconds ?? '', { type: 'number', min: 30, max: 900, step: 1, placeholder: `默认 ${state.defaultTimeout} 秒` });
       const prompt = el('textarea', { class: 'input', name: 'gallery_prompt', rows: 7, required: true, maxlength: 8000 }, group.prompt || '');
       const save = el('button', { type: 'submit', class: 'button primary' }, icon('checkCircle'), el('span', {}, '保存配置'));
       const cancel = button('取消', () => closeEditor(), 'button ghost');
@@ -404,7 +406,8 @@
       const switchControl = toggleControl(toggle, toggleLabel), costNote = el('p', { class: 'caption' });
       const fieldset = el('fieldset', { class: 'helper-gallery-admin-fields' },
         el('div', { class: 'helper-gallery-admin-grid' }, field('展示名称', name), field('模型', model), field('调用 API Key', key),
-          field('接口格式', format), field('思考强度', effort, '默认不发送额外参数。其他档位按模型与网关支持情况生效，可能被映射或忽略。'), intervalField), keyHint, promptField,
+          field('接口格式', format), field('思考强度', effort, '默认不发送额外参数。其他档位按模型与网关支持情况生效，可能被映射或忽略。'),
+          field('生成超时（秒）', timeout, `30～900 秒（最长 15 分钟）；留空使用服务端默认 ${state.defaultTimeout} 秒。同题对比沿用此设置；仅对保存后的新任务生效，超时不自动重试。上游可能有更短时限。`), intervalField), keyHint, promptField,
         el('div', { class: 'helper-gallery-admin-actions' }, el('div', { class: 'button-group' }, save, cancel, run), switchControl), scheduleNote, costNote);
       const form = el('form', { class: 'helper-gallery-admin-form' }, status, lastError, fieldset);
       form.addEventListener('input', event => { if (event.target !== toggle) { state.dirty = true; syncControls(); } });
@@ -415,9 +418,12 @@
         if (state.adding && state.catalogError) { say('暂时无法确认已有配置，请刷新后再新增分组。', 'error'); return; }
         if (state.adding && state.groups.some(item => id(item.group_id) === state.groupID)) { say('此分组已有配置，请关闭新增界面后编辑已保存的记录。', 'error'); return; }
         const payload = { name: name.value.trim(), model: model.value.trim(), key_id: id(key.value), api_format: format.value,
-          reasoning_effort: effort.value, interval_minutes: Number(interval.value), enabled: state.saved?.enabled === true, prompt: prompt.value.trim() };
+          reasoning_effort: effort.value, interval_minutes: Number(interval.value), timeout_seconds: timeout.value.trim() === '' ? null : Number(timeout.value), enabled: state.saved?.enabled === true, prompt: prompt.value.trim() };
         if (!payload.name || !payload.model || !payload.prompt || !Number.isInteger(payload.interval_minutes) || payload.interval_minutes < 5 || payload.interval_minutes > 1440) {
           say('请填写名称、模型、提示词，并将间隔设置为 5～1440 的整数分钟。', 'error'); return;
+        }
+        if (payload.timeout_seconds !== null && (!Number.isInteger(payload.timeout_seconds) || payload.timeout_seconds < 30 || payload.timeout_seconds > 900)) {
+          say('生成超时应为 30～900 的整数秒，或留空使用服务端默认值。', 'error'); return;
         }
         const bytes = new TextEncoder();
         if (bytes.encode(payload.name).length > 120 || bytes.encode(payload.model).length > 150 || bytes.encode(payload.prompt).length > 16000) {
@@ -425,7 +431,7 @@
         }
         if (await mutate('PUT', '', payload, '配置已保存。')) { closeEditor(true); say('配置已保存。', 'success'); }
       });
-      state.controls = { fieldset, name, model, key, format, effort, interval, prompt, save, run, toggle, toggleLabel, status, lastError, keyHint,
+      state.controls = { fieldset, name, model, key, format, effort, interval, timeout, prompt, save, run, toggle, toggleLabel, status, lastError, keyHint,
         intervalField, promptField, scheduleNote, switch: switchControl, costNote };
       configuration.replaceChildren(form); syncControls();
     }
@@ -470,7 +476,7 @@
           await readDetail(epoch);
           if (!current(epoch, groupID)) return;
           if (state.saved?.running) {
-            if (state.polls++ < 180) pollGeneration(epoch, groupID);
+            if (state.polls++ < 465) pollGeneration(epoch, groupID);
             else say('本轮仍在生成，可点击刷新分组继续查看进度。');
           } else { say(state.saved?.last_error ? `生成失败：${String(state.saved.last_error)}` : '本轮生成已结束，可在下方查看作品。', state.saved?.last_error ? 'error' : 'success'); await refreshGallery(); }
         } catch (error) { if (current(epoch, groupID)) say(`${errorText(error)} 可点击刷新分组查看执行结果。`, 'error'); }
@@ -510,6 +516,8 @@
         state.groups = catalog.value.groups.filter(group => id(group?.group_id));
         state.catalogLoaded = true; state.catalogError = null;
         state.timezone = typeof catalog.value.timezone === 'string' ? catalog.value.timezone : 'Asia/Shanghai';
+        const defaultTimeout = catalog.value.default_timeout_seconds;
+        if (Number.isInteger(defaultTimeout) && defaultTimeout >= 30 && defaultTimeout <= 900) state.defaultTimeout = defaultTimeout;
         if (!state.editorOpen) feedback.textContent = '';
       } else {
         const message = catalog.status === 'rejected' ? errorText(catalog.reason) : '已保存分组列表响应不兼容。';

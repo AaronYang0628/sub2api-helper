@@ -313,7 +313,7 @@
       }
     }
     if (path === '/api/gallery/options' && method === 'GET') return { groups: galleryDirectory, keys: galleryKeys, group_error: null, key_error: null };
-    if (path === '/api/gallery' && method === 'GET') return { groups: galleryGroups.map(galleryGroup), timezone: 'Asia/Shanghai' };
+    if (path === '/api/gallery' && method === 'GET') return { groups: galleryGroups.map(galleryGroup), timezone: 'Asia/Shanghai', default_timeout_seconds: 240 };
     let gallery = path.match(/^\/api\/gallery\/(\d+)(?:\/(run|pause)|\/works\/(\d+))?$/);
     if (gallery) {
       const groupId = Number(gallery[1]);
@@ -321,6 +321,7 @@
       if (!gallery[2] && !gallery[3] && method === 'PUT') {
         if (!galleryKeys.some(key => key.id === data.key_id && key.group_id === groupId)) return bad('请为该示例分组选择有效 Key。');
         if (!data.model?.trim() || !data.prompt?.trim() || !Number.isInteger(data.interval_minutes) || data.interval_minutes < 5 || data.interval_minutes > 1440) return bad('请输入示例模型、提示词和有效分钟数。');
+        if (data.timeout_seconds != null && (!Number.isInteger(data.timeout_seconds) || data.timeout_seconds < 30 || data.timeout_seconds > 900)) return bad('生成超时应为 30～900 的整数秒。');
         if (!group) {
           group = { group_id: groupId };
           galleryGroups.push(group);

@@ -20,8 +20,20 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     { id: '1', name: '旧订阅倍率规则', type: 'subscription_multiplier', timezone: 'Europe/London', enabled: false, group_id: 88, expires_within_days: 2, remaining_fraction_gt: 0.5, quota_period: 'month', multiplier: 0.5, scope: 'user_group', restore_on_exit: false },
     { id: '2', name: '旧月度奖励规则', type: 'monthly_rewards', timezone: 'Europe/London', enabled: false, mode: 'approval', rewards: [{ rank: 1, amount: 50 }, { rank: 2, amount: 30 }, { rank: 3, amount: 10 }] }
   ];
-  let delayPreviewMs = 0;
-  const writes = [], errors = [], resources = [], pendingMetrics = [];
+  let delayPreviewMs = 0, holdMetrics = false, failSettlements = false;
+  const metricFailure = {};
+  const metricReply = route => route === '/analytics/models'
+    ? { models: [{ model: 'fixture-model', requests: 12, input_tokens: 30, output_tokens: 10, total_tokens: 40, cost: 0.5, actual_cost: 0.4 }] }
+    : { ranking: [{ rank: 1, user_id: 7, username: 'fixture-user', requests: 9, tokens: 100, actual_cost: 1.25 }] };
+  const settlements = [
+    { month: '2026-10', start_date: '2026-10-01', end_date: '2026-10-31', timezone: 'Europe/London', rule_id: '2', actions: [
+      { user_id: 101, rank: 1, amount: '80', actual_cost: '245.80', month: '2026-10', status: 'done', completed_at: '2026-11-01T00:02:00Z' },
+      { user_id: 102, rank: 2, amount: '30', actual_cost: '180.24', month: '2026-10', status: 'done', completed_at: '2026-11-01T00:02:00Z' },
+      { user_id: 103, rank: 3, amount: '10', actual_cost: '128.60', month: '2026-10', status: 'needs_review', attempted_at: '2026-11-01T00:01:00Z', reason: 'fixture：发放结果未知，等待人工核对' }] },
+    { month: '2026-09', start_date: '2026-09-01', end_date: '2026-09-30', timezone: 'Europe/London', rule_id: 'removed-rule', actions: [
+      { user_id: 104, rank: 1, amount: '50', month: '2026-09', status: 'skipped' }] }
+  ];
+  const writes = [], errors = [], resources = [], pendingMetrics = [], requests = [];
   const labels = { benchmark: '智商检测', pricing: '模型价格统计', ranking: '用户用量排名' };
   const settings = () => ({ public_origin: publicOrigin, origin_source: 'stored', sub2api_public_origin: 'https://api.example.test', modules, menus: Object.entries(labels).map(([key, label]) => ({ key, id: `sub2api-helper-${key}`, label, url: `${publicOrigin}/_helper/features/${key}`, enabled: modules[key], icon_svg: '' })), ready: Boolean(publicOrigin), problems: [], in_sync: publicOrigin === syncedOrigin });
   const server = http.createServer(async (req, res) => {
@@ -30,9 +42,13 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
       let raw = ''; for await (const part of req) raw += part;
       const body = raw ? JSON.parse(raw) : undefined;
       if (req.method !== 'GET') writes.push({ path: url.pathname, method: req.method, body });
-      let result = {}, code = 200;
       const route = url.pathname.slice('/_helper/api/admin'.length);
-      if (route.startsWith('/analytics/')) { pendingMetrics.push(res); return; }
+      requests.push({ method: req.method, path: route });
+      let result = {}, code = 200;
+      if (route.startsWith('/analytics/')) {
+        if (holdMetrics) { pendingMetrics.push(res); return; }
+        if (metricFailure[route]) { code = metricFailure[route]; result = { detail: '此统计暂不可用' }; } else result = metricReply(route);
+      }
       if (route === '/connection') result = { configured: true, upstream_url: 'https://api.example.test', public_url: publicOrigin };
       else if (route === '/status') {
         if (unverified) { code = 401; result = { detail: '未授权' }; }
@@ -50,7 +66,7 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
         { id: 2, name: '超长名称测试订阅分组_' + 'G'.repeat(95), status: 'active', subscription_type: 'subscription', rate_multiplier: 1 }
       ];
       else if (route === '/gallery') result = { groups: [], timezone: 'Asia/Shanghai' };
-      else if (route === '/benchmark/options') result = { keys: [] };
+      else if (route === '/settlements') { if (failSettlements) { code = 503; result = { detail: '结算记录暂不可用' }; } else result = settlements; }
       else if (route === '/email-templates' || route.startsWith('/email-templates/')) {
         if (req.method === 'GET') result = emailTemplates;
         else if (req.method === 'POST') { const created = { id: String(emailTemplates.length + 1), ...body }; emailTemplates.push(created); result = created; }
@@ -81,7 +97,7 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
         else if (req.method === 'POST') { const created = { id: String(automations.length + 1), ...body }; automations.push(created); result = created; }
         else if (req.method === 'PUT') { const id = parts[2]; const idx = automations.findIndex(a => String(a.id) === id); automations[idx] = { ...automations[idx], ...body, id }; result = automations[idx]; }
       }
-      else if (['/settlements', '/users', '/audit'].includes(route)) result = [];
+      else if (['/users', '/audit'].includes(route)) result = [];
       res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(result)); return;
     }
     if (url.pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
@@ -109,7 +125,7 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     });
     await page.goto(origin + '/_helper/setup#modules');
     await page.getByText('上游菜单与已保存的配置一致。', { exact: true }).waitFor();
-    assert.deepEqual(await page.locator('#navigation .nav-item').evaluateAll(nodes => nodes.map(n => n.textContent.trim())), ['规则', '功能与菜单', '智商检测', '运行与系统'], 'setup navigation consolidates to 4 tabs');
+    assert.deepEqual(await page.locator('#navigation .nav-item').evaluateAll(nodes => nodes.map(n => n.textContent.trim())), ['规则', '功能与菜单', '智商检测', '排名与奖励', '运行与系统'], 'setup navigation consolidates to 5 tabs');
     assert.equal(await page.locator('#connection-summary').isVisible(), true, 'connected setup shows compact connection summary bar');
     assert.equal(await page.locator('#connection-form').isVisible(), false, 'connected setup hides credential input form by default');
     const switches = page.locator('.module-bottom .helper-switch');
@@ -251,15 +267,76 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     await automationsSection.getByRole('button', { name: '预览 / 执行', exact: true }).nth(1).click();
     await dialog.getByText('规则预览 · 旧月度奖励规则', { exact: true }).waitFor();
     await dialog.getByRole('button', { name: '关闭', exact: true }).first().click();
-    await page.goto(origin + '/_helper/setup#analytics'); await page.getByRole('heading', { name: '智商检测', exact: true }).waitFor(); await page.locator('.helper-gallery-admin-catalog').waitFor();
-    assert.equal(pendingMetrics.length, 0, 'secondary cost/ranking metrics stay lazy until expanded');
-    await page.getByText('费用与用量统计（模型维度费用 · 用户用量排名）', { exact: true }).click();
-    await page.getByText('正在读取统计数据…', { exact: true }).first().waitFor();
-    assert.equal(await page.getByText('正在读取统计数据…', { exact: true }).count(), 2, 'slow optional metrics do not block gallery mount');
-    await page.waitForFunction(() => document.querySelectorAll('.helper-gallery-admin-catalog').length === 1);
-    for (const response of pendingMetrics.splice(0)) { response.writeHead(403, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ detail: '此统计暂不可用' })); }
-    await page.getByText('此统计暂不可用', { exact: true }).first().waitFor(); assert.equal(await page.locator('.helper-gallery-admin-catalog').count(), 1, 'denied metrics keep gallery available');
+    // Rules keep rule configuration only: no settlement history request or card.
+    const statisticsRequests = () => requests.map(r => r.path).filter(path => /^\/(analytics|settlements|benchmark)/.test(path));
+    requests.length = 0; await page.goto(origin + '/_helper/setup#rules'); await usersSection.getByText('旧闲置提醒规则', { exact: true }).waitFor(); await page.waitForLoadState('networkidle');
+    assert.equal(await page.locator('#main').getByText('月度结算记录', { exact: true }).count(), 0, 'monthly settlement history no longer renders in rules');
+    assert.deepEqual(statisticsRequests(), [], 'rules requests no settlement history or metrics');
+    assert.equal(await automationsSection.getByRole('link', { name: '结算记录', exact: true }).getAttribute('href'), '#rewards', 'rules link to the relocated settlement history');
+
+    // 智商检测 keeps the gallery only: no fixed-question self-test and no statistics.
+    requests.length = 0; await page.goto(origin + '/_helper/setup#analytics'); await page.getByRole('heading', { name: '智商检测', exact: true }).waitFor(); await page.locator('.helper-gallery-admin-catalog').waitFor(); await page.waitForLoadState('networkidle');
+    assert.equal(await page.locator('#main .benchmark-form, #main .secondary-analytics').count(), 0, 'fixed-question self-test and statistics sections removed from 智商检测');
+    assert.equal(await page.locator('#main').getByText('固定题', { exact: false }).count(), 0, 'no self-test wording remains');
+    assert.deepEqual(statisticsRequests(), [], '智商检测 requests no statistics or self-test endpoints');
     assert.equal(await page.locator('.page-head h1').evaluate(node => getComputedStyle(node).fontSize), '18px', 'standalone setup keeps page-head h1');
+    await page.screenshot({ path: path.join(directory, 'analytics-gallery-only.png'), fullPage: true });
+
+    // 排名与奖励: settlement records, model costs and user ranking each load and fail on their own.
+    const mainRegion = page.locator('#main'), records = page.locator('#rewards-settlements');
+    const rowText = async index => (await records.locator('tbody tr').nth(index).textContent()).replace(/\s+/g, ' ');
+    requests.length = 0; holdMetrics = true;
+    await page.goto(origin + '/_helper/setup#rewards'); await page.getByRole('heading', { name: '排名与奖励', exact: true }).waitFor();
+    await records.locator('table').waitFor();
+    assert.equal(await mainRegion.getByText('正在读取统计数据…', { exact: true }).count(), 2, 'both metric cards show their own loading state');
+    assert.equal(await records.getByText('正在读取结算记录…', { exact: true }).count(), 0, 'settlement records do not wait for metrics');
+    assert.equal(await records.locator('tbody tr').count(), 4, 'settlement history moved out of rules');
+    assert.deepEqual([...new Set(requests.map(r => r.path).filter(path => !['/status', '/gallery'].includes(path)))].sort(), ['/analytics/models', '/analytics/ranking', '/automations', '/settlements'], 'rewards loads records plus both metrics');
+    assert((await rowText(0)).startsWith('2026-102026-10-01 — 2026-10-311#101$80$245.80已发放旧月度奖励规则'), 'latest month ranks first and resolves the originating rule');
+    assert((await rowText(2)).includes('3#103$10$128.60待人工核对旧月度奖励规则') && (await rowText(2)).includes('fixture：发放结果未知，等待人工核对'), 'uncertain payout keeps its manual-review status and reason');
+    assert((await rowText(3)).includes('已跳过') && (await rowText(3)).includes('规则 #removed-rule'), 'records of deleted rules keep the rule ID fallback');
+    await records.getByText('存在待核对的发放记录，这些记录不会自动重试。请先在 sub2api 核查余额变更记录，确认结果后再处理，避免重复奖励。', { exact: true }).waitFor();
+    assert.equal(pendingMetrics.length, 2);
+    const [modelsResponse, rankingResponse] = pendingMetrics.splice(0);
+    modelsResponse.writeHead(403, { 'Content-Type': 'application/json' }); modelsResponse.end(JSON.stringify({ detail: '此统计暂不可用' }));
+    rankingResponse.writeHead(200, { 'Content-Type': 'application/json' }); rankingResponse.end(JSON.stringify(metricReply('/analytics/ranking')));
+    holdMetrics = false;
+    await mainRegion.getByText('此统计暂不可用', { exact: true }).waitFor(); await mainRegion.getByText('fixture-user', { exact: true }).waitFor();
+    assert.equal(await mainRegion.getByText('此统计暂不可用', { exact: true }).count(), 1, 'a denied metric reports an error in its own card only');
+    assert.equal(await mainRegion.getByText('正在读取统计数据…', { exact: true }).count(), 0);
+    assert.equal(await records.locator('tbody tr').count(), 4, 'settlement records remain available when a metric fails');
+    await page.screenshot({ path: path.join(directory, 'rewards-metric-denied.png'), fullPage: true });
+    failSettlements = true;
+    await page.reload(); await records.getByText('结算记录读取失败：结算记录暂不可用', { exact: true }).waitFor();
+    await mainRegion.getByText('fixture-model', { exact: true }).waitFor(); await mainRegion.getByText('fixture-user', { exact: true }).waitFor();
+    assert.equal(await records.locator('table').count(), 0, 'failed records show an error instead of an empty history');
+    assert.equal(await mainRegion.locator('table').count(), 2, 'metrics still render when the records request fails');
+    failSettlements = false;
+    await page.reload(); await records.locator('table').waitFor(); await mainRegion.getByText('fixture-model', { exact: true }).waitFor(); await mainRegion.getByText('fixture-user', { exact: true }).waitFor();
+    assert.equal(await mainRegion.locator('table').count(), 3); assert.equal(await mainRegion.locator('.notice.error').count(), 0);
+    assert.equal(await page.getByRole('link', { name: '排名与奖励', exact: true }).getAttribute('aria-current'), 'page');
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await page.screenshot({ path: path.join(directory, 'rewards-desktop.png'), fullPage: true });
+    const reviewAction = settlements[0].actions[2]; reviewAction.status = 'done';
+    await page.reload(); await records.locator('table').waitFor();
+    assert.equal(await records.locator('.notice.warning').count(), 0, 'completed-only history needs no uncertain-payout warning');
+    assert(!(await records.textContent()).includes('null'), 'optional warning never renders a literal null');
+    reviewAction.status = 'needs_review';
+    await page.reload(); await records.locator('.notice.warning').waitFor();
+    for (const width of [390, 320]) { await page.setViewportSize({ width, height: 844 }); assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `rewards has no page-wide overflow at ${width}px`); }
+    await page.setViewportSize({ width: 390, height: 844 }); await page.evaluate(() => document.documentElement.classList.add('dark')); await page.waitForTimeout(350);
+    await page.screenshot({ path: path.join(directory, 'rewards-mobile-dark.png'), fullPage: true });
+    await page.goto(origin + '/_helper/setup#analytics'); await page.locator('.helper-gallery-admin-catalog').waitFor(); await page.waitForLoadState('networkidle');
+    assert.equal(await page.locator('#main .benchmark-form, #main .secondary-analytics').count(), 0);
+    await page.screenshot({ path: path.join(directory, 'analytics-mobile-dark.png'), fullPage: true });
+
+    // Legacy hashes: automation configuration stays in rules; the relocated history keeps a deep link.
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await page.goto(origin + '/_helper/setup#settlements'); await records.locator('table').waitFor();
+    assert.equal(await page.getByRole('link', { name: '排名与奖励', exact: true }).getAttribute('aria-current'), 'page', 'legacy #settlements opens 排名与奖励');
+    requests.length = 0; await page.goto(origin + '/_helper/setup#automations'); await automationsSection.getByText('旧订阅倍率规则', { exact: true }).waitFor(); await page.waitForLoadState('networkidle');
+    assert.equal(await automationsSection.getByRole('button', { name: '预览 / 执行', exact: true }).count(), automations.length, 'automation configuration and preview stay in rules');
+    assert.deepEqual(statisticsRequests(), [], 'legacy #automations stays on rule configuration without requesting history or metrics');
     await page.setViewportSize({ width: 1280, height: 1000 }); await page.goto(origin + '/host');
     const embedded = page.frameLocator('iframe'); await embedded.getByRole('button', { name: '刷新核对', exact: true }).waitFor();
     assert.equal(await embedded.locator('.page-head h1').count(), 0, 'embedded console removes duplicate page-head h1');
@@ -281,6 +358,11 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     assert(Math.abs(zoomed - nativeZoomed / 2) < 1, `browser zoom keeps iframe CSS controls at native rem sizes: iframe=${zoomed}, native=${nativeZoomed}`);
     assert.equal(await embedded.locator('.helper-switch').first().locator('span').last().evaluate(node => getComputedStyle(node).whiteSpace), 'nowrap');
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)); await page.screenshot({ path: path.join(directory, 'modules-iframe-zoom.png'), fullPage: true });
+    await page.evaluate(() => { document.querySelector('iframe').contentWindow.location.hash = 'rewards'; });
+    await embedded.locator('#rewards-settlements table').waitFor(); await embedded.locator('.overview-grid tbody tr').first().waitFor();
+    assert.equal(await embedded.locator('main').getAttribute('aria-label'), '排名与奖励', 'native advanced console opens #rewards as a named landmark without a duplicate heading');
+    assert.equal(await embedded.locator('.page-head h1, .page-head p').count(), 0);
+    assert.equal(await embedded.locator('#navigation .nav-item').count(), 5, 'embedded console offers the same five tabs');
     unverified = true;
     await page.evaluate(() => { document.body.style.zoom = ''; sessionStorage.removeItem('helper_setup_session'); });
     await page.goto(origin + '/_helper/setup#rules');
@@ -290,6 +372,6 @@ const { chromium } = createRequire(path.join(root, 'ui/package.json'))(process.e
     unverified = false;
     assert(resources.length >= 9 && resources.every(item => item.status === 200)); assert.deepEqual(errors, []);
     assert(writes.some(item => item.path.endsWith('/menu-settings') && item.method === 'PUT')); assert(writes.some(item => item.path.endsWith('/menu-settings/sync')));
-    console.log(JSON.stringify({ passed: true, screenshots: directory, nativeButton: reference, nativeInput, tableStyle, checks: ['horizontal switches at320/390', 'native iframe typography and zoom', 'table and modal metrics', 'local SVG assets', 'origin draft/save/autodetect', 'explicit verified sync/errors', 'slow or denied metrics never block gallery', 'native controls remain interactive'] }, null, 2));
+    console.log(JSON.stringify({ passed: true, screenshots: directory, nativeButton: reference, nativeInput, tableStyle, checks: ['horizontal switches at320/390', 'native iframe typography and zoom', 'table and modal metrics', 'local SVG assets', 'origin draft/save/autodetect', 'explicit verified sync/errors', 'slow, denied and failed cards stay independent', 'rules and 智商检测 request no history or metrics', 'legacy #settlements and #automations hashes', 'embedded #rewards console', 'native controls remain interactive'] }, null, 2));
   } finally { for (const response of pendingMetrics) response.end('{}'); await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

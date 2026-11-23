@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from helper.gallery import FAILED, INTERRUPTED, Gallery, GalleryError
-from helper.gallery_generation import GalleryGenerationError, UnsupportedReasoningEffort
+from helper.gallery_generation import FAILURE_MESSAGES, GenerationFailure, GalleryGenerationError, UnsupportedReasoningEffort
 from helper.store import Store
 
 
@@ -60,6 +60,41 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deadline, (self.clock.now + timedelta(minutes=30)).timestamp())
         self.clock.advance(minutes=30)
         await self.gallery.tick()
+        self.assertEqual(self.calls, [])
+
+    async def test_timeout_persists_defaults_and_freezes_at_start_for_each_group(self):
+        self.assertIsNone(self.configure()["group"]["timeout_seconds"])
+        for invalid in (True, "600", 600.5, 29, 901, [], {}):
+            with self.subTest(invalid=invalid), self.assertRaises(GalleryError):
+                self.configure(timeout_seconds=invalid)
+        self.configure(timeout_seconds=600)
+        self.configure(name="renamed")
+        self.assertEqual(self.gallery.view(1)["group"]["timeout_seconds"], 600)
+        pending = await self.gallery.start(1)
+        self.configure(timeout_seconds=900)
+        await asyncio.gather(*list(self.gallery._tasks.values()))
+        self.assertEqual(self.calls[0]["timeout_seconds"], 600)
+        self.assertEqual(self.gallery.work(1, pending["id"])["status"], "success")
+        self.configure(timeout_seconds=600)
+        self.configure(2, timeout_seconds=900)
+        self.gallery.configure_comparison({"group_ids": [1, 2]})
+        await self.gallery.start_comparison()
+        self.configure(2, timeout_seconds=30)
+        await asyncio.gather(*list(self.gallery._tasks.values()))
+        self.assertEqual([job["timeout_seconds"] for job in self.calls[-2:]], [600, 900])
+        self.assertIsNone(self.configure(timeout_seconds=None)["group"]["timeout_seconds"])
+
+    async def test_old_gallery_timeout_migration_keeps_deadline_without_model_replay(self):
+        self.configure(enabled=True)
+        deadline = self.store._db.execute("SELECT next_at FROM gallery_jobs").fetchone()[0]
+        with self.store._db:
+            row = self.store._db.execute("SELECT config FROM gallery_jobs").fetchone()
+            cfg = json.loads(row[0]); cfg.pop("timeout_seconds")
+            self.store._db.execute("UPDATE gallery_jobs SET config=?", (json.dumps(cfg),))
+        await self.gallery.close()
+        self.gallery = Gallery(self.store, self.generate, clock=self.clock)
+        self.assertIsNone(self.gallery.view(1)["group"]["timeout_seconds"])
+        self.assertEqual(self.store._db.execute("SELECT next_at FROM gallery_jobs").fetchone()[0], deadline)
         self.assertEqual(self.calls, [])
 
     async def test_manual_generation_works_while_module_and_job_disabled(self):
@@ -136,6 +171,25 @@ class GalleryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ordinary-secret-key", json.dumps(view))
         await self.gallery.tick()
         self.assertEqual(len(self.calls), 1)
+
+    async def test_only_whitelisted_generation_diagnostics_are_persisted(self):
+        self.configure()
+        for code, message in FAILURE_MESSAGES.items():
+            failure = GenerationFailure(code)
+            failure.args = ("ordinary-secret-key upstream-body",)
+
+            async def fail(job):
+                self.calls.append(job)
+                raise failure
+
+            self.gallery.generate = fail
+            work = await self.complete()
+            self.assertEqual(work["status"], "failed")
+            self.assertEqual(work["error"], message)
+            self.assertEqual(self.gallery.view(1)["group"]["last_error"], message)
+            self.assertNotIn("ordinary-secret-key", json.dumps(self.gallery.view(1)))
+        await self.gallery.tick()
+        self.assertEqual(len(self.calls), len(FAILURE_MESSAGES))
 
     async def test_invalid_and_oversized_artifacts_fail_without_retaining_payload(self):
         self.configure()

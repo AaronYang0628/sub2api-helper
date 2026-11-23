@@ -123,6 +123,15 @@ class ConfigTests(unittest.TestCase):
         for secret in ("local-admin-token-very-secret", "upstream-secret-key", "smtp-secret-password"):
             self.assertNotIn(secret, repr(cfg))
 
+    def test_gallery_wait_deadline_is_bounded_and_does_not_echo_invalid_values(self):
+        self.assertEqual(self.config().gallery_timeout_seconds, 240)
+        for value in ("30", "600", "900"):
+            self.assertEqual(self.config(HELPER_GALLERY_TIMEOUT_SECONDS=value).gallery_timeout_seconds, int(value))
+        for value in ("0", "29", "901", "bad-secret-value", "1.5"):
+            with self.subTest(value=value), self.assertRaises(ValueError) as error:
+                self.config(HELPER_GALLERY_TIMEOUT_SECONDS=value)
+            self.assertNotIn("bad-secret-value", str(error.exception))
+
     def test_plaintext_smtp_and_credential_urls_rejected(self):
         for changes in (
             {"SUB2API_URL": "https://user:password@example.test"},

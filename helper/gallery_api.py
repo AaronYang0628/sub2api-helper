@@ -18,6 +18,7 @@ class GalleryJob(Input):
     api_format: Literal["chat", "responses"] = "chat"
     reasoning_effort: Literal["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"] = "default"
     interval_minutes: int = Field(default=30, ge=5, le=1440)
+    timeout_seconds: int | None = Field(default=None, strict=True, ge=30, le=900)
     enabled: bool = False
 
 
@@ -143,7 +144,8 @@ def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provide
 
     @admin_api.get("/gallery", dependencies=[Depends(admin)])
     async def list_gallery_jobs():
-        return {"groups": gallery.groups(), "timezone": config_provider().timezone}
+        return {"groups": gallery.groups(), "timezone": config_provider().timezone,
+                "default_timeout_seconds": config_provider().gallery_timeout_seconds}
 
     @admin_api.get("/gallery/options", dependencies=[Depends(admin)])
     async def gallery_options():
@@ -201,13 +203,17 @@ def install_gallery_api(admin_api, portal_api, gallery, upstream, config_provide
     async def save_gallery_job(value: GalleryJob, request: Request, group_id: int = Path(gt=0)):
         limit(request, "gallery.configure", 15)
         await upstream.benchmark_key(value.key_id, group_id)
-        return gallery.configure(group_id, value.model_dump())
+        data = value.model_dump()
+        # Older clients omit this field; only explicit null resets an override.
+        if "timeout_seconds" not in value.model_fields_set:
+            data.pop("timeout_seconds")
+        return gallery.configure(group_id, data)
 
     @admin_api.post("/gallery/{group_id}/pause", dependencies=[Depends(admin)])
     async def pause_gallery_job(group_id: int = Path(gt=0)):
         # Stopping billing must work even if the selected model key was revoked.
         group = gallery.view(group_id)["group"]
-        config = {key: group[key] for key in GalleryJob.model_fields}
+        config = {key: group[key] for key in GalleryJob.model_fields if key in group}
         config["enabled"] = False
         return gallery.configure(group_id, config)
 

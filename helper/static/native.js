@@ -12,7 +12,7 @@
   const BUTTON = 'helper-native-action shrink-0 whitespace-nowrap flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400';
   const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
   const CONSOLE_SESSION_KEY = 'helper_native_console_session';
-  const ADVANCED = { rules: '规则管理', modules: '功能与菜单', analytics: '智商检测', system: '运行与系统' };
+  const ADVANCED = { rules: '规则管理', modules: '功能与菜单', analytics: '智商检测', rewards: '排名与奖励', system: '运行与系统' };
   const DEFAULT_TEMPLATES = [
     { id: 'builtin:inactive', name: '长期未使用提醒', subject: '账户长期未使用提醒', body: '您好 {username}，您的账户近期未使用，请及时登录查看。如有疑问请联系管理员。', builtin: true },
     { id: 'builtin:maintenance', name: '服务维护通知', subject: '服务维护通知', body: '您好 {username}，服务将进行维护，请留意管理员后续通知。', builtin: true },

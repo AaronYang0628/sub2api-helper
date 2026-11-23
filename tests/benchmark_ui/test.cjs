@@ -1,4 +1,4 @@
-/* Portable, offline mixed-media result and fixed quiz browser regression. */
+/* Portable, offline mixed-media result renderer regression; no quiz entry or model calls. */
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
@@ -52,11 +52,10 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     let remoteCalls = 0;
     await page.route('https://media.example.invalid/**', async route => { remoteCalls++; assert.equal(route.request().headers().referer, undefined); assert.equal(route.request().headers().authorization, undefined); await route.fulfill({ contentType: 'image/gif', body: gif, headers: { 'Cache-Control': 'no-store' } }); });
     await page.addInitScript(() => sessionStorage.setItem('helper_setup_session', 'fixture-opaque-session'));
-    await page.goto(origin + '/_helper/setup#analytics'); await page.getByText('固定题自检', { exact: true }).click();
-    const quiz = page.locator('.benchmark-form');
-    await quiz.locator('[name=model]').fill('my-model'); await quiz.locator('[name=group_id]').selectOption('2'); await quiz.locator('[name=api_format]').selectOption('responses');
-    await page.getByRole('button', { name: '开始检测', exact: true }).click(); await page.getByRole('heading', { name: '检测结果', exact: true }).waitFor();
-    assert.equal(await page.locator('.benchmark-form').isVisible(), false); assert.equal(await page.locator('.helper-benchmark-question').count(), 5);
+    await page.goto(origin + '/renderer'); await page.waitForFunction(() => typeof helperBenchmarkResults === 'function');
+    await page.evaluate(data => document.getElementById('result').replaceChildren(helperBenchmarkResults(data, { groupName: '示例分组 B', onBack() { window.fixtureBack = true; document.getElementById('result').replaceChildren(); } })), mixed);
+    await page.getByRole('heading', { name: '检测结果', exact: true }).waitFor();
+    assert.equal(await page.locator('.helper-benchmark-question').count(), 5);
     await page.getByText('1 / 2', { exact: true }).waitFor(); await page.getByText('5 / 5', { exact: true }).waitFor(); await page.getByText('未判分 2', { exact: true }).waitFor(); await page.getByText('请求失败 1', { exact: true }).waitFor();
     assert.equal(await page.locator('.helper-benchmark-results script,.helper-benchmark-results iframe,.helper-benchmark-results svg,.helper-benchmark-results a,.helper-benchmark-results object').count(), 0);
     assert.equal(await page.evaluate(() => window.PWNED), undefined); assert((await page.locator('.helper-benchmark-text').first().textContent()).includes('<img'));
@@ -72,9 +71,9 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     await page.getByRole('button', { name: '加载外部图片', exact: true }).click(); await page.getByText('外部图片已加载 · media.example.invalid', { exact: true }).waitFor(); assert.equal(remoteCalls, 1);
     assert.equal(await page.locator('.helper-benchmark-remote img').getAttribute('referrerpolicy'), 'no-referrer'); assert.equal(await page.locator('.helper-benchmark-remote img').getAttribute('crossorigin'), null);
     await page.screenshot({ path: path.join(directory, 'mixed-results.png'), fullPage: true });
-    await page.getByRole('button', { name: '返回配置', exact: true }).click(); assert.equal(await quiz.isVisible(), true); assert.equal(await quiz.locator('[name=model]').inputValue(), 'my-model'); assert.equal(await quiz.locator('[name=group_id]').inputValue(), '2'); assert.equal(await quiz.locator('[name=key_id]').inputValue(), '20'); assert.equal(await quiz.locator('[name=api_format]').inputValue(), 'responses'); assert.equal(await page.locator('.helper-benchmark-results').count(), 0);
+    await page.getByRole('button', { name: '返回配置', exact: true }).click(); assert.equal(await page.evaluate(() => window.fixtureBack), true); assert.equal(await page.locator('.helper-benchmark-results').count(), 0);
     assert.equal(new URL(page.url()).search, ''); assert.deepEqual(await page.evaluate(() => [Object.keys(localStorage), Object.keys(sessionStorage)]), [[], ['helper_setup_session']], 'only the login session is stored');
-    assert.deepEqual(posts.find(value => value.path.endsWith('/benchmark')).body, { model: 'my-model', key_id: 20, group_id: 2, api_format: 'responses' });
+    assert.equal(posts.length, 0, 'renderer regression never calls a model endpoint');
     await page.goto(origin + '/renderer'); await page.waitForFunction(() => typeof helperBenchmarkResults === 'function');
     await page.evaluate(data => document.getElementById('result').replaceChildren(helperBenchmarkResults(data)), { total: 1, completed: 1, results: [{ question: '媒体题', answer: '', scored: false, passed: false, media: [{ src: gifURI, mime: 'image/gif' }] }] });
     await page.getByText('未判分', { exact: true }).first().waitFor(); assert.equal(await page.getByText('错误 0', { exact: true }).count(), 1); assert.equal(await page.getByRole('button', { name: '返回配置' }).count(), 0, 'onBack is optional');
@@ -88,6 +87,6 @@ const mixed = { model: 'fixture-model', score: 1, completed: 5, total: 5, result
     await page.getByText('图片无法显示。', { exact: true }).waitFor({ timeout: 5000 });
     assert.equal(await page.locator('.helper-benchmark-results img').count(), 0, 'corrupt inline data becomes a readable placeholder instead of a broken image');
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['dedicated results view/retained form', 'plaintext XSS-safe answers', 'valid PNG+two-frame GIF preserved', 'corrupt inline image fallback', 'media-only neutral scoring', 'graded denominator/completed/error counts', 'unsupported/omitted media shown', 'external HTTPS explicit load/no referrer/no helper auth', 'failure+manual retry', 'optional back/empty/dark/mobile', 'no result or key storage/URL'] }, null, 2));
+    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['independent results renderer/back callback', 'plaintext XSS-safe answers', 'valid PNG+two-frame GIF preserved', 'corrupt inline image fallback', 'media-only neutral scoring', 'graded denominator/completed/error counts', 'unsupported/omitted media shown', 'external HTTPS explicit load/no referrer/no helper auth', 'failure+manual retry', 'optional back/empty/dark/mobile', 'no result or key storage/URL'] }, null, 2));
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
