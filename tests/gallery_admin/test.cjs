@@ -36,7 +36,7 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
       let output, status = 200;
       if (url.pathname === '/_helper/api/admin/gallery') {
         if (failCatalog) { status = 503; output = { detail: '已保存分组目录暂不可用，请稍后刷新。' }; }
-        else output = { groups: [...configs.values()].map(group => ({ ...group, comparison_member: member(group.group_id) })), timezone: 'Asia/Shanghai' };
+        else output = { groups: [...configs.values()].map(group => ({ ...group, comparison_member: member(group.group_id) })), timezone: 'Asia/Shanghai', default_timeout_seconds: 300 };
       } else if (url.pathname === '/_helper/api/admin/gallery/options') {
         if (failOptions) { status = 503; output = { detail: '分组与 Key 目录暂不可用。' }; }
         else output = { groups: upstreamGroups, keys: keyError ? [] : keys, group_error: null, key_error: keyError };
@@ -97,16 +97,34 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     await edit(1); const model = page.locator('[name=gallery_model]');
     assert.equal(await model.inputValue(), 'old-model'); assert.equal(await page.locator('[name=gallery_reasoning_effort]').inputValue(), 'default');
     await model.fill('new-model'); await page.locator('[name=gallery_api_format]').selectOption('responses'); await page.locator('[name=gallery_reasoning_effort]').selectOption('xhigh');
+    const timeoutControl = page.getByLabel('生成超时（秒）', { exact: false });
+    assert.equal(await timeoutControl.inputValue(), '', 'old groups inherit server timeout');
+    assert.equal(await timeoutControl.getAttribute('placeholder'), '默认 300 秒');
+    const writesBeforeTimeout = writes.length;
+    await timeoutControl.fill('29'); assert.equal(await timeoutControl.evaluate(node => node.checkValidity()), false);
+    await timeoutControl.fill('901'); assert.equal(await timeoutControl.evaluate(node => node.checkValidity()), false);
+    await timeoutControl.fill('600.5'); assert.equal(await timeoutControl.evaluate(node => node.checkValidity()), false);
+    assert.equal(writes.length, writesBeforeTimeout);
+    await timeoutControl.fill('600');
+    await page.screenshot({ path: path.join(screenshots, 'group-timeout-600.png'), fullPage: true });
     await page.locator('[name=gallery_interval_minutes]').fill('45'); await page.getByRole('button', { name: '保存配置', exact: true }).click();
     await page.getByText('配置已保存。', { exact: true }).waitFor(); assert.equal(await page.locator('[name=gallery_model]').count(), 0);
-    assert.deepEqual(writes[0].body, { name: malicious, model: 'new-model', key_id: 10, api_format: 'responses', reasoning_effort: 'xhigh', interval_minutes: 45, enabled: false, prompt: '只返回完整 SVG 作品。' });
+    assert.deepEqual(writes[0].body, { name: malicious, model: 'new-model', key_id: 10, api_format: 'responses', reasoning_effort: 'xhigh', interval_minutes: 45, timeout_seconds: 600, enabled: false, prompt: '只返回完整 SVG 作品。' });
     assert.match(await row(1).innerText(), /new-model/); assert.match(await row(1).innerText(), /超高/); assert.equal(configs.get(2).model, 'kept-model', 'editing one row preserves other persisted jobs');
-    await edit(1); await page.locator('[name=gallery_enabled]').check(); await page.getByText('自动生成已开启。', { exact: true }).waitFor();
+    await edit(1); assert.equal(await timeoutControl.inputValue(), '600');
+    await page.locator('[name=gallery_enabled]').check(); await page.getByText('自动生成已开启。', { exact: true }).waitFor();
+    assert.equal(writes.at(-1).body.timeout_seconds, 600, 'enabling preserves group timeout');
     const geometry = await page.locator('.helper-gallery-admin-form .helper-switch').evaluate(label => { const track=label.querySelector('.switch').getBoundingClientRect(),caption=label.lastElementChild.getBoundingClientRect();return {width:track.width,left:caption.left,right:track.right}; });
     assert(geometry.width >= 40 && geometry.left >= geometry.right, 'switch track and label must not overlap');
     await page.locator('[name=gallery_enabled]').uncheck(); await page.getByText('自动生成已暂停。', { exact: true }).waitFor();
     await page.getByRole('button', { name: '生成一轮', exact: true }).click(); await page.getByText('本轮生成已结束，可在下方查看作品。', { exact: true }).waitFor({ timeout: 8000 });
     assert.equal(writes.filter(value => value.path.endsWith('/run')).length, 1); await close();
+    const runsBeforeReset = writes.filter(value => value.path.endsWith('/run')).length;
+    await edit(1); await timeoutControl.fill(''); await page.getByRole('button', { name: '保存配置', exact: true }).click();
+    await page.getByText('配置已保存。', { exact: true }).waitFor();
+    assert.equal(configs.get(1).timeout_seconds, null, 'clearing restores server default');
+    assert.equal(writes.filter(value => value.path.endsWith('/run')).length, runsBeforeReset, 'timeout save never generates');
+    await edit(1); assert.equal(await timeoutControl.inputValue(), ''); await close();
     await edit(2); assert.equal(await page.getByRole('button', { name: '保存配置', exact: true }).isDisabled(), true); assert.equal(await page.locator('[name=gallery_enabled]').isEnabled(), true); await close();
     await row(2).getByRole('button', { name: '暂停', exact: true }).click(); await page.getByText('自动生成已暂停。', { exact: true }).waitFor(); assert.equal(configs.get(2).enabled, false);
     await page.getByRole('button', { name: '新增分组', exact: true }).click(); const picker = page.getByRole('combobox', { name: '选择要添加的分组', exact: true });
@@ -122,7 +140,10 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     await page.locator('[name=gallery_comparison_prompt]').fill(commonPrompt); await page.getByRole('button', { name: '保存同题设置', exact: true }).click(); await page.getByText('同题设置已保存。', { exact: true }).waitFor();
     assert.deepEqual(writes.find(value=>value.path.endsWith('/comparison')&&value.method==='PUT').body, { group_ids: [1,3], prompt: commonPrompt, interval_minutes: 30, enabled: false }); assert.deepEqual([configs.get(1).prompt,configs.get(3).prompt],originalPrompts);
     await sharedPanel.locator(':scope > summary').click(); await row(1).getByRole('button', { name: '同题已暂停', exact: true }).click(); assert.notEqual(await sharedPanel.getAttribute('open'), null, 'membership link opens shared settings');
-    await edit(3); assert.equal(await page.locator('[name=gallery_prompt]').isVisible(), false); assert.equal(await page.locator('[name=gallery_reasoning_effort]').inputValue(), 'medium'); await close();
+    await edit(3); assert.equal(await page.locator('[name=gallery_prompt]').isVisible(), false); assert.equal(await page.locator('[name=gallery_reasoning_effort]').inputValue(), 'medium');
+    assert.equal(await timeoutControl.isVisible(), true, 'shared participants keep per-group timeout setting');
+    await timeoutControl.fill('900'); await page.getByRole('button', { name: '保存配置', exact: true }).click(); await page.getByText('配置已保存。', { exact: true }).waitFor();
+    assert.equal(configs.get(3).timeout_seconds, 900);
     await page.locator('[name=gallery_comparison_enabled]').check(); await page.getByText('同题定时已开启。', { exact: true }).waitFor(); await page.locator('[name=gallery_comparison_enabled]').uncheck(); await page.getByText('同题定时已暂停，当前一轮会继续完成。', { exact: true }).waitFor();
     await page.getByRole('button', { name: '同题生成一轮', exact: true }).click(); await page.getByText('本轮同题对比已结束，可在下方查看各分组的作品。', { exact: true }).waitFor({ timeout: 8000 }); assert.equal(comparisonRound.status, 'partial');
     await page.locator('[name=gallery_comparison_prompt]').fill(commonPrompt+' 保留编辑。'); rejectComparison=true; await page.getByRole('button',{name:'保存同题设置',exact:true}).click(); await page.getByText('同题设置暂时无法保存，请重试。',{exact:true}).waitFor(); assert.equal(await page.locator('[name=gallery_comparison_prompt]').inputValue(),commonPrompt+' 保留编辑。'); rejectComparison=false;
@@ -138,6 +159,6 @@ window.controller=helperGalleryAdmin(document.getElementById('admin'),{request})
     configs.clear(); keys=[]; comparisonConfig=null; await page.reload(); await page.getByText('还没有配置模型分组',{exact:true}).waitFor(); await page.getByText('已读取 4 个上游分组，尚无可用的分组 API Key。',{exact:false}).waitFor(); assert.equal(await page.getByRole('button',{name:'新增分组',exact:true}).isEnabled(),true); await page.screenshot({path:path.join(screenshots,'empty-no-key.png'),fullPage:true});
     keyError='可用 Key 查询失败'; await page.getByRole('button',{name:'刷新分组',exact:true}).click(); await page.getByText('API Key 目录暂不可用，请刷新后确认可用的分组 Key。',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0); await page.locator('.helper-gallery-admin-preview > summary').click(); await page.waitForFunction(()=>window.VIEW_CREATED===true); await page.evaluate(()=>document.getElementById('admin').remove()); await page.waitForFunction(()=>window.VIEW_DESTROYED===true); assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({passed:true,screenshots,checks:['persisted list without automatic form/grid','explicit add/edit one group','Key names and reasoning strength safe payload','native switch geometry','revoked-key and options-failure pause','official no-Key groups remain visible','new saves and failed edits retained','shared membership links and operations','refresh retains draft and jobs','catalog failure and retry','meaningful empty state','mobile/dark and lazy-view cleanup']},null,2));
+    console.log(JSON.stringify({passed:true,screenshots,checks:['persisted list without automatic form/grid','explicit add/edit one group','Key names, reasoning strength and per-group timeout safe payload','native switch geometry','revoked-key and options-failure pause','official no-Key groups remain visible','new saves and failed edits retained','shared membership links and operations','refresh retains draft and jobs','catalog failure and retry','meaningful empty state','mobile/dark and lazy-view cleanup']},null,2));
   } finally { await browser.close(); await new Promise(resolve=>server.close(resolve)); }
 })().catch(error=>{console.error(error);process.exitCode=1});

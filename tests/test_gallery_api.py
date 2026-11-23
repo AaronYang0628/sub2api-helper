@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from helper.app import create_app
 from helper.config import Config
+from helper.gallery_generation import FAILURE_MESSAGES
 from helper.store import Store
 from helper.upstream import UpstreamError
 try:
@@ -223,6 +224,30 @@ class GalleryApiTests(unittest.TestCase):
         self.assertEqual(self.upstream.key_lookups, [])
         self.assertEqual(self.client.get("/_helper/api/admin/gallery", headers=self.auth).json()["groups"], [])
 
+    def test_group_timeout_is_saved_cleared_and_preserved_for_old_clients_and_pause(self):
+        self.configure(timeout_seconds=600)
+        self.assertEqual(self.admin_view()["group"]["timeout_seconds"], 600)
+        self.assertEqual(self.client.get("/_helper/api/admin/gallery", headers=self.auth).json()["default_timeout_seconds"], 240)
+        self.configure()  # Older client omitted the added field.
+        self.assertEqual(self.admin_view()["group"]["timeout_seconds"], 600)
+        response = self.client.post("/_helper/api/admin/gallery/3/pause", headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["group"]["timeout_seconds"], 600)
+        self.generate_one()
+        self.assertEqual(self.generator.call_args.args[1].timeout_seconds, 600)
+        self.configure(timeout_seconds=None)
+        self.assertIsNone(self.admin_view()["group"]["timeout_seconds"])
+        for invalid in (29, 901, 600.5, True, "600", "bad-secret-value"):
+            with self.subTest(invalid=invalid):
+                response = self.client.put("/_helper/api/admin/gallery/3", headers=self.auth, json=self.job(timeout_seconds=invalid))
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn("bad-secret-value", response.text)
+        with self.store._db:
+            self.store._db.execute("UPDATE gallery_jobs SET config=json_remove(config, '$.timeout_seconds') WHERE group_id=3")
+        response = self.client.post("/_helper/api/admin/gallery/3/pause", headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["group"]["timeout_seconds"])
+
     def test_interval_boundaries_are_supported(self):
         for interval in (5, 1440):
             with self.subTest(interval=interval):
@@ -242,6 +267,23 @@ class GalleryApiTests(unittest.TestCase):
         self.assertEqual(response.json()["prompt"], self.generated[0]["prompt"])
         for secret in (MODEL_KEY, self.config.sub2api_admin_key):
             self.assertNotIn(secret, response.text)
+
+    def test_key_revoked_before_execution_has_safe_diagnostic_and_no_model_call(self):
+        self.configure()
+        self.upstream.key_unavailable = True
+        response = self.client.post("/_helper/api/admin/gallery/3/run", headers=self.auth)
+        self.assertEqual(response.status_code, 202, response.text)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            latest = self.admin_view()["works"][0]
+            if latest["status"] == "failed":
+                break
+            time.sleep(.01)
+        self.assertEqual(latest["status"], "failed")
+        self.assertEqual(latest["error"], FAILURE_MESSAGES["key_lookup"])
+        self.assertNotIn("Selected model key", str(latest))
+        self.assertNotIn(MODEL_KEY, str(latest))
+        self.generator.assert_not_awaited()
 
     def test_pause_stops_future_generation_even_if_the_selected_key_was_revoked(self):
         self.configure(enabled=True)

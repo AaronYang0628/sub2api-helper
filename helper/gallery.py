@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import time
 
-from .gallery_generation import REASONING_EFFORTS, UnsupportedReasoningEffort
+from .gallery_generation import REASONING_EFFORTS, public_generation_error
 
 
 MAX_GROUPS = 32
@@ -19,7 +19,7 @@ MAX_PREVIEW_BYTES = 1024 * 1024
 FAILED = "生成失败，请检查模型、Key 权限或服务连接"
 INTERRUPTED = "生成已中断，结果未确认，本次请求不会自动重试"
 DEFAULT_PROMPT = "请生成一个精美、有创意、可交互的独立 HTML 或 SVG 作品。只输出完整代码，不使用外部资源。"
-FIELDS = {"name", "model", "key_id", "api_format", "reasoning_effort", "prompt", "enabled", "interval_minutes"}
+FIELDS = {"name", "model", "key_id", "api_format", "reasoning_effort", "prompt", "enabled", "interval_minutes", "timeout_seconds"}
 METADATA_COLUMNS = "id,group_id,round_id,title,model,reasoning_effort,created_at,finished_at,latency_ms,status,kind,mime,error,storage_bytes-length(CAST(prompt AS BLOB)) AS content_bytes"
 PREVIEW_COLUMNS = METADATA_COLUMNS + ",CASE WHEN storage_bytes-length(CAST(prompt AS BLOB))<=131072 THEN content ELSE NULL END AS content"
 VERDICT_ORDER = {"regressed": 0, "failed": 1, "improved": 2, "stable": 2, "no_baseline": 3}
@@ -110,8 +110,9 @@ class Gallery:
             # Expired offline periods are skipped, never replayed as paid calls.
             for row in self._db.execute("SELECT * FROM gallery_jobs").fetchall():
                 cfg = json.loads(row["config"])
-                if "reasoning_effort" not in cfg:
-                    cfg["reasoning_effort"] = "default"
+                if "reasoning_effort" not in cfg or "timeout_seconds" not in cfg:
+                    cfg.setdefault("reasoning_effort", "default")
+                    cfg.setdefault("timeout_seconds", None)
                     self._db.execute("UPDATE gallery_jobs SET config=? WHERE group_id=?", (json.dumps(cfg), row["group_id"]))
                 if row["next_at"] <= now.timestamp() or row["running_id"] is not None:
                     self._db.execute("UPDATE gallery_jobs SET running_id=NULL,next_at=? WHERE group_id=?",
@@ -139,7 +140,8 @@ class Gallery:
         if not isinstance(data, dict) or set(data) - FIELDS:
             raise GalleryError("生成配置包含不支持的字段")
         cfg = {"name": f"分组 #{group_id}", "model": "", "key_id": None, "api_format": "chat",
-               "reasoning_effort": "default", "prompt": DEFAULT_PROMPT, "enabled": False, "interval_minutes": 30} | (previous or {}) | data
+               "reasoning_effort": "default", "prompt": DEFAULT_PROMPT, "enabled": False, "interval_minutes": 30,
+               "timeout_seconds": None} | (previous or {}) | data
         for field, limit in (("name", 100), ("model", 150), ("prompt", 8000)):
             if not isinstance(cfg[field], str) or len(cfg[field]) > limit:
                 raise GalleryError("生成配置文本无效或过长")
@@ -148,6 +150,8 @@ class Gallery:
             raise GalleryError("分组名称、提示词或开关配置无效")
         if type(cfg["interval_minutes"]) is not int or not 5 <= cfg["interval_minutes"] <= 1440:
             raise GalleryError("自动生成间隔应为 5 至 1440 分钟")
+        if cfg["timeout_seconds"] is not None and (type(cfg["timeout_seconds"]) is not int or not 30 <= cfg["timeout_seconds"] <= 900):
+            raise GalleryError("生成超时应为 30～900 的整数秒，或留空使用服务端默认值")
         if not isinstance(cfg["api_format"], str) or cfg["api_format"] not in {"chat", "responses"}:
             raise GalleryError("模型接口格式无效")
         if not isinstance(cfg["reasoning_effort"], str) or cfg["reasoning_effort"] not in REASONING_EFFORTS:
@@ -433,7 +437,7 @@ class Gallery:
             raise
         except Exception as exc:
             with self._lock, self._db:
-                error = str(exc) if isinstance(exc, UnsupportedReasoningEffort) else FAILED
+                error = public_generation_error(exc) or FAILED
                 self._finish(group_id, work_id, self._now(), status="failed", error=error, latency_ms=max(0, round((time.monotonic() - started) * 1000)))
         finally:
             self._tasks.pop(group_id, None)

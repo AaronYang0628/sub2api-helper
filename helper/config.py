@@ -36,6 +36,7 @@ class Config:
     smtp_tls: str = "starttls"
     native_ui: bool = False
     legacy_routes: bool = False
+    gallery_timeout_seconds: int = 240
 
     @classmethod
     def from_env(cls):
@@ -64,6 +65,12 @@ class Config:
         smtp_from = os.environ.get("SMTP_FROM", "").strip()
         if smtp_host and not smtp_from:
             raise ValueError("SMTP_FROM is required when SMTP_HOST is configured")
+        try:
+            gallery_timeout = int(os.environ.get("HELPER_GALLERY_TIMEOUT_SECONDS", "240"))
+        except ValueError:
+            raise ValueError("HELPER_GALLERY_TIMEOUT_SECONDS must be an integer between 30 and 900") from None
+        if not 30 <= gallery_timeout <= 900:
+            raise ValueError("HELPER_GALLERY_TIMEOUT_SECONDS must be between 30 and 900")
         return cls(
             sub2api_url=upstream_url,
             sub2api_admin_key=upstream_key,
@@ -71,6 +78,7 @@ class Config:
             public_url=_url(os.environ.get("HELPER_PUBLIC_URL", ""), "HELPER_PUBLIC_URL", False),
             sub2api_public_url=_url(os.environ.get("SUB2API_PUBLIC_URL", ""), "SUB2API_PUBLIC_URL", False),
             db_path=os.environ.get("HELPER_DB_PATH", "/data/helper.db"),
+            gallery_timeout_seconds=gallery_timeout,
             timezone=timezone,
             smtp_host=smtp_host,
             smtp_port=port,

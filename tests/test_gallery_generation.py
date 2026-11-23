@@ -1,6 +1,8 @@
 """Static artwork preservation and network-free model generation contracts."""
 
+import asyncio
 import base64
+from dataclasses import replace
 import json
 from types import SimpleNamespace
 import unittest
@@ -10,7 +12,7 @@ import httpx
 
 from helper.config import Config
 from helper.gallery_generation import (
-    ARTWORK_CSP, GalleryGenerationError, MAX_HTML_BYTES, MAX_RESPONSE_BYTES,
+    ARTWORK_CSP, GenerationFailure, GalleryGenerationError, MAX_HTML_BYTES, MAX_RESPONSE_BYTES,
     MAX_TEXT_BYTES, REASONING_EFFORTS, UnsupportedReasoningEffort, generate_artwork, sanitize_artwork,
 )
 
@@ -257,6 +259,104 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
                 await self.run_with(lambda request: httpx.Response(status, json={"error": "upstream secret"}))
             self.assertNotIsInstance(failed.exception, UnsupportedReasoningEffort)
             self.assertNotIn("upstream secret", str(failed.exception))
+
+    async def test_safe_failure_codes_distinguish_http_response_and_artwork_errors(self):
+        cases = [
+            (httpx.Response(503, text="ordinary-key secret no accounts"), "unavailable"),
+            (httpx.Response(401, text="ordinary-key secret"), "authentication"),
+            (httpx.Response(403, text="ordinary-key secret"), "authentication"),
+            (httpx.Response(429, text="ordinary-key secret"), "rate_limited"),
+            (httpx.Response(400, text="ordinary-key secret"), "request_rejected"),
+            (httpx.Response(502, text="ordinary-key secret"), "gateway"),
+            (httpx.Response(200, text="ordinary-key secret invalid JSON"), "response_format"),
+            (httpx.Response(200, json={"output": []}), "response_format"),
+            (httpx.Response(200, json={"choices": [{"message": {}}]}), "response_format"),
+            (httpx.Response(200, json={"choices": [{"message": {"content": None, "reasoning_content": "secret thinking"}, "finish_reason": "length"}]}), "empty_output"),
+            (httpx.Response(200, json={"choices": [{"message": {"content": "<div>" + "x" * MAX_HTML_BYTES + "</div>"}}]}), "artwork_invalid"),
+            (httpx.Response(200, content=b"x" * (MAX_RESPONSE_BYTES + 1)), "response_too_large"),
+        ]
+        for response, code in cases:
+            calls = []
+
+            def handler(request):
+                calls.append(request)
+                return response
+
+            with self.subTest(code=code), self.assertRaises(GenerationFailure) as failed:
+                await self.run_with(handler)
+            self.assertEqual(failed.exception.code, code)
+            self.assertEqual(len(calls), 1)
+            for forbidden in ("ordinary-key", "secret", "sub2api.test", self.request.prompt):
+                self.assertNotIn(forbidden, str(failed.exception))
+            self.assertTrue(response.is_closed)
+
+    async def test_invalid_request_configuration_never_claims_a_gateway_response(self):
+        self.request.api_key = "模型密钥"
+        calls = []
+        with self.assertRaises(GenerationFailure) as failed:
+            await self.run_with(lambda request: calls.append(request))
+        self.assertEqual(failed.exception.code, "request_invalid")
+        self.assertIn("本次未调用模型", str(failed.exception))
+        self.assertNotIn(self.request.api_key, str(failed.exception))
+        self.assertEqual(calls, [])
+
+    async def test_connection_failure_has_distinct_safe_code(self):
+        def handler(request):
+            raise httpx.ConnectError("ordinary-key admin-secret", request=request)
+
+        with self.assertRaises(GenerationFailure) as failed:
+            await self.run_with(handler)
+        self.assertEqual(failed.exception.code, "connection")
+        self.assertNotIn("admin-secret", str(failed.exception))
+
+    async def test_configured_deadline_applies_to_total_and_read_wait_without_retry(self):
+        self.config = replace(self.config, gallery_timeout_seconds=600)
+        calls, total_limits = [], []
+        original_timeout = asyncio.timeout
+
+        def short_deadline(seconds):
+            total_limits.append(seconds)
+            return original_timeout(.01)
+
+        async def handler(request):
+            calls.append(request)
+            self.assertEqual(request.extensions["timeout"]["read"], 600)
+            await asyncio.sleep(1)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "never reached"}}]})
+
+        with patch("helper.gallery_generation.asyncio.timeout", side_effect=short_deadline):
+            with self.assertRaises(GenerationFailure) as failed:
+                await self.run_with(handler)
+        self.assertEqual(failed.exception.code, "timeout")
+        self.assertEqual(total_limits, [600])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("结果未确认", str(failed.exception))
+        self.assertIn("不会自动重试", str(failed.exception))
+
+    async def test_per_group_deadline_overrides_default_and_stays_out_of_gateway_body(self):
+        original_timeout = asyncio.timeout
+        for selected, expected in ((600, 600), (900, 900), (30, 30), (None, 240)):
+            self.request.timeout_seconds = selected
+            observed = []
+
+            def deadline(seconds):
+                observed.append(seconds)
+                return original_timeout(seconds)
+
+            def handler(request):
+                self.assertEqual(request.extensions["timeout"]["read"], expected)
+                self.assertNotIn("timeout_seconds", json.loads(request.content))
+                return httpx.Response(200, json={"choices": [{"message": {"content": "完成"}}]})
+
+            with self.subTest(selected=selected), patch("helper.gallery_generation.asyncio.timeout", side_effect=deadline):
+                self.assertEqual((await self.run_with(handler))["content"], "完成")
+            self.assertEqual(observed, [expected])
+        for invalid in (True, 29, 901, 600.5, "600", "secret"):
+            self.request.timeout_seconds = invalid
+            calls = []
+            with self.subTest(invalid=invalid), self.assertRaises(GalleryGenerationError):
+                await self.run_with(lambda request: calls.append(request))
+            self.assertEqual(calls, [])
 
     async def test_optional_title_uses_plain_document_title_or_first_heading(self):
         for source, expected in (

@@ -207,9 +207,12 @@ const { chromium } = requireDependency(process.env.HELPER_PLAYWRIGHT_PATH || 'pl
     await dialog.getByText('操作过于频繁，请 60 秒后重试。', { exact: true }).waitFor(); assert.equal(calls.filter(c => c.path.endsWith('/email')).length, 2); await close();
     await page.evaluate(() => sessionStorage.setItem('helper_setup_session', 'keep-standalone-setup'));
     await page.locator('tr[data-row-id="7"] [data-helper-native-action]').click(); await dialog.getByText('fresh7@example.invalid', { exact: true }).waitFor();
-    await dialog.locator('summary').click(); await dialog.locator('[aria-label="高级功能"]').selectOption('rules'); await dialog.getByRole('button', { name: '打开', exact: true }).click();
+    await dialog.locator('summary').click();
+    const advanced = dialog.locator('[aria-label="高级功能"]');
+    assert.equal(await advanced.locator('option[value="rewards"]').textContent(), '排名与奖励');
+    await advanced.selectOption('rewards'); await dialog.getByRole('button', { name: '打开', exact: true }).click();
     await page.frameLocator('.helper-native-console').getByText('高级功能会话已验证', { exact: true }).waitFor();
-    const frameSource = await page.locator('.helper-native-console').getAttribute('src'); assert(!frameSource.includes('jwt')); assert(frameSource.endsWith('#rules'));
+    const frameSource = await page.locator('.helper-native-console').getAttribute('src'); assert(!frameSource.includes('jwt')); assert(frameSource.endsWith('#rewards'));
     assert.equal(calls.filter(c => c.path === '/_helper/api/session/revoke').length, 0, 'initial login and unchanged identity must not revoke sessions');
     const revokeFirst = page.waitForResponse(value => new URL(value.url()).pathname === '/_helper/api/session/revoke' && value.request().headers().authorization === 'Bearer fixture-admin-jwt');
     await page.evaluate(() => fixture.identity('fixture-admin-two'));

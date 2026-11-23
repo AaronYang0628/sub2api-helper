@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from .benchmark import MAX_IMAGE_BYTES, _read_body, extract_content
+from .benchmark import MAX_IMAGE_BYTES, _BodyLimit, _read_body, extract_content
 
 
 MAX_HTML_BYTES = 128 * 1024
@@ -97,6 +97,39 @@ ANIMATION_FIELDS = {"attributename", "attributetype", "from", "to", "by", "value
 
 class GalleryGenerationError(RuntimeError):
     """A safe public error, without upstream bodies, URLs, or credentials."""
+
+
+FAILURE_MESSAGES = {
+    "key_lookup": "无法读取所选分组的有效模型 Key，请检查绑定、Key 状态与权限；本次未调用模型",
+    "authentication": "模型网关拒绝鉴权或访问权限（HTTP 401/403），请检查所选分组的普通 API Key",
+    "unavailable": "模型网关暂不可用（HTTP 503），请检查所选分组是否有可调度账号",
+    "rate_limited": "模型网关限流或额度受限（HTTP 429），本次不会自动重试",
+    "request_rejected": "模型网关拒绝请求，请检查模型名称、接口格式及参数",
+    "request_invalid": "模型请求配置无法构造有效请求，本次未调用模型；请检查所选普通 API Key",
+    "gateway": "模型网关返回错误或重定向，本次不会自动重试",
+    "timeout": "模型生成等待超时，结果未确认，本次不会自动重试；可在分组配置中调整生成超时或降低思考强度",
+    "connection": "无法连接模型网关或连接已中断，结果未确认，本次不会自动重试",
+    "response_format": "模型网关已返回响应，但格式不兼容；请检查接口格式（Chat / Responses）",
+    "response_too_large": "模型响应超过安全大小限制，未保存作品，本次不会自动重试",
+    "artwork_invalid": "模型已返回内容，但作品超出安全限制或无法安全展示，本次不会自动重试",
+    "empty_output": "模型未返回可展示的正文或内嵌图片，可能只返回了思考内容或耗尽输出额度；本次不会自动重试",
+}
+
+
+class GenerationFailure(GalleryGenerationError):
+    """Only a fixed code, never upstream exception text, reaches durable history."""
+
+    def __init__(self, code):
+        self.code = code if isinstance(code, str) and code in FAILURE_MESSAGES else "gateway"
+        super().__init__(FAILURE_MESSAGES[self.code])
+
+
+def public_generation_error(error):
+    if isinstance(error, GenerationFailure):
+        return FAILURE_MESSAGES.get(error.code, FAILURE_MESSAGES["gateway"])
+    if isinstance(error, UnsupportedReasoningEffort):
+        return str(UnsupportedReasoningEffort())
+    return None
 
 
 class UnsupportedReasoningEffort(GalleryGenerationError):
@@ -386,20 +419,29 @@ def _raw_text(payload, api_format):
 
 
 def _result(payload, api_format):
-    text = _raw_text(payload, api_format)
-    fragment = sanitize_artwork(text)
-    if fragment is not None:
-        result = {"kind": "html", "content": fragment, "mime": "text/html"}
-        title = _artwork_title(fragment)
-        if title:
-            result["title"] = title
-        return result
-    cleaned_text, media, _ = extract_content(payload, api_format, [MAX_IMAGE_BYTES])
+    try:
+        text = _raw_text(payload, api_format)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+        raise GenerationFailure("response_format") from None
+    try:
+        fragment = sanitize_artwork(text)
+        if fragment is not None:
+            result = {"kind": "html", "content": fragment, "mime": "text/html"}
+            title = _artwork_title(fragment)
+            if title:
+                result["title"] = title
+            return result
+    except (ValueError, TypeError, RecursionError):
+        raise GenerationFailure("artwork_invalid") from None
+    try:
+        cleaned_text, media, _ = extract_content(payload, api_format, [MAX_IMAGE_BYTES])
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError):
+        raise GenerationFailure("response_format") from None
     for image in media:
         if image["src"].startswith("data:"):
             return {"kind": "image", "content": image["src"], "mime": image["mime"]}
     if not cleaned_text.strip():
-        raise ValueError("No static artwork or inline image was returned")
+        raise GenerationFailure("empty_output")
     return {"kind": "text", "content": cleaned_text.encode("utf-8")[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore"), "mime": "text/plain"}
 
 
@@ -449,8 +491,13 @@ async def generate_artwork(config, request, client=None):
         raise GalleryGenerationError("作品提示词或模型配置无效")
     if not isinstance(effort, str) or effort not in REASONING_EFFORTS:
         raise GalleryGenerationError("思考力度配置无效")
+    timeout = getattr(request, "timeout_seconds", None)
+    if timeout is None:
+        timeout = getattr(config, "gallery_timeout_seconds", GENERATION_TIMEOUT)
+    if type(timeout) is not int or not 30 <= timeout <= 900:
+        raise GalleryGenerationError("作品生成等待时限配置无效")
     own = client is None
-    client = client or httpx.AsyncClient(timeout=GENERATION_TIMEOUT, follow_redirects=False)
+    client = client or httpx.AsyncClient(timeout=timeout, follow_redirects=False)
     started, response = time.monotonic(), None
     body = {"model": model, "stream": False}
     if api_format == "chat":
@@ -464,30 +511,45 @@ async def generate_artwork(config, request, client=None):
         if effort != "default":
             body["reasoning"] = {"effort": effort}
     try:
-        async with asyncio.timeout(GENERATION_TIMEOUT):
-            outgoing = httpx.Request("POST", config.sub2api_url.rstrip("/") + path,
-                headers={"Authorization": "Bearer " + key, "Accept": "application/json", "Accept-Encoding": "identity"},
-                json=body, extensions={"timeout": {"connect": 10, "read": GENERATION_TIMEOUT, "write": 15, "pool": 10}})
+        async with asyncio.timeout(timeout):
+            try:
+                outgoing = httpx.Request("POST", config.sub2api_url.rstrip("/") + path,
+                    headers={"Authorization": "Bearer " + key, "Accept": "application/json", "Accept-Encoding": "identity"},
+                    json=body, extensions={"timeout": {"connect": 10, "read": timeout, "write": 15, "pool": 10}})
+            except (ValueError, httpx.InvalidURL):
+                raise GenerationFailure("request_invalid") from None
             response = await client.send(outgoing, stream=True, auth=None, follow_redirects=False)
             if effort != "default" and response.status_code in {400, 422}:
                 raise UnsupportedReasoningEffort()
             response.raise_for_status()
             if response.headers.get("content-encoding", "").strip().lower() not in {"", "identity"}:
-                raise ValueError("Compressed model responses are unsupported")
+                raise GenerationFailure("response_format")
             mime = response.headers.get("content-type", "").split(";", 1)[0].lower().strip()
             limit = MAX_IMAGE_BYTES if mime.startswith("image/") else MAX_RESPONSE_BYTES
             raw = await _read_body(response, limit, [limit])
             if mime.startswith("image/"):
                 image = _inline_image("data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii"))
                 if not image:
-                    raise ValueError("Invalid inline image")
+                    raise GenerationFailure("artwork_invalid")
                 result = {"kind": "image", "content": image["src"], "mime": image["mime"]}
             else:
                 result = _result(json.loads(raw), api_format)
             result["latency_ms"] = round((time.monotonic() - started) * 1000)
             return result
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError, TimeoutError):
-        raise GalleryGenerationError("作品生成失败，请检查模型、普通 API Key 及网关格式") from None
+    except (httpx.TimeoutException, TimeoutError):
+        raise GenerationFailure("timeout") from None
+    except httpx.HTTPStatusError as error:
+        status = error.response.status_code
+        code = {401: "authentication", 403: "authentication", 429: "rate_limited", 503: "unavailable"}.get(status)
+        if code is None:
+            code = "request_rejected" if status in {400, 404, 405, 422} else "gateway"
+        raise GenerationFailure(code) from None
+    except httpx.HTTPError:
+        raise GenerationFailure("connection") from None
+    except _BodyLimit:
+        raise GenerationFailure("response_too_large") from None
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError):
+        raise GenerationFailure("response_format") from None
     finally:
         if response is not None:
             await response.aclose()

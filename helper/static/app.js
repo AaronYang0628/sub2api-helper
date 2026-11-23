@@ -18,6 +18,7 @@ const views = [
   ['rules', '规则', 'clock'],
   ['modules', '功能与菜单', 'grid'],
   ['analytics', '智商检测', 'chartBar'],
+  ['rewards', '排名与奖励', 'trophy'],
   ['system', '运行与系统', 'shield']
 ];
 let token = readSession();
@@ -585,24 +586,45 @@ async function previewAutomation(item) {
     editor.replaceChildren(el('div', { class: 'dialog-header' }, el('h2', {}, `规则预览 · ${item.name}`), button('✕', () => editor.close(), 'ghost', { 'aria-label': '关闭' })), body, footer); editor.showModal();
   } catch (error) { toast(errorText(error), true); }
 }
-async function automationsPage() {
-  state.automations = await api('/automations');
-  let settlements = [], settlementError = null;
-  try { settlements = await api('/settlements'); } catch (error) { settlementError = errorText(error); }
+function settlementContent(settlements, automations, error) {
   const history = settlements.flatMap(settlement => (settlement.actions || []).map(action => ({ ...action, month: action.month || settlement.month, start_date: settlement.start_date, end_date: settlement.end_date, timezone: settlement.timezone, rule_id: settlement.rule_id }))).sort((a, b) => String(b.month).localeCompare(String(a.month)) || a.rank - b.rank);
   const hasUncertain = history.some(action => ['pending', 'needs_review'].includes(action.status));
   const statuses = { ready: ['待发放', 'blue'], pending: ['待核对', 'amber'], needs_review: ['待人工核对', 'red'], done: ['已发放', 'green'], skipped: ['已跳过', ''] };
-  const settlementRows = history.map(action => {
+  const rows = history.map(action => {
     const status = statuses[action.status] || [action.status || '未知', ''];
-    const rule = state.automations.find(value => String(value.id) === String(action.rule_id));
+    const rule = automations.find(value => String(value.id) === String(action.rule_id));
     return row([nameCell(action.month, `${action.start_date || ''} — ${action.end_date || ''}`), action.rank || '—', `#${action.user_id}`, `$${action.amount}`, action.actual_cost === undefined ? '—' : `$${action.actual_cost}`, pill(status[0], status[1]), nameCell(rule?.name || `规则 #${action.rule_id}`, action.timezone), fmtTime(action.completed_at || action.attempted_at), el('div', { class: 'wrap' }, action.error || action.reason || '—')]);
   });
-  const settlementCard = card('月度结算记录', '保留历史发放状态；月份切换或删除规则不会移除记录。', settlementError ? el('div', { class: 'card-body' }, notice(`结算记录读取失败：${settlementError}`, 'error')) : history.length ? [hasUncertain ? el('div', { class: 'card-body' }, notice('存在待核对的发放记录，这些记录不会自动重试。请先在 sub2api 核查余额变更记录，确认结果后再处理，避免重复奖励。', 'warning')) : null, table(['结算月份', '名次', '用户 ID', '奖励（USD）', '实际费用（USD）', '发放状态', '来源规则 / 时区', '最近处理时间', '备注'], settlementRows)] : empty('暂无月度结算记录', '结算后可在此查看历史奖励及需要人工核对的发放。'));
+  return error ? el('div', { class: 'card-body' }, notice(`结算记录读取失败：${error}`, 'error')) : history.length ? [hasUncertain ? el('div', { class: 'card-body' }, notice('存在待核对的发放记录，这些记录不会自动重试。请先在 sub2api 核查余额变更记录，确认结果后再处理，避免重复奖励。', 'warning')) : null, table(['结算月份', '名次', '用户 ID', '奖励（USD）', '实际费用（USD）', '发放状态', '来源规则 / 时区', '最近处理时间', '备注'], rows)] : empty('暂无月度结算记录', '结算后可在此查看历史奖励及需要人工核对的发放。');
+}
+// Each card loads on its own: a slow or failed metric never hides the settlement records.
+// `refresh` promises only re-paint an already loaded card (e.g. rule names), never gate it.
+function lazyCard(version, title, description, busy, load, paint, refresh = []) {
+  const body = el('div', {}, el('div', { class: 'loading' }, el('span', { class: 'spinner' }), busy));
+  const current = () => version === generation && authorized;
+  let data;
+  const show = () => { const content = paint(data); body.replaceChildren(...(Array.isArray(content) ? content : [content]).filter(node => node != null)); };
+  load().then(value => { if (!current()) return; data = value; show(); }).catch(error => { if (version !== generation) return; if (!authorized) { render(); return; } body.replaceChildren(el('div', { class: 'card-body' }, notice(errorText(error), 'error'))); });
+  for (const extra of refresh) extra.then(() => { if (data !== undefined && current()) show(); }, () => {});
+  return card(title, description, body);
+}
+function rewardsPage() {
+  const version = generation;
+  return [pageHead('排名与奖励', '查看月度奖励结算记录，以及模型费用与用户用量排名。', button('↻  刷新', () => render())),
+    el('section', { id: 'rewards-settlements', class: 'rules-section' }, lazyCard(version, '月度结算记录', '保留历史发放状态；月份切换或删除规则不会移除记录。', '正在读取结算记录…',
+      () => api('/settlements').catch(error => { throw new Error(`结算记录读取失败：${errorText(error)}`); }), data => settlementContent(data, state.automations, ''),
+      [api('/automations').then(rules => { state.automations = Array.isArray(rules) ? rules : []; })])),
+    el('div', { class: 'overview-grid' },
+      lazyCard(version, '模型维度价格统计', '显示上游统计接口返回的当前周期数据', '正在读取统计数据…', () => api('/analytics/models'), data => metricsTable(data, 'models')),
+      lazyCard(version, '用户用量排名', '管理员可查看完整使用量统计', '正在读取统计数据…', () => api('/analytics/ranking'), data => metricsTable(data, 'ranking')))];
+}
+async function automationsPage() {
+  state.automations = await api('/automations');
   const rows = state.automations.map(item => row([nameCell(item.name, automationTypes[item.type] || item.type), item.type === 'subscription_multiplier' ? `分组 #${item.group_id} · 到期前 ${item.expires_within_days} 天 · 余量 > ${item.remaining_fraction_gt * 100}%` : (item.rewards || []).map(t => `第 ${t.rank} 名 $${t.amount}`).join(' / '), pill(automationScope(item), item.scope === 'global_group' ? 'amber' : 'blue'), item.timezone,
     switcher(item.enabled, async enabled => { if (enabled && !confirm(`确认启用「${item.name}」？作用范围：${automationScope(item)}。`)) throw new Error('已取消操作'); await api(`/automations/${item.id}`, 'PUT', automationPayload(item, enabled)); item.enabled = enabled; toast(enabled ? '规则已启用' : '规则已暂停'); }, item.enabled ? '已启用' : '已暂停'),
     el('div', { class: 'button-group' }, button('预览 / 执行', () => previewAutomation(item), 'link'), button('编辑', () => editAutomation(item), 'link'), button('删除', () => { if (confirm(`确认删除「${item.name}」？服务端会先尝试安全恢复本规则写入的倍率；存在恢复错误时会阻止删除。`)) run(() => api(`/automations/${item.id}`, 'DELETE'), '规则已删除'); }, 'link danger'))
   ]));
-  return [pageHead('自动化规则', '按订阅状态调整倍率，或按上月实际用量向用户发放余额奖励。', button('＋ 新建规则', () => editAutomation(), 'primary')), notice('新规则默认关闭。先保存并查看预览，确认用户、金额和作用范围后再启用。月度奖励按规则时区结算，不补发启用前月份。'), card('规则列表', `共 ${rows.length} 条规则`, rows.length ? table(['规则', '触发条件 / 奖励', '作用范围', '时区', '启用状态', '操作'], rows) : empty('还没有自动化规则', '可添加订阅到期倍率调整，或月度排名奖励规则。')), settlementCard];
+  return [pageHead('自动化规则', '按订阅状态调整倍率，或按上月实际用量向用户发放余额奖励。', button('＋ 新建规则', () => editAutomation(), 'primary')), notice('新规则默认关闭。先保存并查看预览，确认用户、金额和作用范围后再启用。月度奖励按规则时区结算，不补发启用前月份。'), card('规则列表', `共 ${rows.length} 条规则`, rows.length ? table(['规则', '触发条件 / 奖励', '作用范围', '时区', '启用状态', '操作'], rows) : empty('还没有自动化规则', '可添加订阅到期倍率调整，或月度排名奖励规则。'))];
 }
 async function modulesPage() {
   state.modules = await api('/modules');
@@ -666,7 +688,7 @@ async function modulesPage() {
     finally { busy = false; paint(); }
   });
   form.append(field('用户访问域名', origin, '填写用户浏览器访问 sub2api 的域名与协议，不含 /_helper 路径。'), el('div', { class: 'button-group' }, detect, save, sync), feedback, status);
-  const definitions = [ ['benchmark', 'sparkles', '智商检测', '按分组展示模型根据提示词生成的 HTML、SVG 等作品。在统计与检测中配置生成任务。'], ['pricing', 'chartBar', '模型价格统计', '按模型查看请求量、Token 与费用。普通用户仅查看自己的统计数据。'], ['ranking', 'trophy', '用户用量排名', '展示用户消耗与使用量排名。用户端默认匿名展示，保护用户身份。'] ];
+  const definitions = [ ['benchmark', 'sparkles', '智商检测', '按分组展示模型根据提示词生成的 HTML、SVG 等作品。在「智商检测」中配置生成任务。'], ['pricing', 'chartBar', '模型价格统计', '按模型查看请求量、Token 与费用。普通用户仅查看自己的统计数据。'], ['ranking', 'trophy', '用户用量排名', '展示用户消耗与使用量排名。用户端默认匿名展示，保护用户身份。'] ];
   const cards = el('div', { class: 'module-grid' }, definitions.map(([key, icon, title, desc]) => {
     const toggle = switcher(state.modules[key], async value => {
         if (!confirm(`确认${value ? '上线' : '下线'}「${title}」并同步上游菜单？`)) throw new Error('已取消操作');
@@ -699,71 +721,16 @@ function metricsTable(data, kind) {
     const value = item[k]; if (typeof value === 'number') return /cost/.test(k) ? `$${value.toFixed(4)}` : value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }); return value ?? '—';
   }))));
 }
-function benchmarkForm(endpoint = '/benchmark', caller = api) {
-  const model = input('model', '', 'text', { required: true, placeholder: '例如 gpt-4.1-mini', maxlength: 150 });
-  const group = el('select', { name: 'group_id', required: true });
-  const key = el('select', { name: 'key_id', required: true });
-  const format = el('select', { name: 'api_format' }, el('option', { value: 'chat' }, 'Chat Completions'), el('option', { value: 'responses' }, 'Responses'));
-  const results = el('div'); const err = el('div', { class: 'form-error', role: 'alert' }); const submit = el('button', { type: 'submit', class: 'button primary', disabled: true }, '开始检测');
-  const configuration = el('div');
-  let keys = [];
-  function updateKeys() {
-    const matches = keys.filter(item => String(item.group_id) === group.value);
-    key.replaceChildren(...matches.map(item => el('option', { value: item.id }, `${item.name || 'API Key'} · #${item.id}`)));
-    submit.disabled = !matches.length;
-  }
-  group.addEventListener('change', updateKeys);
-  async function loadOptions() {
-    submit.disabled = true; err.textContent = '';
-    try {
-      const options = await caller('/benchmark/options');
-      keys = (options.keys || []).filter(item => item.group_id !== undefined && item.group_id !== null);
-      const groups = [...new Map(keys.map(item => [item.group_id, item])).values()];
-      group.replaceChildren(...groups.map(item => el('option', { value: item.group_id }, item.group_name || `分组 #${item.group_id}`)));
-      if (!groups.length) { group.append(el('option', { value: '' }, '暂无可用的分组 API Key')); err.textContent = '当前账号没有可用于检测的分组 API Key，请先在 sub2api 中创建。'; }
-      updateKeys();
-    } catch (error) { err.textContent = errorText(error); }
-  }
-  const form = el('form', { class: 'benchmark-form', onsubmit: async event => {
-    event.preventDefault();
-    if (submit.disabled || !confirm('检测将使用所选分组的 API Key 调用模型并消耗额度，确认开始？')) return;
-    const groupName = group.selectedOptions[0]?.textContent;
-    err.textContent = '';
-    submit.disabled = true;
-    configuration.hidden = true;
-    results.replaceChildren(el('div', { class: 'loading', role: 'status' }, el('span', { class: 'spinner' }), '正在运行题集，请稍候…'));
-    try {
-      const result = await caller(endpoint, 'POST', { model: model.value.trim(), key_id: Number(key.value), group_id: Number(group.value), api_format: format.value });
-      const view = helperBenchmarkResults(result, { groupName, onBack() {
-        results.replaceChildren();
-        configuration.hidden = false;
-        model.focus();
-      } });
-      results.replaceChildren(view);
-      results.scrollIntoView({ block: 'start' });
-      view.querySelector('h2')?.focus({ preventScroll: true });
-    } catch (error) {
-      results.replaceChildren();
-      configuration.hidden = false;
-      err.textContent = errorText(error);
-    } finally { submit.disabled = !key.value; }
-  } }, field('模型名称', model), field('接口格式', format), field('检测分组', group), field('调用 API Key', key, '从当前账户已有的分组 Key 中选择，密钥内容不会发送到浏览器。'), el('div', { class: 'wide button-group' }, submit, button('刷新可用分组', loadOptions), err));
-  configuration.append(notice('该检测会实际调用模型并消耗所选 Key 的额度。固定题集只反映本次回答表现，不代表全面的模型能力。', 'warning'), card('', '', el('div', { class: 'card-body' }, form)));
-  loadOptions();
-  return [configuration, results];
-}
 async function rulesHubPage() {
-  const results = await Promise.allSettled(['/schedules', '/rules', '/email-templates', '/automations', '/settlements'].map(path => api(path)));
+  const results = await Promise.allSettled(['/schedules', '/rules', '/email-templates', '/automations'].map(path => api(path)));
   const scheduleErr = results[0].status === 'rejected' ? errorText(results[0].reason) : '';
   const ruleErr = results[1].status === 'rejected' ? errorText(results[1].reason) : '';
   const templateErr = results[2].status === 'rejected' ? errorText(results[2].reason) : '';
   const autoErr = results[3].status === 'rejected' ? errorText(results[3].reason) : '';
-  const settlementErr = results[4].status === 'rejected' ? errorText(results[4].reason) : '';
   if (results[0].status === 'fulfilled') state.schedules = results[0].value;
   if (results[1].status === 'fulfilled') state.rules = results[1].value;
   if (results[2].status === 'fulfilled') state.emailTemplates = results[2].value;
   if (results[3].status === 'fulfilled') state.automations = results[3].value;
-  const settlements = results[4].status === 'fulfilled' ? results[4].value : [];
 
   const scheduleRows = state.schedules.map(s => row([
     nameCell(s.name, `规则 #${s.id}`),
@@ -822,14 +789,6 @@ async function rulesHubPage() {
       ? table(['模板名称', '默认主题', '正文预览', '操作'], templateRows)
       : empty('还没有自定义邮件模板', '创建常用通知模板后，在原站用户行发邮件时可直接选用并自动填充用户名与邮箱。')));
 
-  const history = settlements.flatMap(settlement => (settlement.actions || []).map(action => ({ ...action, month: action.month || settlement.month, start_date: settlement.start_date, end_date: settlement.end_date, timezone: settlement.timezone, rule_id: settlement.rule_id }))).sort((a, b) => String(b.month).localeCompare(String(a.month)) || a.rank - b.rank);
-  const hasUncertain = history.some(action => ['pending', 'needs_review'].includes(action.status));
-  const statuses = { ready: ['待发放', 'blue'], pending: ['待核对', 'amber'], needs_review: ['待人工核对', 'red'], done: ['已发放', 'green'], skipped: ['已跳过', ''] };
-  const settlementRows = history.map(action => {
-    const status = statuses[action.status] || [action.status || '未知', ''];
-    const rule = state.automations.find(value => String(value.id) === String(action.rule_id));
-    return row([nameCell(action.month, `${action.start_date || ''} — ${action.end_date || ''}`), action.rank || '—', `#${action.user_id}`, `$${action.amount}`, action.actual_cost === undefined ? '—' : `$${action.actual_cost}`, pill(status[0], status[1]), nameCell(rule?.name || `规则 #${action.rule_id}`, action.timezone), fmtTime(action.completed_at || action.attempted_at), el('div', { class: 'wrap' }, action.error || action.reason || '—')]);
-  });
   const autoRows = state.automations.map(item => row([
     nameCell(item.name, automationTypes[item.type] || item.type),
     item.type === 'subscription_multiplier' ? `分组 #${item.group_id} · 到期前 ${item.expires_within_days} 天 · 余量 > ${item.remaining_fraction_gt * 100}%` : (item.rewards || []).map(t => `第 ${t.rank} 名 $${t.amount}`).join(' / '),
@@ -849,11 +808,10 @@ async function rulesHubPage() {
   const automationsSection = el('section', { id: 'rules-automations', class: 'rules-section' },
     el('div', { class: 'rules-section-head' },
       el('div', {}, el('h2', {}, '后台自动化规则'), el('p', {}, '按订阅状态调整倍率，或按上月实际用量发放余额奖励（后台任务执行，先预览再启用）。')),
-      button('＋  新建自动化', () => editAutomation(), 'primary')),
+      el('div', { class: 'button-group' }, el('a', { href: '#rewards', class: 'button ghost' }, '结算记录'), button('＋  新建自动化', () => editAutomation(), 'primary'))),
     autoErr ? notice(`自动化规则读取失败：${autoErr}`, 'error') : card('自动化规则列表', `共 ${autoRows.length} 条规则`, autoRows.length
       ? table(['规则', '触发条件 / 奖励', '作用范围', '时区', '启用状态', '操作'], autoRows)
-      : empty('还没有自动化规则', '可添加订阅到期倍率调整，或月度排名奖励规则。')),
-    card('月度结算记录', '保留历史发放状态；月份切换或删除规则不会移除记录。', settlementErr ? el('div', { class: 'card-body' }, notice(`结算记录读取失败：${settlementErr}`, 'error')) : history.length ? [hasUncertain ? el('div', { class: 'card-body' }, notice('存在待核对的发放记录，这些记录不会自动重试。请先在 sub2api 核查余额变更记录，确认结果后再处理，避免重复奖励。', 'warning')) : null, table(['结算月份', '名次', '用户 ID', '奖励（USD）', '实际费用（USD）', '发放状态', '来源规则 / 时区', '最近处理时间', '备注'], settlementRows)] : empty('暂无月度结算记录', '结算后可在此查看历史奖励及需要人工核对的发放。')));
+      : empty('还没有自动化规则', '可添加订阅到期倍率调整，或月度排名奖励规则。')));
 
   return [
     pageHead('规则管理', '集中维护账号时段、用户提醒与邮件模板，以及后台自动化规则。', button('↻  刷新', () => render())),
@@ -863,32 +821,9 @@ async function rulesHubPage() {
   ];
 }
 async function analyticsPage() {
-  const version = generation;
   const gallery = el('div');
   helperGalleryAdmin(gallery, { request: api });
-  function metricCard(title, description, path, kind) {
-    const body = el('div', {}, el('div', { class: 'loading' }, el('span', { class: 'spinner' }), '正在读取统计数据…'));
-    api(path).then(data => { if (version === generation && authorized) body.replaceChildren(metricsTable(data, kind)); }).catch(error => { if (version !== generation) return; if (!authorized) { render(); return; } body.replaceChildren(el('div', { class: 'card-body' }, notice(errorText(error), 'error'))); });
-    return card(title, description, body);
-  }
-  const quiz = el('details', { class: 'card' }, el('summary', { class: 'card-header' }, '固定题自检'));
-  quiz.addEventListener('toggle', () => {
-    if (quiz.open && quiz.childElementCount === 1) quiz.append(...benchmarkForm());
-  });
-  const secondaryBody = el('div', { class: 'secondary-analytics-body' });
-  const secondary = el('details', { class: 'card secondary-analytics' },
-    el('summary', { class: 'card-header' }, '费用与用量统计（模型维度费用 · 用户用量排名）'),
-    secondaryBody);
-  let metricsLoaded = false;
-  secondary.addEventListener('toggle', () => {
-    if (secondary.open && !metricsLoaded) {
-      metricsLoaded = true;
-      secondaryBody.replaceChildren(
-        metricCard('模型维度价格统计', '显示上游统计接口返回的当前周期数据', '/analytics/models', 'models'),
-        metricCard('用户用量排名', '管理员可查看完整使用量统计', '/analytics/ranking', 'ranking'));
-    }
-  });
-  return [pageHead('智商检测', '管理参测分组、同题对比与固定题基线自检。'), gallery, quiz, secondary];
+  return [pageHead('智商检测', '管理参测分组与同题对比。'), gallery];
 }
 async function systemPage() {
   const results = await Promise.allSettled(['/accounts', '/schedules', '/rules', '/modules', '/automations', '/audit', '/compatibility'].map(path => api(path)));
@@ -947,6 +882,7 @@ function resolveRoute(hashRoute) {
   const clean = hashRoute || 'rules';
   if (clean === 'schedules') return { nav: 'rules', page: 'rules', anchor: 'rules-schedules', title: '规则' };
   if (clean === 'automations') return { nav: 'rules', page: 'rules', anchor: 'rules-automations', title: '规则' };
+  if (clean === 'settlements') return { nav: 'rewards', page: 'rewards', anchor: 'rewards-settlements', title: '排名与奖励' };
   if (clean === 'overview') return { nav: 'system', page: 'system', anchor: '', title: '运行与系统' };
   if (clean === 'audit') return { nav: 'system', page: 'system', anchor: 'system-audit', title: '运行与系统' };
   if (clean === 'compatibility') return { nav: 'system', page: 'system', anchor: 'system-compatibility', title: '运行与系统' };
@@ -968,7 +904,7 @@ async function render() {
     sessionChecked = true;
     if (state.status.upstream_url && !$('#connection-url').value) $('#connection-url').value = state.status.upstream_url;
     setConnectionState(true);
-    const routes = { rules: rulesHubPage, modules: modulesPage, analytics: analyticsPage, system: systemPage, accounts: accountsPage, users: usersPage };
+    const routes = { rules: rulesHubPage, modules: modulesPage, analytics: analyticsPage, rewards: rewardsPage, system: systemPage, accounts: accountsPage, users: usersPage };
     const content = await routes[target.page]();
     if (version === generation) {
       if (!authorized) { disconnected(); return; }

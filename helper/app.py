@@ -29,7 +29,7 @@ from .credentials import CredentialVault
 from .engine import Engine
 from .gallery import Gallery, GalleryError
 from .gallery_api import install_gallery_api
-from .gallery_generation import generate_artwork
+from .gallery_generation import GenerationFailure, generate_artwork
 from .mailer import Mailer
 from .native_proxy import NativeProxy, is_document_request
 from .native_api import install_native_api
@@ -175,10 +175,14 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     benchmark_users = set()
 
     async def generate_gallery_work(job):
-        api_key = await upstream.benchmark_key(job["key_id"], job["group_id"])
+        try:
+            api_key = await upstream.benchmark_key(job["key_id"], job["group_id"])
+        except UpstreamError:
+            raise GenerationFailure("key_lookup") from None
         selection = SimpleNamespace(model=job["model"], api_format=job["api_format"],
                                     prompt=job["prompt"], api_key=api_key,
-                                    reasoning_effort=job.get("reasoning_effort", "default"))
+                                    reasoning_effort=job.get("reasoning_effort", "default"),
+                                    timeout_seconds=job.get("timeout_seconds"))
         return await generate_artwork(config, selection)
 
     gallery = Gallery(store, generate_gallery_work)
