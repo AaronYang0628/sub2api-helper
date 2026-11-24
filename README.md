@@ -73,4 +73,4 @@ node site/build.mjs
 python3 -m http.server 8090 --directory _site
 ```
 
-修改共享样式后使用 `npm --prefix ui ci && npm --prefix ui run build` 重新生成 CSS。原生行按钮的浏览器回归见 [测试说明](tests/native_ui/README.md)。构建镜像后可运行 `python3 tests/container_smoke.py sub2api-helper:0.2.24` 验证容器流程。上游样式与图标的许可见 [第三方声明](THIRD_PARTY_NOTICES.md)。
+修改共享样式后使用 `npm --prefix ui ci && npm --prefix ui run build` 重新生成 CSS。原生行按钮的浏览器回归见 [测试说明](tests/native_ui/README.md)。构建镜像后可运行 `python3 tests/container_smoke.py sub2api-helper:0.2.25` 验证容器流程。上游样式与图标的许可见 [第三方声明](THIRD_PARTY_NOTICES.md)。
