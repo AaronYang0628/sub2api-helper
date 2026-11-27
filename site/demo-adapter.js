@@ -165,6 +165,29 @@
       { rank: 3, user_id: 103, username: '示例用户 C', requests: 4100, tokens: 7900000, actual_cost: 128.6 },
     ],
   };
+  // Portal ranking rows in the official order (actual_cost descending, ties by total tokens).
+  const portalRankingRows = [
+    { rank: 1, label: '用户 #1', requests: 8200, input_tokens: 18345000, output_tokens: 4210000, cache_tokens: 123456, total_tokens: 22555000, actual_cost: 245.8, is_me: false },
+    { rank: 2, label: '用户 #2', requests: 6400, input_tokens: 31000000, output_tokens: 2000000, cache_tokens: 1000000, total_tokens: 34000000, actual_cost: 180.24, is_me: true },
+    { rank: 3, label: '用户 #3', requests: 4100, input_tokens: 5120000, output_tokens: 1000000, cache_tokens: 80000, total_tokens: 6200000, actual_cost: 128.6, is_me: false },
+    { rank: 4, label: '用户 #4', requests: 2380, input_tokens: 2400000, output_tokens: 640000, cache_tokens: 0, total_tokens: 3040000, actual_cost: 77.25, is_me: false },
+    { rank: 5, label: '用户 #5', requests: 1120, input_tokens: 980000, output_tokens: 150000, cache_tokens: 40000, total_tokens: 1170000, actual_cost: 42.1, is_me: false },
+    { rank: 6, label: '用户 #6', requests: 120, input_tokens: 300000, output_tokens: 20000, cache_tokens: 0, total_tokens: 320000, actual_cost: 12.5, is_me: false },
+  ];
+  function portalRanking() {
+    // Like the real portal API: the current calendar month, and the cutoff one second before it closes.
+    const rule = state.automations.find(item => item.enabled && item.type === 'monthly_rewards');
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    const [year, month, today] = ['year', 'month', 'day'].map(type => parts.find(part => part.type === type).value);
+    const last = new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
+    const amounts = new Map((rule?.rewards || []).map(item => [Number(item.rank), Number(item.amount)]));
+    // Like the real portal API: a rank without an amount is skipped at settlement, so it has no provisional reward.
+    const amount = rank => amounts.get(rank) > 0 ? amounts.get(rank).toFixed(2) : null;
+    return { start_date: `${year}-${month}-01`, end_date: `${year}-${month}-${today}`, timezone: 'Asia/Shanghai', truncated: false,
+      ranking: portalRankingRows.map(row => ({ ...row, reward: amount(row.rank) })),
+      rewards: rule ? { rewards: [1, 2, 3].map(rank => ({ rank, amount: (amounts.get(rank) || 0).toFixed(2) })), timezone: 'Asia/Shanghai', mode: rule.mode || 'automatic',
+        settlement_at: `${year}-${month}-${String(last).padStart(2, '0')}T23:59:59+08:00` } : null };
+  }
   let compatibility = {
     checked_at: '2026-11-17T09:20:00+08:00', upstream_commit: 'b0fa9f3e6eeab1968a53e1289b69daa4bb40ca2b', latest_commit: 'b0fa9f3e6eeab1968a53e1289b69daa4bb40ca2b', update_available: false,
     checks: [
@@ -271,8 +294,7 @@
       if (endpoint === 'models' && method === 'GET') return { groups: galleryDirectory.slice(0, 4).map(({ id, name, platform }) => ({ id, name, platform })), catalog: true,
         models: metrics.models.map(row => ({ ...row, cache_read_tokens: 0, cache_write_tokens: 0, multiplier: row.cost ? row.actual_cost / row.cost : null,
           official: { input: 1.25, output: 10, cache_read: 0.125, cache_write: null }, actual: row.cost ? { input: 1.25 * row.actual_cost / row.cost, output: 10 * row.actual_cost / row.cost, cache_read: null, cache_write: null } : null })) };
-      if (endpoint === 'ranking' && method === 'GET') return { start_date: '2026-11-01', end_date: '2026-11-23', timezone: 'Asia/Shanghai', rewards: null,
-        ranking: metrics.ranking.map(({ username, user_id, ...item }, index) => ({ ...item, rank: index + 1, label: `用户 #${index + 1}`, is_me: index === 1 })) };
+      if (endpoint === 'ranking' && method === 'GET') return portalRanking();
       return route('/api/' + endpoint, method, data);
     }
     if (path === '/_helper/api/session/revoke' && method === 'POST') return { ok: true };

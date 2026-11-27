@@ -16,6 +16,10 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+# Upstream caps user-breakdown at this many rows; a capped list may be incomplete.
+USER_BREAKDOWN_LIMIT = 200
+USER_BREAKDOWN_COUNTS = ("requests", "input_tokens", "output_tokens", "cache_tokens", "total_tokens")
+
 
 class UpstreamError(RuntimeError):
     """An upstream failure whose detail is safe to show in the helper UI."""
@@ -254,7 +258,11 @@ class Upstream:
 
     @staticmethod
     def _finite_number(value: Any) -> bool:
-        return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool) and math.isfinite(value)
+        try:
+            return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool) and math.isfinite(value)
+        except OverflowError:
+            # An integer too large for a float (e.g. a JSON integer of hundreds of digits) is not a usable amount.
+            return False
 
     @classmethod
     def _positive_number(cls, value: Any, label: str) -> float:
@@ -306,6 +314,33 @@ class Upstream:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("排名数量必须在 1 至 100 之间")
         return await self.request("GET", "/api/v1/admin/dashboard/users-ranking", params={**self._dates(start_date, end_date), "limit": limit})
+
+    async def user_breakdown(self, start_date: str, end_date: str, timezone: str | None = None) -> list[dict[str, Any]]:
+        """Per-user usage with token splits for the portal ranking page.
+
+        One request whose result upstream caps at USER_BREAKDOWN_LIMIT rows, so
+        the caller must treat a capped list as possibly incomplete. Only
+        whitelisted fields leave this adapter: never cost or account_cost.
+        """
+        zone = timezone or self.timezone
+        ZoneInfo(zone)
+        params = {**self._dates(start_date, end_date), "timezone": zone, "sort_by": "actual_cost", "limit": USER_BREAKDOWN_LIMIT}
+        payload = await self.request("GET", "/api/v1/admin/dashboard/user-breakdown", params=params)
+        if not isinstance(payload, dict) or not isinstance(payload.get("users"), list):
+            raise UpstreamError("sub2api 用户用量明细响应不兼容")
+        rows = []
+        for item in payload["users"]:
+            # type() is exact on purpose: a bool is not a count, and NaN or inf is not a cost.
+            # Upstream reports usage without a user as user_id 0 (COALESCE(ul.user_id, 0)); the
+            # caller's eligibility filter drops it, so 0 is a valid row here and only negatives are not.
+            if (not isinstance(item, dict) or type(item.get("user_id")) is not int or item["user_id"] < 0
+                    or any(type(item.get(key)) is not int or item[key] < 0 for key in USER_BREAKDOWN_COUNTS)
+                    or not self._finite_number(item.get("actual_cost")) or item["actual_cost"] < 0):
+                raise UpstreamError("sub2api 用户用量明细响应不兼容")
+            email = item.get("email")
+            rows.append({"user_id": item["user_id"], "email": email if isinstance(email, str) else "",
+                         **{key: item[key] for key in USER_BREAKDOWN_COUNTS}, "actual_cost": float(item["actual_cost"])})
+        return rows
 
     async def profile(self, token: str) -> dict[str, Any]:
         return await self.request("GET", "/api/v1/user/profile", token=token)

@@ -15,6 +15,7 @@ async function startRealFeatureBackend(directory, parentOrigin) {
   await fs.writeFile(script, String.raw`
 import asyncio
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from pathlib import Path
 import socket
 import sys
@@ -43,6 +44,34 @@ class FixtureUpstream(FakeUpstream):
     async def benchmark_key(self, key_id, group_id):
         return 'fixture-model-key-never-rendered'
 
+    async def list_users(self):
+        # Extra ordinary users keep the ranking fixture independent of the data in tests/test_app.py.
+        return await super().list_users() + [
+            {"id": 10, "username": "Carol", "email": "carol@example.test", "role": "user", "status": "active"},
+            {"id": 11, "username": "Dave", "email": "dave@example.test", "role": "user", "status": "active"},
+            {"id": 12, "username": "Erin", "email": "erin@example.test", "role": "user", "status": "disabled"},
+            {"id": 13, "username": "Frank", "email": "frank@example.test", "role": "user", "status": "active"},
+        ]
+
+    async def user_breakdown(self, start_date, end_date, timezone=None):
+        # user_id, requests, input, output, cache, total, actual_cost; deliberately unsorted.
+        # Bob (8) has the most tokens of the eligible users but only the second-highest cost. Erin
+        # (disabled), the administrator and a removed id all outrank everyone and must never appear.
+        usage = [
+            (8, 6400, 31000000, 2000000, 1000000, 34000000, 180.24),
+            (12, 9900, 90000000, 9000000, 0, 99000000, 999.99),
+            (7, 8200, 18345000, 4210000, 123456, 22555000, 245.8),
+            (99, 5000, 50000000, 5000000, 0, 55000000, 500.0),
+            (77, 100, 700000, 0, 0, 700000, 66.0),
+            (13, 120, 300000, 20000, 0, 320000, 12.5),
+            (10, 4100, 5120000, 1000000, 80000, 6200000, 128.6),
+            (11, 900, 1500000, 250000, 0, 1750000, 77.25),
+        ]
+        return [{"user_id": user_id, "email": "user%d@example.test" % user_id, "requests": requests, "input_tokens": input_tokens,
+                 "output_tokens": output_tokens, "cache_tokens": cache_tokens, "total_tokens": total_tokens, "actual_cost": cost,
+                 "cost": cost * 2, "account_cost": cost / 10}
+                for user_id, requests, input_tokens, output_tokens, cache_tokens, total_tokens, cost in usage]
+
 async def generate(config, selection):
     return {'kind': 'html', 'content': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80"><circle id="real-fixture-art" cx="60" cy="40" r="30" fill="#14b8a6"/></svg>', 'mime': 'text/html'}
 
@@ -58,6 +87,9 @@ catalog.loaded_at = 0.0
 catalog.ttl = float('inf')
 app = app_module.create_app(config, store=store, upstream=FixtureUpstream(), mailer=FakeMailer(), background=False, price_catalog=catalog)
 store.set_setting('modules', {'benchmark': True, 'pricing': True, 'ranking': True})
+# An enabled reward rule gives the portal ranking its 预计奖励 column and statistics cutoff.
+store.create('automations', {'name': 'Fixture monthly rewards', 'type': 'monthly_rewards', 'enabled': True, 'timezone': 'Asia/Shanghai', 'mode': 'automatic',
+                             'rewards': [{'rank': 1, 'amount': 30}, {'rank': 2, 'amount': 20}, {'rank': 3, 'amount': 10}]})
 for group_id, name, model, effort in [(3, '实际菜单可见分组', 'fixture-loopback-model', 'high'), (4, '禁止泄露分组', 'restricted-model', 'none')]:
     app.state.gallery.configure(group_id, {'name': name, 'model': model, 'key_id': group_id,
                                          'api_format': 'chat', 'prompt': 'Fixture immutable executed prompt',
@@ -106,7 +138,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
   await fs.writeFile(cssInput, await fs.readFile(path.join(root, 'ui/upstream.css'), 'utf8') + '\n' + await fs.readFile(path.join(root, 'ui/adapters.css'), 'utf8'));
   const compiled = spawnSync(process.execPath, [path.join(root, 'ui/node_modules/tailwindcss/lib/cli.js'), '-i', cssInput, '-c', path.join(root, 'ui/tailwind.config.js'), '-o', cssFile, '--minify'], { encoding: 'utf8' });
   assert.equal(compiled.status, 0, compiled.stderr);
-  let empty = false, noWorks = false, fail = false, onlyFirst = false, leaks = 0;
+  let empty = false, noWorks = false, fail = false, onlyFirst = false, truncated = false, leaks = 0;
   const calls = [];
   let realBackendOrigin = '', liveIngress = false, realBackend;
   const fixtureCreatedAt = Date.now();
@@ -138,6 +170,21 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     if (group !== 4) item.work = previewWork(group, 0);
     return item;
   }
+  // The portal ranking contract: the current calendar month in the rule timezone. Rows 21-25 request
+  // most but spend least, so a column sort has to happen before the Top N cut.
+  const shanghaiNow = () => Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).map(({ type, value }) => [type, value]));
+  function rankingContract({ year, month, day }, noRows, mode, capped) {
+    const last = new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
+    return { start_date: `${year}-${month}-01`, end_date: `${year}-${month}-${day}`, timezone: 'Asia/Shanghai', truncated: capped,
+      ranking: noRows ? [] : Array.from({ length: 25 }, (_, index) => { const rank = index + 1; return { rank, label: `用户 #${rank}`, is_me: rank === 7, requests: rank > 20 ? 9000 + rank : rank * 37,
+        input_tokens: (25 - rank) * 1000000, output_tokens: (25 - rank) * 100000, cache_tokens: 0, total_tokens: (25 - rank) * 1100000, actual_cost: 1000 - rank * 10, reward: rank <= 3 ? ['30.00', '20.00', '10.00'][index] : null, ...(capped && rank === 25 ? { tentative: true } : {}) }; }),
+      rewards: mode ? { rewards: [{ rank: 1, amount: '30.00' }, { rank: 2, amount: '20.00' }, { rank: 3, amount: '10.00' }], timezone: 'Asia/Shanghai', mode,
+        settlement_at: `${year}-${month}-${String(last).padStart(2, '0')}T23:59:59+08:00` } : null };
+  }
+  const rankingRows = scope => scope.locator('tbody tr').evaluateAll(rows => rows.map(row => {
+    const cells = [...row.querySelectorAll('td')].map(cell => cell.textContent.trim());
+    return { rank: cells[0], user: cells[1], numbers: cells.slice(2, 8), reward: cells[8] };
+  }));
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname === '/real-menu') {
@@ -164,7 +211,12 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
       let body = ''; for await (const chunk of req) body += chunk; const input = body ? JSON.parse(body) : {};
       let value;
       if (url.pathname.endsWith('/session')) value = { session: 'fixture-session', role: input.token === 'fixture-admin-jwt' ? 'admin' : 'user' };
-      else if (url.pathname.endsWith('/modules')) value = { benchmark: true };
+      else if (url.pathname.endsWith('/modules')) value = { benchmark: true, ranking: true };
+      else if (url.pathname === '/_helper/api/portal/ranking') {
+        if (fail) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: '示例服务暂时不可用' })); return; }
+        // empty: no usage and no reward rule; noWorks: usage table still empty under a rule.
+        value = rankingContract(shanghaiNow(), empty || noWorks, empty ? null : 'approval', truncated);
+      }
       else if (url.pathname === '/_helper/api/portal/gallery/feed') {
         if (fail) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ detail: '示例服务暂时不可用' })); return; }
         const available = empty || noWorks ? [] : onlyFirst ? [1] : [1, 2, 3, 4];
@@ -272,6 +324,50 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await page.locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0, 'configured sources without work do not become invented participants or metric blocks');
     assert((await page.locator('.helper-gallery-empty').boundingBox()).height <= 120);
     noWorks = false;
+    // Ranking page against the portal contract: upstream's usage table plus one 预计奖励 column.
+    const rankingUrl = theme => origin + `/_helper/features/ranking?token=x&theme=${theme}`;
+    const monthLabel = String(Number(shanghaiNow().month));
+    const rankingSubtitle = () => page.locator('#feature-main section.card > div > p').textContent();
+    const rankingCount = () => page.locator('#feature-main section.card > div > div > span').textContent();
+    await page.setViewportSize({ width: 390, height: 844 });
+    empty = true; await page.goto(rankingUrl('light')); await page.getByText('暂无数据', { exact: true }).waitFor();
+    assert.equal(await page.locator('tbody tr').count(), 1, 'a month without usage shows the upstream empty row');
+    assert.equal(await rankingSubtitle(), `${monthLabel} 月用量排行`, 'without a reward rule nothing promises a payout');
+    assert.equal(await page.getByText('位用户').count(), 0, 'the user count stays hidden while empty');
+    assert.equal(await page.locator('select[aria-label="显示数量"]').inputValue(), '50');
+    assert.deepEqual(await page.locator('select[aria-label="显示数量"] option').evaluateAll(nodes => nodes.map(node => node.textContent)), ['Top 20', 'Top 50', 'Top 100', 'Top 200']);
+    fail = true; await page.goto(rankingUrl('light')); await page.getByRole('alert').waitFor();
+    assert.equal(await page.locator('#feature-main section.card').count(), 0, 'a failed load leaves only the error');
+    fail = false; empty = false; noWorks = true; await page.goto(rankingUrl('light')); await page.getByText('暂无数据', { exact: true }).waitFor();
+    assert.match(await rankingSubtitle(), new RegExp(`^${monthLabel} 月用量排行 · 统计至 ${monthLabel}月\\d{1,2}日 23:59:59，审核后发放$`), 'the cutoff is a statistics deadline and approval mode says so');
+    noWorks = false; await page.goto(rankingUrl('light')); await page.locator('tbody tr td:nth-child(2)').first().waitFor();
+    assert.equal(await rankingCount(), '共 25 位用户');
+    let ranked = await rankingRows(page);
+    assert.deepEqual(ranked.map(row => row.user.endsWith('我')), Array.from({ length: 25 }, (_, index) => index === 6), 'only the viewer’s own row is marked');
+    assert.deepEqual(await page.locator('tbody .rounded-full').evaluateAll(nodes => nodes.map(node => node.textContent.trim())), ['1', '2', '3'], 'only the top three carry medal badges');
+    assert.deepEqual(ranked.map(row => row.reward), ['$30.00', '$20.00', '$10.00', ...Array(22).fill('—')], 'reward badges belong to the official ranks');
+    assert(await page.locator('#feature-main section.card .overflow-x-auto').evaluate(node => node.scrollWidth > node.clientWidth && document.documentElement.scrollWidth <= innerWidth), 'the table scrolls inside its card instead of the page');
+    await page.screenshot({ path: path.join(directory, 'ranking-mobile.png'), fullPage: true });
+    await page.locator('select[aria-label="显示数量"]').selectOption('20');
+    ranked = await rankingRows(page);
+    assert.deepEqual(ranked.map(row => Number(row.rank)), Array.from({ length: 20 }, (_, index) => index + 1), 'Top N keeps the first N official ranks');
+    await page.getByRole('button', { name: '请求数', exact: true }).click();
+    ranked = await rankingRows(page);
+    assert.deepEqual(ranked.map(row => Number(row.rank)), [25, 24, 23, 22, 21, ...Array.from({ length: 15 }, (_, index) => 20 - index)], 'rows are sorted by the column first and cut to Top 20 afterwards');
+    await page.getByRole('button', { name: '请求数', exact: true }).click();
+    assert.equal(Number((await rankingRows(page))[0].rank), 25, 'clicking the active column keeps the order');
+    await page.getByRole('button', { name: '费用', exact: true }).focus(); await page.keyboard.press('Enter');
+    assert.deepEqual((await rankingRows(page)).map(row => Number(row.rank)), Array.from({ length: 20 }, (_, index) => index + 1), 'Enter on a focused header sorts by cost');
+    truncated = true; await page.goto(rankingUrl('dark')); await page.locator('tbody tr td:nth-child(2)').first().waitFor();
+    assert.equal(await rankingCount(), '已列出 25 位用户，榜单可能不完整', 'a capped list counts the listed rows and says the ranking may be incomplete');
+    // The real API marks a row tied at the cut-off cost as tentative: no medal, and the reward cell says so.
+    const lastRow = page.locator('tbody tr').last();
+    assert.equal((await rankingRows(page)).at(-1).reward, '暂定', 'a tentative row says so instead of showing a prize');
+    assert.equal(await lastRow.locator('.rounded-full').count(), 0, 'a tentative row gets no rank medal');
+    assert.equal(await lastRow.locator('td').first().locator('span').getAttribute('title'), '榜单可能不完整，该名次暂定');
+    assert.equal(await page.locator('tbody .rounded-full').count(), 3, 'rows above the cut keep their medals');
+    await page.screenshot({ path: path.join(directory, 'ranking-mobile-dark.png'), fullPage: true });
+    truncated = false;
     assert.equal(leaks, 0); assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0); assert.deepEqual(errors, []);
     await page.close();
 
@@ -321,18 +417,62 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert((await menu().locator('.helper-gallery-empty').boundingBox()).height <= 120);
     assert.equal(await menu().locator('.helper-gallery-work,.helper-gallery-stat,select').count(), 0);
     assert.equal(await menu().getByRole('link', { name: '配置参测来源', exact: true }).count(), 0);
-    for (const [feature, expectedTitle, expectedContent] of [
-      ['pricing', '模型价格统计', 'gpt-sample'], ['ranking', '用户用量排名', '用户 #1']
-    ]) {
-      await livePage.goto(parentOrigin + `/real-menu?mode=cross&auth=user&feature=${feature}`);
-      await menu().locator('table').waitFor();
-      assert.equal(await menu().locator('#feature-main h1,.page-head').count(), 0, `${feature} iframe must not duplicate the host title or intro`);
-      assert.equal(await menu().getByText(expectedTitle, { exact: true }).count(), 0);
-      assert((await menu().locator('#feature-main').textContent()).includes(expectedContent));
-      const childFrame = await livePage.locator('#feature-menu').elementHandle().then(handle => handle.contentFrame());
-      assert((await childFrame.title()).includes(expectedTitle), 'feature identity remains accessible through document title');
-      if (feature === 'ranking') assert(!/Alice|Bob|alice@example|bob@example/.test(await menu().locator('table').textContent()), 'ordinary ranking stays anonymous');
-    }
+    const frameTitle = async () => (await livePage.locator('#feature-menu').elementHandle().then(handle => handle.contentFrame())).title();
+    await livePage.goto(parentOrigin + '/real-menu?mode=cross&auth=user&feature=pricing');
+    await menu().locator('table').waitFor();
+    assert.equal(await menu().locator('#feature-main h1,.page-head').count(), 0, 'pricing iframe must not duplicate the host title or intro');
+    assert.equal(await menu().getByText('模型价格统计', { exact: true }).count(), 0);
+    assert((await menu().locator('#feature-main').textContent()).includes('gpt-sample'));
+    assert((await frameTitle()).includes('模型价格统计'), 'feature identity remains accessible through document title');
+
+    // Ranking through the real portal API: upstream's usage table plus one 预计奖励 column.
+    const openRanking = async auth => {
+      // The table already exists while loading, so wait for a data row; keep what the API returned.
+      const pending = livePage.waitForResponse(response => new URL(response.url()).pathname === '/_helper/api/portal/ranking').catch(() => null);
+      const before = traffic.length;
+      await livePage.goto(parentOrigin + `/real-menu?mode=cross&auth=${auth}&feature=ranking`);
+      await menu().locator('tbody tr td:nth-child(2)').first().waitFor();
+      assert.equal(traffic.slice(before).filter(request => new URL(request.url).pathname === '/_helper/api/portal/ranking').length, 1, 'one ranking request per page load');
+      const response = await pending;
+      assert(response && response.ok(), 'the ranking API answers 200');
+      return response.text();
+    };
+    const ordinaryBody = await openRanking('user');
+    assert.equal(await menu().locator('#feature-main h1,.page-head').count(), 0, 'ranking iframe must not duplicate the host title or intro');
+    assert.equal(await menu().getByText('用户用量排名', { exact: true }).count(), 0);
+    assert((await frameTitle()).includes('用户用量排名'), 'feature identity remains accessible through document title');
+    for (const removed of ['月度奖项设置', '评选规则', '结算时间']) assert.equal(await menu().getByText(removed).count(), 0, `the old ${removed} panel is gone`);
+    assert.deepEqual(await menu().locator('thead th').evaluateAll(nodes => nodes.map(node => node.textContent.replace('↓', '').trim())),
+      ['#', '用户', '请求数', '输入 Token', '输出 Token', '缓存 Token', '总 Token', '费用', '预计奖励'], 'the header copies upstream and appends the reward column');
+    const official = await rankingRows(menu());
+    assert.deepEqual(official.map(row => row.user), ['用户 #1我', '用户 #2', '用户 #3', '用户 #4', '用户 #5'], 'ordinary viewers see rank labels only, with Alice (user 7) marked as me');
+    assert.deepEqual(await menu().locator('tbody .rounded-full').evaluateAll(nodes => nodes.map(node => node.textContent.trim())), ['1', '2', '3'], 'only the top three carry medal badges');
+    assert.deepEqual(official.map(row => row.reward), ['$30.00', '$20.00', '$10.00', '—', '—'], 'reward badges belong to the official ranks');
+    assert.deepEqual(official.map(row => [row.numbers[0].replace(/\D/g, ''), ...row.numbers.slice(1)]), [
+      ['8200', '18.3M', '4.2M', '123.5K', '22.6M', '$245.8000'], ['6400', '31.0M', '2.0M', '1.0M', '34.0M', '$180.2400'], ['4100', '5.1M', '1.0M', '80.0K', '6.2M', '$128.6000'],
+      ['900', '1.5M', '250.0K', '0', '1.8M', '$77.2500'], ['120', '300.0K', '20.0K', '0', '320.0K', '$12.5000']], 'numbers use the upstream formatting');
+    assert((await menu().locator('#feature-main').textContent()).includes('共 5 位用户'), 'only eligible ordinary users are counted');
+    assert.match(await menu().locator('#feature-main section.card > div > p').textContent(), /^\d{1,2} 月用量排行 · 统计至 \d{1,2}月\d{1,2}日 23:59:59，月结后自动发放$/, 'the cutoff ends the statistics without promising a payout at that second');
+    const ordinary = JSON.parse(ordinaryBody);
+    assert(ordinary.ranking.every(row => Object.keys(row).every(key => !/^(user_id|username|email|cost|account_cost|tokens)$/.test(key))), 'ordinary rows carry no id, name, email or standard cost');
+    assert(!/Alice|Bob|Carol|Dave|Erin|Frank|Administrator|example\.test/i.test(ordinaryBody + await menu().locator('table').textContent()), 'ordinary ranking stays anonymous');
+    assert.match(ordinary.rewards.settlement_at, /^\d{4}-\d{2}-\d{2}T23:59:59[+-]\d{2}:\d{2}$/);
+    // Bob (rank 2) has the most tokens: sorting by tokens moves him up while rank and reward stay official.
+    await menu().getByRole('button', { name: '总 Token', exact: true }).click();
+    assert.deepEqual(await menu().locator('th[aria-sort="descending"]').evaluateAll(nodes => nodes.map(node => node.textContent.trim())), ['总 Token ↓']);
+    assert.deepEqual(await rankingRows(menu()), [official[1], official[0], official[2], official[3], official[4]], 'sorting only reorders rows: rank, reward and numbers stay official');
+    await menu().getByRole('button', { name: '总 Token', exact: true }).click();
+    assert.deepEqual((await rankingRows(menu())).map(row => row.rank), ['2', '1', '3', '4', '5'], 'clicking the active column keeps the order');
+
+    const admin = JSON.parse(await openRanking('admin'));
+    const fixtureUser = { 7: 'Alice', 8: 'Bob', 10: 'Carol', 11: 'Dave', 13: 'Frank' };
+    assert.deepEqual(admin.ranking.map(row => row.user_id), [7, 8, 10, 11, 13], 'administrators receive real user ids in the official order');
+    assert(admin.ranking.every(row => Object.keys(row).every(key => !/^(username|email|cost|account_cost)$/.test(key))), 'labels come from the user list and usage never carries the standard cost');
+    const named = await rankingRows(menu());
+    assert(named.every(row => { const [, label, id] = row.user.match(/^(.+)#(\d+)$/), name = fixtureUser[id] || ''; return label === name || label === `${name.toLowerCase()}@example.test`; }), 'administrators see real labels and user ids');
+    assert.deepEqual(named.map(row => [row.rank, row.reward, ...row.numbers]), official.map(row => [row.rank, row.reward, ...row.numbers]), 'both viewers see the same ranks, rewards and numbers');
+    assert.equal(await menu().locator('tbody td:nth-child(2)').first().getAttribute('title'), named[0].user.slice(0, named[0].user.lastIndexOf('#')), 'a truncated label stays available as the cell title');
+    assert.equal(await menu().getByText('我', { exact: true }).count(), 0, 'an administrator is not a reward candidate');
     const beforeInvalid = traffic.length;
     await livePage.goto(parentOrigin + '/real-menu?mode=cross&auth=invalid');
     await menu().getByRole('alert').waitFor();
@@ -352,7 +492,7 @@ uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', log_level='error', access_l
     assert.equal(await menu().locator('#feature-main').count(), 0);
     assert.deepEqual(liveErrors, []);
     await livePage.close();
-    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['single aggregate flat feed without selectors/tabs', 'latest participants ahead of bounded recent history', 'source/model/thought on each card', 'actual queued participant placeholders', 'executed prompt plaintext in on-demand detail', 'HTML CSS renders/animates in sandbox', 'legacy broken images become notes without requests; valid inline GIF remains', 'raw SVG visible', 'scripts/network blocked', 'no detail prefetch or group fanout', 'one aggregate poll with immediate ACL revocation cleanup', 'compact empty state without invented participants', 'gallery/pricing/ranking frames have no duplicate titles or intro', 'real pricing data and anonymous ranking table', 'empty user/admin configuration entry', 'actual same-origin and loopback cross-origin menu iframe', 'real JWT rejection and current group ACL', 'real CSP rejects unauthorized ancestor', 'all real feature assets load without JWT referrer', 'detached cleanup', 'mobile/dark/no key storage'] }, null, 2));
+    console.log(JSON.stringify({ passed: true, screenshots: directory, checks: ['single aggregate flat feed without selectors/tabs', 'latest participants ahead of bounded recent history', 'source/model/thought on each card', 'actual queued participant placeholders', 'executed prompt plaintext in on-demand detail', 'HTML CSS renders/animates in sandbox', 'legacy broken images become notes without requests; valid inline GIF remains', 'raw SVG visible', 'scripts/network blocked', 'no detail prefetch or group fanout', 'one aggregate poll with immediate ACL revocation cleanup', 'compact empty state without invented participants', 'gallery/pricing/ranking frames have no duplicate titles or intro', 'real pricing data', 'upstream-style ranking table with official ranks and reward badges (empty, error, Top N, sort, capped)', 'anonymous and admin ranking through the real portal API', 'empty user/admin configuration entry', 'actual same-origin and loopback cross-origin menu iframe', 'real JWT rejection and current group ACL', 'real CSP rejects unauthorized ancestor', 'all real feature assets load without JWT referrer', 'detached cleanup', 'mobile/dark/no key storage'] }, null, 2));
   } finally {
     if (realBackend) {
       realBackend.child.kill('SIGTERM');

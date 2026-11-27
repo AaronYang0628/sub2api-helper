@@ -1,4 +1,5 @@
-/* Pricing and ranking pages. Plain CSS (no Tailwind rebuild); light and dark. */
+/* Pricing page. Plain CSS (no Tailwind rebuild); light and dark.
+ * The ranking page reuses upstream's usage-table classes from style.css. */
 .fv { display: flex; flex-direction: column; gap: .75rem; min-width: 0; }
 .fv-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
 .fv-input { height: 2.25rem; padding: 0 .75rem; border: 1px solid #e2e8f0; border-radius: .75rem; background: #fff; color: #111827; font: inherit; font-size: .875rem; }
@@ -20,38 +21,3 @@
 .fv-up { color: #dc2626; font-weight: 600; }
 .dark .fv-down { color: #34d399; }
 .dark .fv-up { color: #f87171; }
-
-.fv-rewards { padding: 1rem; }
-.fv-rewards h3 { margin: 0 0 .75rem; font-size: 1rem; font-weight: 600; }
-.fv-prizes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
-.fv-prize { display: flex; flex-direction: column; gap: .25rem; padding: .75rem 1rem; border-radius: .875rem; border: 1px solid transparent; }
-.fv-prize strong { font-size: 1.25rem; line-height: 1.75rem; }
-.fv-prize-rank { font-size: .8125rem; font-weight: 500; }
-.fv-prize.fv-gold { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
-.fv-prize.fv-silver { background: #f1f5f9; border-color: #cbd5e1; color: #334155; }
-.fv-prize.fv-bronze { background: #ffedd5; border-color: #fdba74; color: #9a3412; }
-.dark .fv-prize.fv-gold { background: rgba(245,158,11,.16); border-color: rgba(245,158,11,.4); color: #fcd34d; }
-.dark .fv-prize.fv-silver { background: rgba(148,163,184,.16); border-color: rgba(148,163,184,.4); color: #e2e8f0; }
-.dark .fv-prize.fv-bronze { background: rgba(234,88,12,.16); border-color: rgba(234,88,12,.4); color: #fdba74; }
-.fv-rules { list-style: none; margin: .875rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .375rem; font-size: .875rem; line-height: 1.375rem; }
-.fv-rules b { display: inline-block; min-width: 4.5rem; margin-right: .5rem; font-weight: 600; }
-
-.fv-ranking { padding: .75rem 1rem; }
-.fv-ranking-period { color: #6b7280; font-size: .8125rem; margin-bottom: .5rem; }
-.dark .fv-ranking-period { color: #94a3b8; }
-.fv-medal { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; border-radius: 9999px; font-weight: 700; font-size: .875rem; color: #fff; }
-.fv-medal.fv-gold { background: #f59e0b; }
-.fv-medal.fv-silver { background: #94a3b8; }
-.fv-medal.fv-bronze { background: #c2410c; }
-.fv-rank-plain { display: inline-block; width: 1.75rem; text-align: center; color: #6b7280; }
-.fv-row-gold > td { background: #fef3c7; }
-.fv-row-silver > td { background: #f1f5f9; }
-.fv-row-bronze > td { background: #ffedd5; }
-.dark .fv-row-gold > td { background: rgba(245,158,11,.14); }
-.dark .fv-row-silver > td { background: rgba(148,163,184,.14); }
-.dark .fv-row-bronze > td { background: rgba(234,88,12,.14); }
-.fv-me { margin-left: .5rem; }
-@media (max-width: 640px) {
-  .fv-prizes { grid-template-columns: 1fr; }
-  .fv-rules b { display: block; }
-}

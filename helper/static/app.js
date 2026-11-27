@@ -52,7 +52,7 @@ function button(text, action, kind = '', attrs = {}) {
 }
 function pill(text, kind = '') { return el('span', { class: `pill ${kind}` }, text); }
 function notice(text, kind = '') { return el('div', { class: `notice ${kind}` }, helperIcon(kind === 'error' ? 'exclamationCircle' : 'infoCircle', 'notice-icon'), el('span', {}, text)); }
-function empty(title, text = '') { return el('div', { class: 'empty' }, helperIcon('inbox', 'empty-icon'), el('strong', {}, title), el('p', {}, text)); }
+function empty(title, text = '') { return el('div', { class: 'empty' }, helperIcon('inbox', 'empty-icon'), el('strong', {}, title), text ? el('p', {}, text) : null); }
 function fmtTime(value) { if (!value) return '暂无记录'; const d = new Date(value); return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString('zh-CN', { hour12: false }); }
 function autoRuleName(prefix, suffix, limit = 100) {
   const cleanPrefix = String(prefix || '').trim();
@@ -103,7 +103,7 @@ function pageHead(title, desc, actions) {
     return actions ? el('div', { class: 'page-head page-head-compact' }, actions) : null;
   }
   main.removeAttribute('aria-label');
-  return el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, title), el('p', {}, desc)), actions);
+  return el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, title), desc ? el('p', {}, desc) : null), actions);
 }
 function card(title, subtitle, content, action) { return el('section', { class: 'card' }, title ? el('div', { class: 'card-header' }, el('div', {}, el('h2', {}, title), subtitle ? el('p', {}, subtitle) : null), action) : null, content); }
 function table(headers, rows) {
@@ -182,21 +182,13 @@ function disconnected() {
     main.replaceChildren(el('section', { class: 'card connection-empty' },
       el('div', { class: 'connection-empty-symbol' }, helperIcon('shield')),
       el('h1', {}, '服务已绑定，请验证管理员身份'),
-      el('p', {}, '管理员 API Key 已在服务端加密保存，已启用的调度与后台任务仍在正常运行。为保护管理权限，当前浏览器会话需要验证管理员 Key 后继续操作。'),
-      el('div', { class: 'connection-empty-notes' },
-        el('span', {}, helperIcon('clock'), '后台任务持续运行'),
-        el('span', {}, helperIcon('shield'), 'Key 服务端加密保存'),
-        el('span', {}, helperIcon('grid'), '不在浏览器保存明文'))));
+      el('p', {}, '管理员 Key 已在服务端加密保存，输入管理员 Key 验证身份后继续。')));
     return;
   }
   main.replaceChildren(el('section', { class: 'card connection-empty' },
     el('div', { class: 'connection-empty-symbol' }, helperIcon('link')),
     el('h1', {}, '连接你的 sub2api'),
-    el('p', {}, '在上方填写服务地址和管理员 API Key，开始配置账号调度、用户维护及自定义功能。'),
-    el('div', { class: 'connection-empty-notes' },
-      el('span', {}, helperIcon('clock'), '跨夜账号调度'),
-      el('span', {}, helperIcon('mail'), '用户邮件提醒'),
-      el('span', {}, helperIcon('grid'), '功能菜单管理'))));
+    el('p', {}, '填写 sub2api 服务地址和管理员 API Key 完成连接。')));
 }
 async function initializeConnection() {
   const feedback = $('#connection-feedback');
@@ -256,16 +248,16 @@ async function overview() {
   results.forEach((res, i) => { if (res.status === 'fulfilled') state[['accounts', 'schedules', 'rules', 'modules', 'automations'][i]] = res.value; });
   const failed = results.filter(r => r.status === 'rejected');
   const stats = [
-    ['管理账号', Array.isArray(state.accounts) ? state.accounts.length : '—', 'database', '来自 sub2api 的账号'],
-    ['调度中', Array.isArray(state.accounts) ? state.accounts.filter(a => a.schedulable).length : '—', 'play', '账号当前参与请求调度'],
-    ['定时任务', state.schedules.filter(s => s.enabled).length, 'clock', '已启用的时间窗口'],
-    ['自动化规则', state.rules.filter(r => r.enabled).length + state.automations.filter(r => r.enabled).length, 'cog', '已启用的自动化与提醒规则']
+    ['管理账号', Array.isArray(state.accounts) ? state.accounts.length : '—', 'database'],
+    ['调度中', Array.isArray(state.accounts) ? state.accounts.filter(a => a.schedulable).length : '—', 'play'],
+    ['定时任务', state.schedules.filter(s => s.enabled).length, 'clock'],
+    ['自动化规则', state.rules.filter(r => r.enabled).length + state.automations.filter(r => r.enabled).length, 'cog']
   ];
   const details = [ ['服务地址', state.status.upstream_url || '—'], ['默认时区', state.status.timezone || 'Asia/Shanghai'], ['邮件服务', state.status.mail_configured ? pill('已配置', 'green') : pill('未配置', 'amber')], ['外部访问地址', state.status.public_url || '未设置'], ['调度服务', pill(state.status.engine?.running ? '运行中' : '未运行', state.status.engine?.running ? 'green' : 'amber')], ['最近检查', fmtTime(state.status.engine?.last_tick_at)], ['Helper 版本', state.status.version || '—'] ];
-  return [pageHead('工作空间概览', '账号调度、用户维护与内置功能，集中管理。', button('↻  刷新状态', () => render())),
+  return [pageHead('工作空间概览', '账号调度、用户维护与功能开关', button('↻  刷新状态', () => render())),
     failed.length ? notice(`部分上游数据未能加载：${failed.map(x => errorText(x.reason)).join('；')}`, 'warning') : null, state.status.engine?.last_error ? notice(`后台任务最近一次错误：${state.status.engine.last_error}。请查看执行记录。`, 'warning') : null,
-    el('div', { class: 'stats-grid' }, stats.map(([label, value, icon, desc]) => el('div', { class: 'stat-card' }, el('div', { class: 'stat-icon stat-icon-primary' }, helperIcon(icon)), el('div', { class: 'stat-content' }, el('div', { class: 'stat-label' }, label), el('div', { class: 'stat-value' }, value), el('div', { class: 'stat-caption' }, desc))))),
-    el('div', { class: 'overview-grid' }, card('连接与环境', '密钥在服务端配置，仅展示连接信息', el('div', { class: 'card-body' }, details.map(([k, v]) => el('div', { class: 'detail-row' }, el('span', { class: 'muted' }, k), el('span', { class: 'value' }, v))))), card('开始管理', '为常见工作流配置自动化', el('div', { class: 'card-body quick-actions' }, [ ['schedules', 'clock', '设置账号免费时段', '例如每天 23:00 — 次日 09:00'], ['rules', 'cog', '维护不活跃用户', '先发送提醒邮件，成功后再禁用'], ['modules', 'grid', '上线用户功能', '自动同步到 sub2api 自定义菜单'] ].map(([href, icon, title, desc]) => el('a', { class: 'quick-action', href: `#${href}` }, el('span', { class: 'big-icon' }, helperIcon(icon)), el('div', {}, el('strong', {}, title), el('small', {}, desc)), helperIcon('chevronRight', 'arrow'))))))];
+    el('div', { class: 'stats-grid' }, stats.map(([label, value, icon]) => el('div', { class: 'stat-card' }, el('div', { class: 'stat-icon stat-icon-primary' }, helperIcon(icon)), el('div', { class: 'stat-content' }, el('div', { class: 'stat-label' }, label), el('div', { class: 'stat-value' }, value))))),
+    el('div', { class: 'overview-grid' }, card('连接与环境', '', el('div', { class: 'card-body' }, details.map(([k, v]) => el('div', { class: 'detail-row' }, el('span', { class: 'muted' }, k), el('span', { class: 'value' }, v))))), card('开始管理', '', el('div', { class: 'card-body quick-actions' }, [ ['schedules', 'clock', '设置账号免费时段'], ['rules', 'cog', '维护不活跃用户'], ['modules', 'grid', '上线用户功能'] ].map(([href, icon, title]) => el('a', { class: 'quick-action', href: `#${href}` }, el('span', { class: 'big-icon' }, helperIcon(icon)), el('div', {}, el('strong', {}, title)), helperIcon('chevronRight', 'arrow'))))))];
 }
 async function accountsPage() {
   state.accounts = await api('/accounts');
@@ -278,11 +270,11 @@ async function accountsPage() {
         if (!confirm(`确认${value ? '开启' : '关闭'}「${a.name}」的调度？如果由定时规则管理，请先停用规则。`)) throw new Error('已取消操作');
         await api(`/accounts/${a.id}/schedulable`, 'POST', { schedulable: value }); a.schedulable = value; toast('调度状态已更新');
       }, a.schedulable ? '开启' : '关闭'), (a.group_ids || []).join(', ') || '—'
-    ]))) : empty('没有匹配的账号', '调整搜索条件，或先在 sub2api 中添加账号。'));
+    ]))) : empty('没有匹配的账号'));
   }
   paint();
   const search = input('search', '', 'search', { placeholder: '搜索账号名称、ID 或平台', oninput: e => paint(e.target.value) });
-  return [pageHead('账号管理（备用入口）', '未开启原站页内增强时，可在此直接控制账号是否参与请求调度。', el('div', { class: 'button-group' }, el('a', { href: '#system', class: 'button ghost' }, '← 返回运行与系统'), button('↻  刷新', () => render()))), notice('手动切换仅修改“参与调度”状态。被启用的定时规则管理的账号，需要先停用规则才能手动切换。'), card('', '', [el('div', { class: 'toolbar' }, el('div', { class: 'search' }, search), el('span', { class: 'count' }, `共 ${state.accounts.length} 个账号`)), tbody])];
+  return [pageHead('账号管理（备用入口）', '未开启页内增强时，可在此控制账号是否参与调度', el('div', { class: 'button-group' }, el('a', { href: '#system', class: 'button ghost' }, '← 返回运行与系统'), button('↻  刷新', () => render()))), card('', '', [el('div', { class: 'toolbar' }, el('div', { class: 'search' }, search), el('span', { class: 'count' }, `共 ${state.accounts.length} 个账号`)), tbody])];
 }
 async function editSchedule(item = {}) {
   try { state.accounts = await api('/accounts'); } catch (error) { toast(errorText(error), true); return; }
@@ -319,16 +311,15 @@ async function editSchedule(item = {}) {
   const moreSettings = el('details', { class: 'more-settings' },
     el('summary', {}, '更多设置'),
     el('div', { class: 'more-settings-body' },
-      field('规则名称', nameInput, '留空时自动按所选账号和时段生成名称。'),
+      field('规则名称', nameInput),
       field('执行日期', weekdays, '日期按开启时间所属日计算。周一 23:00 开启，周二 09:00 关闭。'),
-      field('自定义时区', zoneInput, '默认使用当前配置的时区（IANA 名称，例如 Asia/Shanghai）。')));
+      field('自定义时区', zoneInput)));
   modal(item.id ? '编辑定时调度' : '新建定时调度', [
-    field('管理账号', picker, '同一账号只能由一条已启用的规则管理。'),
+    field('管理账号', picker),
     el('div', { class: 'field-row' }, field('开启时间', startInput), field('关闭时间', endInput)),
     summary,
     moreSettings,
     el('label', { class: 'switch' }, input('enabled', 'yes', 'checkbox', { checked: item.enabled ?? true }), '启用此规则'),
-    notice('窗口内开启调度，窗口外关闭。保存已启用规则后，会在后台检查时生效。', 'warning')
   ], async form => {
     const data = new FormData(form); const ids = data.getAll('account_ids').map(Number); const days = data.getAll('weekdays').map(Number);
     if (!ids.length) throw new Error('请至少选择一个账号。'); if (!days.length) throw new Error('请至少选择一天。');
@@ -350,11 +341,11 @@ async function schedulesPage() {
     switcher(s.enabled, async enabled => { await api(`/schedules/${s.id}`, 'PUT', { name: s.name, account_ids: s.account_ids, start: s.start, end: s.end, timezone: s.timezone, weekdays: s.weekdays, enabled }); toast(enabled ? '规则已启用' : '规则已暂停'); }, s.enabled ? '已启用' : '已暂停'),
     el('div', { class: 'button-group' }, button('编辑', () => editSchedule(s), 'link'), button('删除', () => { if (confirm(`删除「${s.name}」？删除后停止管理这些账号，保留账号当前调度状态。`)) run(() => api(`/schedules/${s.id}`, 'DELETE'), '规则已删除'); }, 'link danger'))
   ]));
-  return [pageHead('定时调度', '按每天的时间窗口自动开关账号调度，支持跨夜与独立时区。', button('＋  新建调度', () => editSchedule(), 'primary')), notice('调度采用持续校正：进程重启后根据当前时间恢复状态。暂停或删除规则会停止管理，保留账号当前状态。'), card('调度规则', `共 ${rows.length} 条规则`, rows.length ? table(['规则', '调度窗口', '时区', '开启日期', '管理范围', '启用状态', '操作'], rows) : empty('还没有定时调度', '添加账号与免费额度时间窗口，Helper 会自动控制调度。'))];
+  return [pageHead('定时调度', '按每天的时间窗口自动开关账号调度', button('＋  新建调度', () => editSchedule(), 'primary')), card('调度规则', `共 ${rows.length} 条规则`, rows.length ? table(['规则', '调度窗口', '时区', '开启日期', '管理范围', '启用状态', '操作'], rows) : empty('还没有定时调度'))];
 }
 function sendEmail(user) {
   if (!state.status.mail_configured) { toast('请先在服务端配置 SMTP，配置完成后重启 Helper。', true); return; }
-  modal(`发送邮件 · ${user.email}`, [notice('邮件通过 Helper 配置的 SMTP 发送，不会使用或修改 sub2api 邮件模板。'), field('邮件主题', input('subject', '', 'text', { required: true, maxlength: 200 })), field('邮件正文', textArea('body', '', { required: true, rows: 7 }), '以纯文本邮件发送。')], async form => {
+  modal(`发送邮件 · ${user.email}`, [field('邮件主题', input('subject', '', 'text', { required: true, maxlength: 200 })), field('邮件正文', textArea('body', '', { required: true, rows: 7 }), '以纯文本邮件发送。')], async form => {
     if (!confirm(`确认向 ${user.email} 发送此邮件？`)) throw new Error('已取消发送。'); const data = new FormData(form);
     await api(`/users/${user.id}/email`, 'POST', { subject: data.get('subject'), body: data.get('body') }); toast('邮件已发送');
   }, '发送邮件');
@@ -368,19 +359,19 @@ async function usersPage() {
       el('div', { class: 'button-group' }, button('✉ 发邮件', () => sendEmail(u), 'small', { disabled: !state.status.mail_configured }), button(u.status === 'active' ? '禁用' : '启用', () => {
         const status = u.status === 'active' ? 'disabled' : 'active'; if (confirm(`确认${status === 'active' ? '启用' : '禁用'}用户 ${u.email}？`)) run(() => api(`/users/${u.id}/status`, 'POST', { status }), '用户状态已更新');
       }, `small ${u.status === 'active' ? 'danger' : ''}`, { disabled: u.role === 'admin' }))
-    ]))) : empty('没有匹配的用户', '调整搜索内容或关闭“仅启用用户”。'));
+    ]))) : empty('没有匹配的用户'));
   }
   let query = ''; let active = true;
   const search = input('search', '', 'search', { placeholder: '搜索邮箱、用户名或 ID', oninput: e => { query = e.target.value; paint(query, active); } });
   paint();
-  return [pageHead('用户维护（备用入口）', '未开启原站页内增强时，可在此查看用户活跃情况、发送提醒邮件或维护账号状态。', el('div', { class: 'button-group' }, el('a', { href: '#system', class: 'button ghost' }, '← 返回运行与系统'), button('↻  刷新', () => render()))), !state.status.mail_configured ? notice('邮件功能尚未启用：请在服务端配置 SMTP_HOST、SMTP_FROM 等参数。未配置时不会执行邮件提醒及后续自动禁用。', 'warning') : null,
+  return [pageHead('用户维护（备用入口）', '未开启页内增强时，可在此查看活跃情况、发送提醒或停用账户', el('div', { class: 'button-group' }, el('a', { href: '#system', class: 'button ghost' }, '← 返回运行与系统'), button('↻  刷新', () => render()))), !state.status.mail_configured ? notice('邮件功能尚未启用：请在服务端配置 SMTP_HOST、SMTP_FROM 等参数。未配置时不会执行邮件提醒及后续自动禁用。', 'warning') : null,
     card('', '', [el('div', { class: 'toolbar' }, el('div', { class: 'search' }, search), switcher(true, async value => { active = value; paint(query, active); }, '仅启用用户'), el('span', { class: 'count' }, `共 ${state.users.length} 位用户`)), target])];
 }
 function editEmailTemplate(item = {}) {
   modal(item.id ? '编辑邮件模板' : '新建邮件模板', [
     field('模板名称', input('name', item.name || '', 'text', { required: true, maxlength: 80, placeholder: '例如 额度续费提醒' })),
     field('默认邮件主题', input('subject', item.subject || '', 'text', { required: true, maxlength: 200, placeholder: '例如 账户提醒通知' })),
-    field('默认邮件正文', textArea('body', item.body || '', { required: true, rows: 6, maxlength: 5000, placeholder: '您好 {username}，...' }), '支持模板变量：{username}、{email}、{last_used_at}。原站用户行「邮件」弹窗可直接选用并预览。')
+    field('默认邮件正文', textArea('body', item.body || '', { required: true, rows: 6, maxlength: 5000, placeholder: '您好 {username}，...' }), '支持模板变量：{username}、{email}、{last_used_at}。')
   ], async form => {
     const data = new FormData(form);
     const payload = { name: String(data.get('name') || '').trim(), subject: String(data.get('subject') || '').trim(), body: String(data.get('body') || '').trim() };
@@ -394,13 +385,12 @@ function editRule(item = {}) {
     el('div', { class: 'more-settings-body' },
       field('规则名称', input('name', item.name || '', 'text', { maxlength: 100, placeholder: '留空将按闲置天数自动生成' }))));
   modal(item.id ? '编辑自动化规则' : '新建自动化规则', [
-    field('连续未使用天数', input('days', item.days || 30, 'number', { required: true, min: 1, max: 3650 }), '按最后模型调用时间判断；调用时间为空或无法确认时跳过。管理员不参与自动处理。'),
+    field('连续未使用天数', input('days', item.days || 30, 'number', { required: true, min: 1, max: 3650 }), '按最后模型调用时间判断，管理员不参与。'),
     field('提醒邮件主题', input('subject', item.subject || '账户长期未使用提醒', 'text', { required: true, maxlength: 200 })),
     field('提醒邮件正文', textArea('body', item.body || '您好，您的账户已超过 {days} 天未使用，请及时登录查看。如有疑问请联系管理员。', { required: true, rows: 5 }), '支持模板变量：{email}、{username}、{days}、{last_used_at}。'),
     el('div', { class: 'field' }, el('label', { class: 'switch' }, input('disable_after_email', 'yes', 'checkbox', { checked: item.disable_after_email ?? false }), '提醒邮件发送成功后禁用用户')),
     moreSettings,
     el('label', { class: 'switch' }, input('enabled', 'yes', 'checkbox', { checked: item.enabled ?? false }), '启用此规则'),
-    notice('启用后将自动处理符合条件的用户。成功发送的提醒会记录，避免重复发送；邮件发送失败时不会禁用用户。', 'warning')
   ], async form => {
     const data = new FormData(form); const enabled = data.has('enabled'), days = Number(data.get('days'));
     const name = String(data.get('name') || '').trim() || item.name || `闲置 ${days} 天提醒`;
@@ -410,12 +400,12 @@ function editRule(item = {}) {
 }
 async function rulesPage() {
   state.rules = await api('/rules');
-  return [pageHead('闲置用户提醒', '为长期未使用的用户发送提醒，并按需停用账户。', button('＋  新建规则', () => editRule(), 'primary')), !state.status.mail_configured ? notice('SMTP 尚未配置。可以先保存规则，配置邮件服务后再启用执行。', 'warning') : notice('当前版本一次只启用一条用户维护规则，避免重复发信。调用时间无法确认的用户会跳过，操作结果可在“执行记录”中查看。'),
+  return [pageHead('闲置用户提醒', '为长期未使用的用户发送提醒，并按需停用账户', button('＋  新建规则', () => editRule(), 'primary')), !state.status.mail_configured ? notice('SMTP 尚未配置。可以先保存规则，配置邮件服务后再启用执行。', 'warning') : null,
     card('用户维护规则', `共 ${state.rules.length} 条规则`, state.rules.length ? table(['规则', '触发条件', '执行动作', '启用状态', '操作'], state.rules.map(r => row([
       nameCell(r.name, r.subject), pill(`超过 ${r.days} 天未使用`, 'blue'), r.disable_after_email ? '发送邮件 → 禁用用户' : '仅发送提醒邮件',
       switcher(r.enabled, async enabled => { if (enabled && !confirm('确认启用？规则将自动发送邮件并执行配置的状态变更。')) throw new Error('已取消操作'); await api(`/rules/${r.id}`, 'PUT', { name: r.name, days: r.days, subject: r.subject, body: r.body, disable_after_email: r.disable_after_email, enabled }); toast(enabled ? '规则已启用' : '规则已暂停'); }, r.enabled ? '已启用' : '已暂停'),
       el('div', { class: 'button-group' }, button('编辑', () => editRule(r), 'link'), button('删除', () => { if (confirm(`确认删除规则「${r.name}」？`)) run(() => api(`/rules/${r.id}`, 'DELETE'), '规则已删除'); }, 'link danger'))
-    ]))) : empty('还没有自动化规则', '设置未使用天数、提醒内容及后续动作。'))];
+    ]))) : empty('还没有自动化规则'))];
 }
 const automationTypes = { subscription_multiplier: '订阅到期倍率调整', monthly_rewards: '月度用量排名奖励' };
 function automationPayload(item, enabled = item.enabled) {
@@ -453,9 +443,8 @@ async function editAutomation(item = {}) {
         el('summary', {}, '更多设置'),
         el('div', { class: 'more-settings-body' },
           field('规则名称', nameInput),
-          field('规则时区', zoneInput, '默认使用当前配置的时区。'),
-          el('div', { class: 'field' }, el('label', { class: 'switch' }, input('restore_on_exit', 'yes', 'checkbox', { checked: item.restore_on_exit ?? true }), '不再满足条件时恢复原倍率')),
-          el('p', { class: 'caption' }, '恢复前会核对当前倍率仍与本规则写入的值相同；若管理员已手动修改，将跳过恢复，避免覆盖。')));
+          field('规则时区', zoneInput),
+          el('div', { class: 'field' }, el('label', { class: 'switch' }, input('restore_on_exit', 'yes', 'checkbox', { checked: item.restore_on_exit ?? true }), '不再满足条件时恢复原倍率'))));
       details.replaceChildren(
         field('订阅分组', group),
         el('div', { class: 'field-row' }, field('距离到期不超过（天）', input('expires_within_days', item.expires_within_days ?? 2, 'number', { required: true, min: 1, max: 365 })), field('检查额度周期', period)),
@@ -471,7 +460,7 @@ async function editAutomation(item = {}) {
         tiers.append(el('div', { class: 'reward-tier-item' }, input('reward_rank', rank, 'hidden'), field(`第 ${rank} 名奖励（USD）`, input('reward_amount', tier.amount, 'number', { required: true, min: 0, max: 1000000, step: .000001 }))));
       }
       const previewContent = el('div', { class: 'inline-preview-body' },
-        item.id ? el('p', { class: 'caption' }, '点击“加载预览”核对当前已保存规则的上月排名与奖励金额。') : null);
+        null);
       let previewEpoch = 0;
       let previewDirty = false;
       const loadInlinePreview = async () => {
@@ -512,17 +501,15 @@ async function editAutomation(item = {}) {
         el('div', { class: 'inline-preview-head' },
           el('strong', {}, '执行预览'),
           previewButton),
-        item.id ? previewContent : el('p', { class: 'caption' }, '保存规则后可在此或规则列表点击“预览 / 执行”，核对上月排名用户名单与奖励金额。'));
+        item.id ? previewContent : null);
       const moreSettings = el('details', { class: 'more-settings' },
         el('summary', {}, '更多设置'),
         el('div', { class: 'more-settings-body' },
           field('规则名称', nameInput),
-          field('规则时区', zoneInput, '默认使用当前配置的时区。'),
-          el('p', { class: 'caption' }, '每个结算月份与用户的奖励都有持久化发放记录，避免重启或重复执行导致重复奖励。')));
+          field('规则时区', zoneInput)));
       details.replaceChildren(
         tiers,
         field('执行方式', mode),
-        notice('按规则时区，在每月 1 日结算上一个完整自然月，以实际费用 actual_cost 排名。自动模式不会补发规则启用前的月份。金额为 0 的名次跳过。'),
         previewBox,
         moreSettings);
     }
@@ -595,7 +582,7 @@ function settlementContent(settlements, automations, error) {
     const rule = automations.find(value => String(value.id) === String(action.rule_id));
     return row([nameCell(action.month, `${action.start_date || ''} — ${action.end_date || ''}`), action.rank || '—', `#${action.user_id}`, `$${action.amount}`, action.actual_cost === undefined ? '—' : `$${action.actual_cost}`, pill(status[0], status[1]), nameCell(rule?.name || `规则 #${action.rule_id}`, action.timezone), fmtTime(action.completed_at || action.attempted_at), el('div', { class: 'wrap' }, action.error || action.reason || '—')]);
   });
-  return error ? el('div', { class: 'card-body' }, notice(`结算记录读取失败：${error}`, 'error')) : history.length ? [hasUncertain ? el('div', { class: 'card-body' }, notice('存在待核对的发放记录，这些记录不会自动重试。请先在 sub2api 核查余额变更记录，确认结果后再处理，避免重复奖励。', 'warning')) : null, table(['结算月份', '名次', '用户 ID', '奖励（USD）', '实际费用（USD）', '发放状态', '来源规则 / 时区', '最近处理时间', '备注'], rows)] : empty('暂无月度结算记录', '结算后可在此查看历史奖励及需要人工核对的发放。');
+  return error ? el('div', { class: 'card-body' }, notice(`结算记录读取失败：${error}`, 'error')) : history.length ? [hasUncertain ? el('div', { class: 'card-body' }, notice('存在待核对的发放记录，这些记录不会自动重试。请先在 sub2api 核查余额变更记录，确认结果后再处理，避免重复奖励。', 'warning')) : null, table(['结算月份', '名次', '用户 ID', '奖励（USD）', '实际费用（USD）', '发放状态', '来源规则 / 时区', '最近处理时间', '备注'], rows)] : empty('暂无月度结算记录');
 }
 // Each card loads on its own: a slow or failed metric never hides the settlement records.
 // `refresh` promises only re-paint an already loaded card (e.g. rule names), never gate it.
@@ -610,13 +597,13 @@ function lazyCard(version, title, description, busy, load, paint, refresh = []) 
 }
 function rewardsPage() {
   const version = generation;
-  return [pageHead('排名与奖励', '查看月度奖励结算记录，以及模型费用与用户用量排名。', button('↻  刷新', () => render())),
-    el('section', { id: 'rewards-settlements', class: 'rules-section' }, lazyCard(version, '月度结算记录', '保留历史发放状态；月份切换或删除规则不会移除记录。', '正在读取结算记录…',
+  return [pageHead('排名与奖励', '查看月度结算记录与用量排名', button('↻  刷新', () => render())),
+    el('section', { id: 'rewards-settlements', class: 'rules-section' }, lazyCard(version, '月度结算记录', '', '正在读取结算记录…',
       () => api('/settlements').catch(error => { throw new Error(`结算记录读取失败：${errorText(error)}`); }), data => settlementContent(data, state.automations, ''),
       [api('/automations').then(rules => { state.automations = Array.isArray(rules) ? rules : []; })])),
     el('div', { class: 'overview-grid' },
-      lazyCard(version, '模型维度价格统计', '显示上游统计接口返回的当前周期数据', '正在读取统计数据…', () => api('/analytics/models'), data => metricsTable(data, 'models')),
-      lazyCard(version, '用户用量排名', '管理员可查看完整使用量统计', '正在读取统计数据…', () => api('/analytics/ranking'), data => metricsTable(data, 'ranking')))];
+      lazyCard(version, '模型维度价格统计', '', '正在读取统计数据…', () => api('/analytics/models'), data => metricsTable(data, 'models')),
+      lazyCard(version, '用户用量排名', '', '正在读取统计数据…', () => api('/analytics/ranking'), data => metricsTable(data, 'ranking')))];
 }
 async function automationsPage() {
   state.automations = await api('/automations');
@@ -624,7 +611,7 @@ async function automationsPage() {
     switcher(item.enabled, async enabled => { if (enabled && !confirm(`确认启用「${item.name}」？作用范围：${automationScope(item)}。`)) throw new Error('已取消操作'); await api(`/automations/${item.id}`, 'PUT', automationPayload(item, enabled)); item.enabled = enabled; toast(enabled ? '规则已启用' : '规则已暂停'); }, item.enabled ? '已启用' : '已暂停'),
     el('div', { class: 'button-group' }, button('预览 / 执行', () => previewAutomation(item), 'link'), button('编辑', () => editAutomation(item), 'link'), button('删除', () => { if (confirm(`确认删除「${item.name}」？服务端会先尝试安全恢复本规则写入的倍率；存在恢复错误时会阻止删除。`)) run(() => api(`/automations/${item.id}`, 'DELETE'), '规则已删除'); }, 'link danger'))
   ]));
-  return [pageHead('自动化规则', '按订阅状态调整倍率，或按上月实际用量向用户发放余额奖励。', button('＋ 新建规则', () => editAutomation(), 'primary')), notice('新规则默认关闭。先保存并查看预览，确认用户、金额和作用范围后再启用。月度奖励按规则时区结算，不补发启用前月份。'), card('规则列表', `共 ${rows.length} 条规则`, rows.length ? table(['规则', '触发条件 / 奖励', '作用范围', '时区', '启用状态', '操作'], rows) : empty('还没有自动化规则', '可添加订阅到期倍率调整，或月度排名奖励规则。'))];
+  return [pageHead('自动化规则', '按订阅状态调整倍率，或按月发放余额奖励', button('＋ 新建规则', () => editAutomation(), 'primary')), card('规则列表', `共 ${rows.length} 条规则`, rows.length ? table(['规则', '触发条件 / 奖励', '作用范围', '时区', '启用状态', '操作'], rows) : empty('还没有自动化规则'))];
 }
 async function modulesPage() {
   state.modules = await api('/modules');
@@ -688,8 +675,8 @@ async function modulesPage() {
     finally { busy = false; paint(); }
   });
   form.append(field('用户访问域名', origin, '填写用户浏览器访问 sub2api 的域名与协议，不含 /_helper 路径。'), el('div', { class: 'button-group' }, detect, save, sync), feedback, status);
-  const definitions = [ ['benchmark', 'sparkles', '智商检测', '按分组展示模型根据提示词生成的 HTML、SVG 等作品。在「智商检测」中配置生成任务。'], ['pricing', 'chartBar', '模型价格统计', '按模型查看请求量、Token 与费用。普通用户仅查看自己的统计数据。'], ['ranking', 'trophy', '用户用量排名', '展示用户消耗与使用量排名。用户端默认匿名展示，保护用户身份。'] ];
-  const cards = el('div', { class: 'module-grid' }, definitions.map(([key, icon, title, desc]) => {
+  const definitions = [ ['benchmark', 'sparkles', '智商检测'], ['pricing', 'chartBar', '模型价格统计'], ['ranking', 'trophy', '用户用量排名'] ];
+  const cards = el('div', { class: 'module-grid' }, definitions.map(([key, icon, title]) => {
     const toggle = switcher(state.modules[key], async value => {
         if (!confirm(`确认${value ? '上线' : '下线'}「${title}」并同步上游菜单？`)) throw new Error('已取消操作');
         busy = true; paint(); setFeedback('正在更新功能并核对上游菜单…');
@@ -699,10 +686,10 @@ async function modulesPage() {
       }, state.modules[key] ? '已启用' : '启用');
     switches.push({ control: toggle.querySelector('input'), key });
     const url = el('div', { class: 'module-url' }); previews.set(key, url);
-    return el('section', { class: 'card module-card' }, el('div', { class: 'module-icon' }, helperIcon(icon)), el('h2', {}, title), el('p', {}, desc), el('div', { class: 'module-bottom' }, pill(state.modules[key] ? '功能已启用' : '功能已关闭', state.modules[key] ? 'green' : ''), toggle), url);
+    return el('section', { class: 'card module-card' }, el('div', { class: 'module-icon' }, helperIcon(icon)), el('h2', {}, title), el('div', { class: 'module-bottom' }, pill(state.modules[key] ? '功能已启用' : '功能已关闭', state.modules[key] ? 'green' : ''), toggle), url);
   }));
   paint();
-  return [pageHead('功能与菜单', '设置用户访问域名，并核对 sub2api 自定义菜单。', button('↻  刷新核对', refreshSettings)), card('菜单访问地址', '修改域名只保存配置；点击同步后才会更新上游菜单。', el('div', { class: 'card-body' }, form)), previewLabel, cards];
+  return [pageHead('功能与菜单', '设置访问域名并核对自定义菜单', button('↻  刷新核对', refreshSettings)), card('菜单访问地址', '', el('div', { class: 'card-body' }, form)), previewLabel, cards];
 }
 function extractRows(data, keys) {
   if (Array.isArray(data)) return data;
@@ -714,7 +701,7 @@ function extractRows(data, keys) {
 }
 function metricsTable(data, kind) {
   const rows = extractRows(data, kind === 'ranking' ? ['ranking', 'users', 'items'] : ['models', 'items', 'stats']);
-  if (!rows.length) return empty('暂无统计数据', '选定周期内还没有可展示的使用记录。');
+  if (!rows.length) return empty('暂无统计数据');
   const labels = { model: '模型', model_name: '模型', name: '名称', rank: '排名', username: '用户', email: '邮箱', user_id: '用户 ID', requests: '请求数', request_count: '请求数', tokens: 'Token', total_tokens: '总 Token', input_tokens: '输入 Token', output_tokens: '输出 Token', cost: '费用（USD）', total_cost: '费用（USD）', actual_cost: '实际费用（USD）', percentage: '占比' };
   const keys = Object.keys(rows[0]).filter(k => typeof rows[0][k] !== 'object');
   return table(keys.map(k => labels[k] || k), rows.map(item => row(keys.map(k => {
@@ -748,11 +735,11 @@ async function rulesHubPage() {
   ]));
   const scheduleSection = el('section', { id: 'rules-schedules', class: 'rules-section' },
     el('div', { class: 'rules-section-head' },
-      el('div', {}, el('h2', {}, '账号时段规则'), el('p', {}, '按时间窗口自动开关账号调度，可在原站账号行「定时」弹窗直接选用或在此维护多账号计划。')),
+      el('div', {}, el('h2', {}, '账号时段规则')),
       button('＋  新建调度', () => editSchedule(), 'primary')),
     scheduleErr ? notice(`时段规则读取失败：${scheduleErr}`, 'error') : card('时段规则列表', `共 ${scheduleRows.length} 条规则 · 同一账号仅可由一条启用计划管理`, scheduleRows.length
       ? table(['规则', '调度窗口', '时区', '开启日期', '管理范围', '启用状态', '操作'], scheduleRows)
-      : empty('还没有账号时段规则', '新建时段规则后，可在原站账号行直接套用，或在此批量管理多个账号。')));
+      : empty('还没有账号时段规则')));
 
   const ruleRows = state.rules.map(r => row([
     nameCell(r.name, r.subject),
@@ -777,17 +764,17 @@ async function rulesHubPage() {
   ]));
   const usersSection = el('section', { id: 'rules-users', class: 'rules-section' },
     el('div', { class: 'rules-section-head' },
-      el('div', {}, el('h2', {}, '用户提醒与邮件模板'), el('p', {}, '配置闲置用户自动提醒规则，并维护供原站用户行「邮件」弹窗选用的可复用模板。')),
+      el('div', {}, el('h2', {}, '用户提醒与邮件模板')),
       el('div', { class: 'button-group' },
         button('＋  新建提醒规则', () => editRule()),
         button('＋  新建邮件模板', () => editEmailTemplate(), 'primary'))),
     !state.status.mail_configured ? notice('SMTP 尚未配置。可以先保存提醒规则与模板，配置邮件服务后再启用或发送。', 'warning') : null,
-    ruleErr ? notice(`闲置提醒读取失败：${ruleErr}`, 'error') : card('闲置用户提醒规则', `共 ${ruleRows.length} 条规则 · 一次仅启用一条，调用时间不明确的用户自动跳过`, ruleRows.length
+    ruleErr ? notice(`闲置提醒读取失败：${ruleErr}`, 'error') : card('闲置用户提醒规则', `共 ${ruleRows.length} 条规则`, ruleRows.length
       ? table(['规则', '触发条件', '执行动作', '启用状态', '操作'], ruleRows)
-      : empty('还没有闲置提醒规则', '设置未使用天数、提醒内容及后续动作。')),
-    templateErr ? notice(`邮件模板读取失败：${templateErr}`, 'error') : card('可复用邮件模板', `共 ${templateRows.length} 个自定义模板 · 原站用户行「邮件」弹窗可直接选用`, templateRows.length
+      : empty('还没有闲置提醒规则')),
+    templateErr ? notice(`邮件模板读取失败：${templateErr}`, 'error') : card('可复用邮件模板', `共 ${templateRows.length} 个自定义模板`, templateRows.length
       ? table(['模板名称', '默认主题', '正文预览', '操作'], templateRows)
-      : empty('还没有自定义邮件模板', '创建常用通知模板后，在原站用户行发邮件时可直接选用并自动填充用户名与邮箱。')));
+      : empty('还没有自定义邮件模板')));
 
   const autoRows = state.automations.map(item => row([
     nameCell(item.name, automationTypes[item.type] || item.type),
@@ -807,14 +794,14 @@ async function rulesHubPage() {
   ]));
   const automationsSection = el('section', { id: 'rules-automations', class: 'rules-section' },
     el('div', { class: 'rules-section-head' },
-      el('div', {}, el('h2', {}, '后台自动化规则'), el('p', {}, '按订阅状态调整倍率，或按上月实际用量发放余额奖励（后台任务执行，先预览再启用）。')),
+      el('div', {}, el('h2', {}, '后台自动化规则')),
       el('div', { class: 'button-group' }, el('a', { href: '#rewards', class: 'button ghost' }, '结算记录'), button('＋  新建自动化', () => editAutomation(), 'primary'))),
     autoErr ? notice(`自动化规则读取失败：${autoErr}`, 'error') : card('自动化规则列表', `共 ${autoRows.length} 条规则`, autoRows.length
       ? table(['规则', '触发条件 / 奖励', '作用范围', '时区', '启用状态', '操作'], autoRows)
-      : empty('还没有自动化规则', '可添加订阅到期倍率调整，或月度排名奖励规则。')));
+      : empty('还没有自动化规则')));
 
   return [
-    pageHead('规则管理', '集中维护账号时段、用户提醒与邮件模板，以及后台自动化规则。', button('↻  刷新', () => render())),
+    pageHead('规则管理', '', button('↻  刷新', () => render())),
     scheduleSection,
     usersSection,
     automationsSection
@@ -823,7 +810,7 @@ async function rulesHubPage() {
 async function analyticsPage() {
   const gallery = el('div');
   helperGalleryAdmin(gallery, { request: api });
-  return [pageHead('智商检测', '管理参测分组与同题对比。'), gallery];
+  return [pageHead('智商检测', '管理参测分组与同题对比'), gallery];
 }
 async function systemPage() {
   const results = await Promise.allSettled(['/accounts', '/schedules', '/rules', '/modules', '/automations', '/audit', '/compatibility'].map(path => api(path)));
@@ -837,10 +824,10 @@ async function systemPage() {
   const compatData = results[6].status === 'fulfilled' ? results[6].value : null;
   const compatErr = results[6].status === 'rejected' ? errorText(results[6].reason) : '';
   const stats = [
-    ['管理账号', Array.isArray(state.accounts) ? state.accounts.length : '—', 'database', '来自 sub2api 的账号'],
-    ['调度中', Array.isArray(state.accounts) ? state.accounts.filter(a => a.schedulable).length : '—', 'play', '账号当前参与请求调度'],
-    ['时段规则', state.schedules.filter(s => s.enabled).length, 'clock', '已启用的时间窗口'],
-    ['自动化与提醒', state.rules.filter(r => r.enabled).length + state.automations.filter(r => r.enabled).length, 'cog', '已启用的提醒与自动化规则']
+    ['管理账号', Array.isArray(state.accounts) ? state.accounts.length : '—', 'database'],
+    ['调度中', Array.isArray(state.accounts) ? state.accounts.filter(a => a.schedulable).length : '—', 'play'],
+    ['时段规则', state.schedules.filter(s => s.enabled).length, 'clock'],
+    ['自动化与提醒', state.rules.filter(r => r.enabled).length + state.automations.filter(r => r.enabled).length, 'cog']
   ];
   const details = [
     ['服务地址', state.status.upstream_url || '—'],
@@ -853,9 +840,9 @@ async function systemPage() {
   const auditRows = Array.isArray(auditData) ? auditData : auditData?.items || [];
   const checks = compatData?.checks || [];
   return [
-    pageHead('运行与系统', '查看运行状态、最近执行记录与上游接口兼容性。', button('↻  刷新', () => render())),
-    el('section', { class: 'stats-grid' }, stats.map(([label, value, icon, desc]) => el('div', { class: 'stat-card' }, el('div', { class: 'stat-icon' }, helperIcon(icon)), el('div', {}, el('div', { class: 'stat-label' }, label), el('div', { class: 'stat-value' }, String(value)), el('div', { class: 'stat-desc' }, desc))))),
-    card('运行状态', '后台任务与邮件服务状态', el('div', { class: 'card-body' }, details.map(([k, v]) => el('div', { class: 'detail-row' }, el('span', { class: 'muted' }, k), el('span', { class: 'value' }, v))))),
+    pageHead('运行与系统', '查看运行状态、执行记录与接口兼容性', button('↻  刷新', () => render())),
+    el('section', { class: 'stats-grid' }, stats.map(([label, value, icon]) => el('div', { class: 'stat-card' }, el('div', { class: 'stat-icon' }, helperIcon(icon)), el('div', {}, el('div', { class: 'stat-label' }, label), el('div', { class: 'stat-value' }, String(value)))))),
+    card('运行状态', '', el('div', { class: 'card-body' }, details.map(([k, v]) => el('div', { class: 'detail-row' }, el('span', { class: 'muted' }, k), el('span', { class: 'value' }, v))))),
     el('section', { id: 'system-audit', class: 'rules-section' },
       card('执行记录', `展示最近 ${auditRows.length} 条记录`, auditErr ? el('div', { class: 'card-body' }, notice(`执行记录读取失败：${auditErr}`, 'error')) : auditRows.length ? table(['时间', '动作', '对象', '结果', '详情'], auditRows.map(a => row([
         fmtTime(a.created_at || a.time || a.timestamp || a.at),
@@ -863,7 +850,7 @@ async function systemPage() {
         a.target || a.target_id || a.entity_id || '—',
         pill(a.ok === false || a.success === false || a.status === 'error' || a.status === 'failed' ? '失败' : a.status === 'ok' || a.status === 'success' ? '成功' : a.status || '成功', a.ok === false || a.success === false || a.status === 'error' || a.status === 'failed' ? 'red' : 'green'),
         el('div', { class: 'code' }, typeof (a.detail || a.message || a.data) === 'object' ? JSON.stringify(a.detail || a.message || a.data) : a.detail || a.message || a.data || '—')
-      ]))) : empty('暂无执行记录', '执行任务后，这里会展示每次操作结果。'))),
+      ]))) : empty('暂无执行记录'))),
     el('section', { id: 'system-compatibility', class: 'rules-section' },
       card('兼容性检查', compatData?.checked_at ? `最近检查：${fmtTime(compatData.checked_at)}` : '尚未运行检查', compatErr ? el('div', { class: 'card-body' }, notice(`兼容性信息读取失败：${compatErr}`, 'error')) : [
         el('div', { class: 'card-body' }, [
@@ -871,7 +858,7 @@ async function systemPage() {
           ['上游最新提交', compatData?.latest_commit || '未获取'],
           ['版本状态', compatData?.update_available ? pill('上游有更新，建议核查', 'amber') : compatData?.latest_commit ? pill('与开发基准一致', 'green') : pill('等待检查')]
         ].map(([k, v]) => el('div', { class: 'detail-row' }, el('span', { class: 'muted' }, k), el('span', { class: 'value code' }, v)))),
-        checks.length ? table(['检查项', '状态', '说明'], checks.map(c => row([c.name, pill(c.ok ? '通过' : '未通过', c.ok ? 'green' : 'red'), el('div', { class: 'code' }, c.detail || '—')]))) : empty('尚未执行接口检查', '点击“立即检查”验证当前绑定的 sub2api 服务。')
+        checks.length ? table(['检查项', '状态', '说明'], checks.map(c => row([c.name, pill(c.ok ? '通过' : '未通过', c.ok ? 'green' : 'red'), el('div', { class: 'code' }, c.detail || '—')]))) : empty('尚未执行接口检查')
       ], button('↻  立即检查', () => run(() => api('/compatibility/check', 'POST', {}), '兼容性检查完成'), 'primary'))),
     card('关闭页内增强时的备用入口', '正常情况下请直接在 sub2api 原站「账号管理 / 用户管理」行内操作；未开启页内增强时可由此进入备用管理页。', el('div', { class: 'card-body fallback-links' },
       el('a', { href: '#accounts', class: 'button' }, helperIcon('database'), '账号管理（备用）'),

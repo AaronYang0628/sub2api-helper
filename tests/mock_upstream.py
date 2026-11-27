@@ -127,6 +127,16 @@ class Handler(BaseHTTPRequestHandler):
         elif path.endswith("/models"):
             data = {"models": [{"model": "fixture-model", "requests": 10, "input_tokens": 100,
                                 "output_tokens": 20, "total_tokens": 120, "actual_cost": 0.01}]}
+        elif path == "/api/v1/admin/dashboard/user-breakdown":
+            # Upstream defines total_tokens = input + output + cache (creation + read), so the rows follow that.
+            data = {"users": [{"user_id": user_id, "email": email, "requests": requests, "input_tokens": input_tokens, "output_tokens": output_tokens,
+                               "cache_tokens": cache_tokens, "total_tokens": input_tokens + output_tokens + cache_tokens, "cost": actual_cost,
+                               "actual_cost": actual_cost, "account_cost": round(actual_cost / 2, 6)}
+                              for user_id, email, requests, input_tokens, output_tokens, cache_tokens, actual_cost in (
+                                  (1, "admin@example.invalid", 1, 10, 2, 4, 0.001),
+                                  (2, "private@example.invalid", 6, 60, 12, 30, 0.006),
+                                  (4, "second@example.invalid", 3, 30, 6, 15, 0.003))],
+                    "start_date": query.get("start_date", [""])[0], "end_date": query.get("end_date", [""])[0]}
         elif path.endswith("/users-ranking"):
             data = {"ranking": [{"user_id": 2, "username": "private-user", "email": "private@example.invalid",
                                  "requests": 10, "tokens": 120, "actual_cost": 0.01}]}

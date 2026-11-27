@@ -22,7 +22,8 @@
 | 作品画廊分组可见性 | `GET /api/v1/groups/available` | 使用当前用户 JWT，取有效分组 `id`，详情也重新验证 |
 | 管理模型统计 | `GET /api/v1/admin/dashboard/models` | `data.models` |
 | 本人模型统计 | `GET /api/v1/usage/dashboard/models` | 使用用户 JWT，仅本人数据 |
-| 用量排名 | `GET /api/v1/admin/dashboard/users-ranking` | `data.ranking`、总成本、请求数与 token 数；Helper 排名页取规则时区的本自然月，并用 `GET /api/v1/admin/users` 仅保留可参与评奖的正常普通用户 |
+| 用量排名 | `GET /api/v1/admin/dashboard/users-ranking` | `data.ranking`、总成本、请求数与 token 数；最多 50 行，没有 token 拆分，只供管理端分析接口 `/_helper/api/admin/analytics/ranking` 读取 |
+| 用户用量明细 | `GET /api/v1/admin/dashboard/user-breakdown` | 传 `start_date,end_date,timezone,sort_by=actual_cost,limit=200`；Helper 只保留 `user_id,email,requests,input_tokens,output_tokens,cache_tokens,total_tokens,actual_cost`，`cost` 与 `account_cost` 绝不透出。门户排名页取规则时区的本自然月至今（日界使用规则时区，未启用规则时为配置时区），再用 `GET /api/v1/admin/users` 仅保留可参与评奖的正常普通用户，并按结算顺序在服务端固定名次 |
 | 模型统计（含分组过滤） | `GET /api/v1/admin/dashboard/models`、`GET /api/v1/usage/dashboard/models` | 价格页传入 `group_id`；使用 `cost`（标准计费）与 `actual_cost` 推算实际倍率，实际单价 = 官方价 × 倍率；不使用 `account_cost` |
 | 官方模型价格 | 外部：`Wei-Shaw/model-price-repo` 的 `model_prices_and_context_window.json` 与同名 `.sha256` | 每 token 价格，Helper 换算为每百万 Token；先校验哈希再使用，6 小时内存缓存，失败时沿用旧缓存，不发送用户或部署信息 |
 | 默认模型单价 | `GET /api/v1/admin/channels/model-pricing?model=...` | `found,input_price,output_price,cache_write_price,cache_read_price` |
@@ -39,7 +40,7 @@
 | 完整用户月消费 | `GET /api/v1/admin/usage/stats?user_id=...` | 显式月起止日期、时区、`nocache=true`；`total_actual_cost,total_requests,total_tokens` |
 | 余额奖励 | `POST /api/v1/admin/users/:id/balance` | `balance` 为增加额、`operation:add`、固定 `notes` 和 `Idempotency-Key` |
 
-统计日期为 `start_date`、`end_date`，格式 `YYYY-MM-DD`，结束日期含当天。显式传递 `timezone=Asia/Shanghai`。模型统计的 `cost` 为标准计费，`actual_cost` 为实际扣除，`account_cost` 为管理端成本；普通用户页面不应暴露管理端成本。默认模型定价为每 token，换算每百万 token 需乘以一百万，不能直接将累计消费称为单价。
+统计日期为 `start_date`、`end_date`，格式 `YYYY-MM-DD`，结束日期含当天。显式传递 `timezone=Asia/Shanghai`（门户排名页传规则时区，未启用规则时为配置时区）。模型统计的 `cost` 为标准计费，`actual_cost` 为实际扣除，`account_cost` 为管理端成本；普通用户页面不应暴露管理端成本。默认模型定价为每 token，换算每百万 token 需乘以一百万，不能直接将累计消费称为单价。
 
 ## 必须保留的行为与限制
 
@@ -72,7 +73,11 @@
 
 ## 月度奖励与不能重复入账的边界
 
-上游 `dashboard/users-ranking` 将 `limit` 强制限制为 50，也没有分页；它按 `actual_cost DESC, tokens DESC, user_id ASC` 排序。月度奖励不能将这个接口称为“完整普通用户排行榜”。助手完整分页读取当前用户后，对每个有效普通用户调用带月起止日期、时区的 `usage/stats` 汇总，并以实际扣除 `total_actual_cost` 生成完整候选列表，最多四个并发请求；缺失资格字段或任何汇总失败会中止整个快照。该方式每次结算需要约 N 个读取请求；不需要逐条下载可能很大的用量明细。已删除、禁用、管理员和零消费用户不属于当前候选。最终资格仍需在实际发奖前重新检查，最终同消费排序由助手规则统一确定。
+上游 `dashboard/users-ranking` 将 `limit` 强制限制为 50，也没有分页；它按 `actual_cost DESC, tokens DESC, user_id ASC` 排序。月度奖励不能将这个接口称为“完整普通用户排行榜”。
+
+门户排名页读取的是 `dashboard/user-breakdown`（`limit` 上限 200，含输入、输出、缓存 token 拆分）：取规则时区的本自然月至今数据，日界使用同一时区；Helper 仅保留可参与评奖的正常普通用户，按与结算相同的顺序（`actual_cost DESC, total_tokens DESC, user_id ASC`）在服务端固定名次，浏览器只能改变展示的排序。行内奖励是按当前名次与规则金额给出的预计值（零消费行与金额为零的名次没有奖励；金额按规则原值显示，至少两位、最多六位小数，不做四舍五入），响应中的 `settlement_at`（月末 23:59:59）只是统计截止时间，不是保证到账的时刻。上游结果达到 200 行时接口返回 `truncated=true`（按过滤前的上游行数判断），页面改为提示“已列出 N 位用户，榜单可能不完整”，即使截断出的行里没有可评奖用户也照常提示。上游只按 `actual_cost DESC` 截断、没有并列次序，因此被截断时与末行费用相同的行名次无法确定：接口对这些行返回 `tentative=true` 且不给奖励，页面不显示名次徽章，奖励一栏显示“暂定”。`user_id` 为 0 的无归属用量行（上游 `COALESCE(ul.user_id, 0)`）是合法数据，由资格过滤丢弃。该榜单只用于展示，不用于入账。
+
+月度结算不使用这两个榜单接口。助手完整分页读取当前用户后，对每个有效普通用户调用带月起止日期、时区的 `usage/stats` 汇总，并以实际扣除 `total_actual_cost` 生成完整候选列表，最多四个并发请求；缺失资格字段或任何汇总失败会中止整个快照。该方式每次结算需要约 N 个读取请求；不需要逐条下载可能很大的用量明细。已删除、禁用、管理员和零消费用户不属于当前候选。最终资格仍需在实际发奖前重新检查，最终同消费排序由助手规则统一确定。
 
 奖励使用 `operation:add`，不读取旧余额后使用 `set`，避免覆盖同时发生的真实计费扣款。`balance` 是增加额，`notes` 只由固定奖励标识构造；同一奖励的 payload、用户、金额和幂等 Key 必须保持不变。管理员加余额可能触发上游的 `admin_recharge_rebate_enabled` 邀请返利设置；当前接口没有单次禁止返利的参数。
 

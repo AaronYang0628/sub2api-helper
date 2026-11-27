@@ -99,49 +99,124 @@ async function pricing() {
   drawControls([]);
   await load();
 }
-const RANK_CLASS = ['', 'gold', 'silver', 'bronze'];
-const RANK_NAMES = ['', '冠军', '亚军', '季军'];
+// Ranking mirrors upstream's usage table (components/admin/usage/UserTokenRanking.vue) plus one reward column.
+// Every Tailwind class stays in a full literal so the style build keeps it.
+const RK_CARD = 'card mb-0';
+const RK_TOOLBAR = 'flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 dark:border-dark-700/50 sm:px-6';
+const RK_NOTE = 'text-xs text-gray-400 dark:text-gray-500';
+const RK_TOOLS = 'flex items-center gap-3';
+const RK_LIMIT = 'w-28';
+// block w-full makes the native control fill its box like upstream's select trigger.
+const RK_SELECT = 'block w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-100';
+const RK_SCROLL = 'overflow-x-auto';
+const RK_TABLE = 'w-full min-w-max divide-y divide-gray-200 dark:divide-dark-700';
+const RK_HEAD = 'bg-gray-50 dark:bg-dark-800';
+const RK_TH_RANK = 'w-16 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400 sm:px-6';
+const RK_TH_USER = 'px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400';
+const RK_TH_REWARD = 'px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400 whitespace-nowrap';
+// The sortable th keeps the upstream typography; its button fills the cell and owns the colour and hover.
+// Preflight resets text-transform on buttons, so the button repeats uppercase.
+const RK_TH_SORT = 'p-0 text-xs font-medium uppercase tracking-wider';
+const RK_SORT = 'block w-full cursor-pointer select-none whitespace-nowrap px-4 py-3 text-right text-xs font-medium uppercase tracking-wider transition-colors hover:bg-gray-100 dark:hover:bg-dark-700';
+const RK_SORT_ON = 'text-primary-600 dark:text-primary-400';
+const RK_SORT_OFF = 'text-gray-500 dark:text-dark-400';
+const RK_BODY = 'divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-900';
+const RK_ROW = 'transition-colors hover:bg-gray-50 dark:hover:bg-dark-700/40';
+const RK_RANK_CELL = 'px-4 py-3 sm:px-6';
+const RK_MEDAL = 'inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold';
+const RK_MEDALS = ['bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400', 'bg-gray-200 text-gray-600 dark:bg-gray-500/20 dark:text-gray-300', 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-400'];
+const RK_PLAIN = 'inline-block w-6 text-center text-sm tabular-nums text-gray-400';
+const RK_USER = 'max-w-[260px] truncate px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200';
+const RK_ME = 'badge badge-primary ml-1';
+const RK_USER_ID = 'ml-1 font-normal text-gray-400 dark:text-gray-500';
+const RK_NUM = 'whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400';
+const RK_TOTAL = 'whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-gray-900 dark:text-gray-100';
+const RK_COST = 'whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-green-600 dark:text-green-400';
+const RK_REWARD = 'whitespace-nowrap px-4 py-3 text-left text-sm';
+const RK_PRIZE = 'badge badge-warning';
+const RK_NONE = 'text-gray-400 dark:text-gray-500';
+const RK_EMPTY = 'py-12 text-center text-sm text-gray-400';
+const RK_LOADING = 'py-12 text-center';
+const RK_COLUMNS = [['requests', '请求数'], ['input_tokens', '输入 Token'], ['output_tokens', '输出 Token'], ['cache_tokens', '缓存 Token'], ['total_tokens', '总 Token'], ['actual_cost', '费用']];
+const RK_LIMITS = [20, 50, 100, 200];
+const RK_SPAN = RK_COLUMNS.length + 3;
+// Upstream formatCompactNumber: 950, 1.2K, 18.3M, 1.1B.
+const compact = value => { const n = Number(value) || 0; const [scale, unit] = n >= 1e9 ? [1e9, 'B'] : n >= 1e6 ? [1e6, 'M'] : n >= 1e3 ? [1e3, 'K'] : [1, '']; return unit ? (n / scale).toFixed(1) + unit : String(n); };
+// zh-CN with numeric fields prints "11/30", so the Chinese order 11月30日 is assembled from the parts.
 function settlementText(rewards) {
-  const date = new Date(rewards.settlement_at);
-  try { return new Intl.DateTimeFormat('zh-CN', { timeZone: rewards.timezone, year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date); } catch (_) { return rewards.settlement_at; }
+  try {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('zh-CN', { timeZone: rewards.timezone, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(new Date(rewards.settlement_at)).map(part => [part.type, part.value]));
+    return `${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}:${parts.second}`;
+  } catch (_) { return ''; }
 }
-function rewardPanel(data) {
-  const rewards = data.rewards;
-  return node('section', { class: 'card fv-rewards' },
-    node('h3', {}, '月度奖项设置'),
-    node('div', { class: 'fv-prizes' }, rewards.rewards.map(item => node('div', { class: `fv-prize fv-${RANK_CLASS[item.rank]}` },
-      node('span', { class: 'fv-prize-rank' }, `第 ${item.rank} 名 · ${RANK_NAMES[item.rank]}`),
-      node('strong', {}, Number(item.amount) > 0 ? `${usd(item.amount, 2)} 余额` : '无奖励')))),
-    node('ul', { class: 'fv-rules' },
-      node('li', {}, node('b', {}, '评选周期'), `自然月 ${data.start_date.slice(0, 7)}（${rewards.timezone}），当前统计至 ${data.end_date}`),
-      node('li', {}, node('b', {}, '结算时间'), `${settlementText(rewards)}（${rewards.timezone}）结算本月排名，${rewards.mode === 'approval' ? '经管理员审核后发放' : '自动发放'}`),
-      node('li', {}, node('b', {}, '评选规则'), '仅统计状态正常的普通用户，按当月实际费用从高到低排名；费用相同时依次比较 Token 数与用户 ID'),
-      node('li', {}, node('b', {}, '发放方式'), '奖励直接入账到用户余额')));
+function rankingSubtitle(data) {
+  if (!data) return '';
+  // The month belongs to the window, not to the browser clock: start_date read in the window's zone.
+  let month = Number(String(data.start_date).slice(5, 7));
+  try { month = Number(new Intl.DateTimeFormat('en-US', { timeZone: data.timezone, month: 'numeric' }).format(new Date(`${data.start_date}T12:00:00Z`))); } catch (_) { /* keep the calendar month of start_date */ }
+  const text = `${month || ''} 月用量排行`;
+  if (!data.rewards) return text;
+  const settlement = settlementText(data.rewards);
+  // The cutoff ends the statistics; it never promises a payout at that second.
+  return text + ' · ' + (settlement ? `统计至 ${settlement}，` : '') + (data.rewards.mode === 'approval' ? '审核后发放' : '月结后自动发放');
 }
+function rankingRow(item) {
+  const rank = Number(item.rank) || 0;
+  // A row the API marks tentative has no settled order yet (the upstream list was cut inside a tie):
+  // plain number instead of a medal, and the reward cell says so instead of showing a prize.
+  const medal = item.tentative ? '' : RK_MEDALS[rank - 1];
+  return node('tr', { class: RK_ROW },
+    node('td', { class: RK_RANK_CELL }, medal ? node('span', { class: `${RK_MEDAL} ${medal}` }, String(rank))
+      : node('span', { class: RK_PLAIN, title: item.tentative ? '榜单可能不完整，该名次暂定' : undefined }, String(rank))),
+    node('td', { class: RK_USER, title: item.label },
+      item.label,
+      item.is_me ? node('span', { class: RK_ME }, '我') : null,
+      item.user_id ? node('span', { class: RK_USER_ID }, `#${item.user_id}`) : null),
+    node('td', { class: RK_NUM }, Number(item.requests).toLocaleString()),
+    node('td', { class: RK_NUM }, compact(item.input_tokens)),
+    node('td', { class: RK_NUM }, compact(item.output_tokens)),
+    node('td', { class: RK_NUM }, compact(item.cache_tokens)),
+    node('td', { class: RK_TOTAL }, compact(item.total_tokens)),
+    node('td', { class: RK_COST }, `$${Number(item.actual_cost).toFixed(4)}`),
+    // The API sends the rule amount ready to show (30.00, 0.50, 0.004): a sub-cent prize must not read as $0.00.
+    node('td', { class: RK_REWARD }, item.reward == null ? node('span', { class: RK_NONE }, item.tentative ? '暂定' : '—') : node('span', { class: RK_PRIZE }, `$${item.reward}`)));
+}
+// data === null draws the upstream loading row.
 function rankingTable(data) {
-  const prizes = new Map((data.rewards?.rewards || []).map(item => [item.rank, item.amount]));
-  const hasPrize = prizes.size > 0;
-  const head = ['排名', '用户', '实际费用（USD）', '请求数', 'Token', ...(hasPrize ? ['奖励'] : [])];
-  const rows = data.ranking.map(item => {
-    const tier = item.rank <= 3 ? RANK_CLASS[item.rank] : '';
-    const amount = prizes.get(item.rank);
-    return node('tr', { class: tier ? `fv-row-${tier}` : '' },
-      node('td', {}, tier ? node('span', { class: `fv-medal fv-${tier}`, title: RANK_NAMES[item.rank] }, String(item.rank)) : node('span', { class: 'fv-rank-plain' }, String(item.rank))),
-      node('td', {}, item.label, item.is_me ? node('span', { class: 'pill blue fv-me' }, '我') : null),
-      node('td', { class: 'fv-num' }, usd(item.actual_cost)),
-      node('td', { class: 'fv-num' }, num(item.requests)),
-      node('td', { class: 'fv-num' }, num(item.tokens)),
-      ...(hasPrize ? [node('td', { class: 'fv-num fv-strong' }, tier && Number(amount) > 0 ? `${usd(amount, 2)}` : '—')] : []));
-  });
-  return node('div', { class: 'card fv-ranking' },
-    node('div', { class: 'fv-ranking-period' }, `本月排名 ${data.start_date} — ${data.end_date}`),
-    rows.length ? node('div', { class: 'table-wrap' }, node('table', { class: 'table fv-table' },
-      node('thead', {}, node('tr', {}, head.map((h, i) => node('th', { class: i >= 2 ? 'fv-num' : '' }, h)))), node('tbody', {}, rows)))
-      : node('p', { class: 'fv-muted' }, '本月暂无使用记录'));
+  const rows = Array.isArray(data?.ranking) ? data.ranking : [];
+  const state = { sort: 'actual_cost', limit: 50 };
+  const head = node('thead', { class: RK_HEAD }), body = node('tbody', { class: RK_BODY });
+  function draw() {
+    // Sorting only reorders rows on screen: rank and reward stay those of the official settlement order.
+    const amount = (item, key) => Number(item[key]) || 0;
+    const sorted = state.sort === 'actual_cost' ? rows : [...rows].sort((a, b) => amount(b, state.sort) - amount(a, state.sort) || amount(b, 'actual_cost') - amount(a, 'actual_cost') || amount(b, 'total_tokens') - amount(a, 'total_tokens') || a.rank - b.rank);
+    const placeholder = (classes, content) => node('tr', {}, node('td', { colspan: RK_SPAN, class: classes }, content));
+    head.replaceChildren(node('tr', {},
+      node('th', { class: RK_TH_RANK }, '#'),
+      node('th', { class: RK_TH_USER }, '用户'),
+      RK_COLUMNS.map(([key, label]) => node('th', { class: RK_TH_SORT, 'aria-sort': key === state.sort ? 'descending' : undefined },
+        node('button', { type: 'button', class: `${RK_SORT} ${key === state.sort ? RK_SORT_ON : RK_SORT_OFF}`, onclick: () => { if (key !== state.sort) { state.sort = key; draw(); } } },
+          label, key === state.sort ? [' ', node('span', { 'aria-hidden': 'true' }, '↓')] : null))),
+      node('th', { class: RK_TH_REWARD }, '预计奖励')));
+    body.replaceChildren(...(data ? rows.length ? sorted.slice(0, state.limit).map(rankingRow)
+      : [placeholder(RK_EMPTY, '暂无数据')] : [placeholder(RK_LOADING, node('span', { class: 'spinner', role: 'status', 'aria-label': '加载中' }))]));
+  }
+  const limit = node('select', { class: RK_SELECT, 'aria-label': '显示数量', onchange: event => { state.limit = Number(event.target.value); draw(); } }, RK_LIMITS.map(value => node('option', { value: String(value) }, `Top ${value}`)));
+  limit.value = String(state.limit);
+  draw();
+  return node('section', { class: RK_CARD },
+    node('div', { class: RK_TOOLBAR },
+      node('p', { class: RK_NOTE }, rankingSubtitle(data)),
+      node('div', { class: RK_TOOLS },
+        // A capped upstream list is cut before ineligible accounts are dropped, so only the listed rows are
+        // counted - and the caveat shows even when none of the cut rows is eligible.
+        data && (rows.length || data.truncated) ? node('span', { class: RK_NOTE }, data.truncated ? `已列出 ${rows.length} 位用户，榜单可能不完整` : `共 ${rows.length} 位用户`) : null,
+        node('div', { class: RK_LIMIT }, limit))),
+    node('div', { class: RK_SCROLL }, node('table', { class: RK_TABLE }, head, body)));
 }
 async function ranking() {
-  const data = await request('/ranking');
-  featureMain.replaceChildren(node('section', { class: 'fv' }, ...[data.rewards ? rewardPanel(data) : null, rankingTable(data)].filter(Boolean)));
+  featureMain.replaceChildren(rankingTable(null));
+  featureMain.replaceChildren(rankingTable(await request('/ranking')));
 }
 async function benchmark(role) {
   const gallery = node('div'); featureMain.append(gallery);

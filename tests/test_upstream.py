@@ -1,6 +1,8 @@
 import json
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
+from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
 
@@ -107,6 +109,120 @@ class UpstreamTests(unittest.IsolatedAsyncioTestCase):
             ("PUT", "/api/v1/admin/users/4", {"status": "disabled"}),
             ("PUT", "/api/v1/admin/settings", {"custom_menu_items": [{"id": "helper-ranking"}]}),
         ])
+
+    async def test_user_breakdown_requests_cost_order_at_the_cap_and_projects_whitelisted_fields(self):
+        seen = []
+
+        def handler(request):
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.path, "/api/v1/admin/dashboard/user-breakdown")
+            self.assertEqual(request.headers["x-api-key"], "admin-secret")
+            seen.append(dict(request.url.params))
+            return success({"users": [
+                {"user_id": 7, "email": "alice@example.test", "requests": 10, "input_tokens": 100, "output_tokens": 20, "cache_tokens": 30,
+                 "total_tokens": 120, "cost": 99.0, "actual_cost": 1.5, "account_cost": 40.0, "future_field": "never expose"},
+                {"user_id": 8, "email": None, "requests": 0, "input_tokens": 0, "output_tokens": 0, "cache_tokens": 0, "total_tokens": 0,
+                 "cost": 0, "actual_cost": 0, "account_cost": 0},
+            ], "start_date": "2026-11-01", "end_date": "2026-11-26"})
+
+        adapter = await self.use_adapter(handler)
+        rows = await adapter.user_breakdown("2026-11-01", "2026-11-26", timezone="Asia/Tokyo")
+        self.assertEqual(seen, [{"start_date": "2026-11-01", "end_date": "2026-11-26", "timezone": "Asia/Tokyo", "sort_by": "actual_cost", "limit": "200"}])
+        self.assertEqual(rows, [
+            {"user_id": 7, "email": "alice@example.test", "requests": 10, "input_tokens": 100, "output_tokens": 20, "cache_tokens": 30,
+             "total_tokens": 120, "actual_cost": 1.5},
+            {"user_id": 8, "email": "", "requests": 0, "input_tokens": 0, "output_tokens": 0, "cache_tokens": 0, "total_tokens": 0, "actual_cost": 0.0},
+        ])
+        # Exact key set and order: cost, account_cost and unknown fields never leave the adapter.
+        self.assertEqual([list(row) for row in rows], [["user_id", "email", "requests", "input_tokens", "output_tokens", "cache_tokens", "total_tokens", "actual_cost"]] * 2)
+        self.assertNotIn("never expose", json.dumps(rows))
+        self.assertNotIn("99.0", json.dumps(rows))
+        await adapter.user_breakdown("2026-11-01", "2026-11-26")
+        self.assertEqual(seen[-1]["timezone"], "Asia/Shanghai")
+
+    async def test_user_breakdown_accepts_an_empty_list_and_non_string_email_as_blank(self):
+        adapter = await self.use_adapter(lambda request: success({"users": [{"user_id": 7, "email": 5, "requests": 0, "input_tokens": 0,
+                                                                            "output_tokens": 0, "cache_tokens": 0, "total_tokens": 0, "actual_cost": 3}]}))
+        self.assertEqual(await adapter.user_breakdown("2026-11-01", "2026-11-26"),
+                         [{"user_id": 7, "email": "", "requests": 0, "input_tokens": 0, "output_tokens": 0, "cache_tokens": 0, "total_tokens": 0, "actual_cost": 3.0}])
+        adapter = await self.use_adapter(lambda request: success({"users": []}))
+        self.assertEqual(await adapter.user_breakdown("2026-11-01", "2026-11-26"), [])
+
+    async def test_user_breakdown_keeps_the_userless_row_upstream_reports_as_zero(self):
+        # COALESCE(ul.user_id, 0) in upstream's query: usage without a user must not fail the whole list.
+        adapter = await self.use_adapter(lambda request: success({"users": [
+            {"user_id": 0, "email": "", "requests": 3, "input_tokens": 30, "output_tokens": 4, "cache_tokens": 5, "total_tokens": 39,
+             "cost": 9, "actual_cost": 5.0, "account_cost": 1},
+            {"user_id": 7, "email": "alice@example.test", "requests": 1, "input_tokens": 10, "output_tokens": 2, "cache_tokens": 0, "total_tokens": 12,
+             "cost": 1, "actual_cost": 1.5, "account_cost": 1},
+        ]}))
+        self.assertEqual(await adapter.user_breakdown("2026-11-01", "2026-11-26"), [
+            {"user_id": 0, "email": "", "requests": 3, "input_tokens": 30, "output_tokens": 4, "cache_tokens": 5, "total_tokens": 39, "actual_cost": 5.0},
+            {"user_id": 7, "email": "alice@example.test", "requests": 1, "input_tokens": 10, "output_tokens": 2, "cache_tokens": 0, "total_tokens": 12, "actual_cost": 1.5},
+        ])
+
+    async def test_user_breakdown_rejects_malformed_payloads_without_echoing_them(self):
+        marker = "private-marker-7f3a@example.test"
+
+        def item(**changes):
+            return {"user_id": 7, "email": marker, "requests": 1, "input_tokens": 2, "output_tokens": 3, "cache_tokens": 4, "total_tokens": 5,
+                    "cost": 1.0, "actual_cost": 0.5, "account_cost": 0.2, "note": marker} | changes
+
+        def without(key):
+            row = item()
+            row.pop(key)
+            return row
+
+        # An empty dict or string is not an empty list: it must fail instead of showing an empty ranking.
+        payloads = [[], None, {}, {"users": None}, {"users": {}}, {"users": ""}, {"users": {"user_id": 7}}]
+        payloads += [{"users": [row]} for row in [
+            marker, 7, None, {"requests": 1}, without("user_id"), without("requests"), without("actual_cost"),
+            item(user_id=True), item(user_id=-7), item(user_id="7"), item(user_id=7.0),
+            item(requests=True), item(input_tokens=-1), item(output_tokens=1.0), item(cache_tokens="4"), item(total_tokens=None),
+            item(actual_cost=True), item(actual_cost=None), item(actual_cost=-0.5), item(actual_cost="0.5"), item(actual_cost=marker),
+            item(actual_cost=10 ** 400), item(actual_cost=-(10 ** 400)),
+        ]]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                adapter = await self.use_adapter(lambda request: success(payload))
+                with self.assertRaises(UpstreamError) as caught:
+                    await adapter.user_breakdown("2026-11-01", "2026-11-26")
+                self.assertEqual(caught.exception.status, 502)
+                self.assertNotIn(marker, caught.exception.detail)
+                self.assertNotIn(marker, str(caught.exception))
+        # NaN and infinities are valid JSON for Python's decoder but are never a cost.
+        for value in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(value=value):
+                text = '{"code": 0, "data": {"users": [{"user_id": 7, "requests": 1, "input_tokens": 2, "output_tokens": 3, "cache_tokens": 4, "total_tokens": 5, "actual_cost": %s}]}}' % value
+                adapter = await self.use_adapter(lambda request: httpx.Response(200, text=text, headers={"Content-Type": "application/json"}))
+                with self.assertRaises(UpstreamError) as caught:
+                    await adapter.user_breakdown("2026-11-01", "2026-11-26")
+                self.assertNotIn(value, caught.exception.detail)
+
+    async def test_user_breakdown_validates_dates_and_zone_before_any_request(self):
+        adapter = await self.use_adapter(lambda request: self.fail("must not request"))
+        with self.assertRaisesRegex(ValueError, "开始日期不得晚于结束日期"):
+            await adapter.user_breakdown("2026-11-02", "2026-11-01")
+        with self.assertRaises(ZoneInfoNotFoundError):
+            await adapter.user_breakdown("2026-11-01", "2026-11-02", timezone="Mars/Olympus_Mons")
+
+    async def test_finite_number_rejects_values_a_float_cannot_hold(self):
+        # isfinite() raises OverflowError for such integers; every caller needs a plain refusal instead.
+        self.assertTrue(Upstream._finite_number(10 ** 300))
+        self.assertTrue(Upstream._finite_number(7))
+        for value in (10 ** 400, -(10 ** 400), float("inf"), float("-inf"), float("nan"), Decimal("1e400"), True, "1", None):
+            with self.subTest(value=type(value).__name__):
+                self.assertFalse(Upstream._finite_number(value))
+
+    async def test_monthly_spending_refuses_a_cost_too_large_for_a_float(self):
+        def handler(request):
+            if request.url.path.endswith("/users"):
+                return success({"total": 1, "items": [{"id": 1, "role": "user", "status": "active"}]})
+            return success({"total_actual_cost": 10 ** 400, "total_requests": 5, "total_tokens": 9})
+
+        adapter = await self.use_adapter(handler)
+        with self.assertRaisesRegex(UpstreamError, "有效金额"):
+            await adapter.monthly_spending("2026-10-01", "2026-10-31", "Asia/Shanghai")
 
     async def test_upstream_error_body_never_exposes_secrets(self):
         adapter = await self.use_adapter(lambda request: httpx.Response(403, json={"message": "credential admin-secret leaked"}))

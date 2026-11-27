@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import tempfile
 import unittest
 from unittest.mock import AsyncMock
@@ -37,11 +37,23 @@ class FakeUpstream:
         self.profile_tokens = []
         self.model_tokens = []
         self.model_groups = []
-        self.ranking_windows = []
+        self.breakdown_calls = []
         self.writes = []
         self.menu_write_applies = True
         self.menu_error = None
         self.closed = False
+        # user-breakdown rows as the adapter returns them, plus fields the portal API must never pass on.
+        # An administrator and a removed user id both out-spend the ordinary users.
+        self.usage = [
+            {"user_id": 8, "email": "bob@example.test", "requests": 200, "input_tokens": 5000, "output_tokens": 1000, "cache_tokens": 800,
+             "total_tokens": 6000, "actual_cost": 2.5, "cost": 3.0, "account_cost": 99.0, "private_future_field": "secret"},
+            {"user_id": 7, "email": "alice@example.test", "requests": 100, "input_tokens": 4000, "output_tokens": 500, "cache_tokens": 300,
+             "total_tokens": 4500, "actual_cost": 1.5, "cost": 2.0, "account_cost": 77.0, "private_future_field": "secret"},
+            {"user_id": 99, "email": "admin@example.test", "requests": 900, "input_tokens": 90000, "output_tokens": 9000, "cache_tokens": 900,
+             "total_tokens": 99000, "actual_cost": 90.0, "cost": 90.0, "account_cost": 9.0, "private_future_field": "secret"},
+            {"user_id": 6, "email": "removed@example.test", "requests": 50, "input_tokens": 600, "output_tokens": 60, "cache_tokens": 60,
+             "total_tokens": 660, "actual_cost": 6.0, "cost": 6.0, "account_cost": 0.6, "private_future_field": "secret"},
+        ]
 
     async def close(self):
         self.closed = True
@@ -98,16 +110,9 @@ class FakeUpstream:
     async def available_group_rows(self, token):
         return [{"id": 3, "name": "OpenAI 主力", "platform": "openai", "status": "active"}]
 
-    async def ranking(self, start_date, end_date, limit=50):
-        self.ranking_windows.append((start_date, end_date))
-        return {
-            "ranking": [
-                {"user_id": 8, "username": "Bob", "email": "bob@example.test", "requests": 200, "tokens": 900, "actual_cost": 2.5, "private_future_field": "secret"},
-                {"user_id": 7, "username": "Alice", "email": "alice@example.test", "requests": 100, "tokens": 800, "actual_cost": 1.5},
-            ],
-            "total_cost": 999,
-            "admin_future_field": {"secret": "never expose"},
-        }
+    async def user_breakdown(self, start_date, end_date, timezone=None):
+        self.breakdown_calls.append((start_date, end_date, timezone))
+        return deepcopy(self.usage)
 
 
 class FakeMailer:
@@ -317,41 +322,219 @@ class AppTests(unittest.TestCase):
         self.assertIsNone(row["official"])
         self.assertIsNone(row["actual"])
 
+    ROW_KEYS = ["rank", "label", "requests", "input_tokens", "output_tokens", "cache_tokens", "total_tokens", "actual_cost", "is_me", "reward"]
+
+    def monthly_rewards(self, zone="Asia/Shanghai", enabled=True, rewards=("30", "20", "10"), **extra):
+        rule = {"type": "monthly_rewards", "enabled": enabled, "timezone": zone, "mode": "approval", "enabled_at": "2026-01-01T00:00:00+00:00",
+                "last_error": "private", "rewards": [{"rank": rank, "amount": amount} for rank, amount in zip((1, 2, 3), rewards)]} | extra
+        return self.store.create("automations", rule)
+
     def test_user_ranking_is_anonymous_projection_and_marks_self(self):
         self.enable_modules(ranking=True)
         response = self.client.get("/_helper/api/portal/ranking", headers=self.portal())
-        self.assertEqual(response.status_code, 200)
-        ranking = response.json()["ranking"]
-        self.assertEqual([row["is_me"] for row in ranking], [False, True])
-        self.assertEqual([row["label"] for row in ranking], ["用户 #1", "用户 #2"])
-        for forbidden in ("Alice", "Bob", "email", "user_id", "private_future_field", "total_cost", "admin_future_field"):
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(set(body), {"start_date", "end_date", "timezone", "ranking", "rewards", "truncated"})
+        self.assertIsNone(body["rewards"])
+        self.assertIs(body["truncated"], False)
+        rows = body["ranking"]
+        # Ordinary viewers get rank pseudonyms only: no names, e-mail, user ids or upstream fields of any kind.
+        self.assertEqual([list(row) for row in rows], [self.ROW_KEYS, self.ROW_KEYS])
+        self.assertEqual(rows, [
+            {"rank": 1, "label": "用户 #1", "requests": 200, "input_tokens": 5000, "output_tokens": 1000, "cache_tokens": 800,
+             "total_tokens": 6000, "actual_cost": 2.5, "is_me": False, "reward": None},
+            {"rank": 2, "label": "用户 #2", "requests": 100, "input_tokens": 4000, "output_tokens": 500, "cache_tokens": 300,
+             "total_tokens": 4500, "actual_cost": 1.5, "is_me": True, "reward": None},
+        ])
+        for forbidden in ("Alice", "Bob", "alice@example.test", "bob@example.test", "Administrator", "admin@example.test",
+                          "removed@example.test", "email", "username", "user_id", "private_future_field", "account_cost", "secret"):
             self.assertNotIn(forbidden, response.text)
-        self.assertEqual(set(response.json()), {"start_date", "end_date", "timezone", "ranking", "rewards"})
-        self.assertIsNone(response.json()["rewards"])
-        start, end = self.upstream.ranking_windows[0]
+        start, end, zone = self.upstream.breakdown_calls[0]
+        self.assertEqual((body["start_date"], body["end_date"], body["timezone"]), (start, end, zone))
+        self.assertEqual(zone, "Asia/Shanghai")
         self.assertTrue(start.endswith("-01") and start[:7] == end[:7])
 
     def test_ranking_lists_only_reward_eligible_users_and_exposes_reward_summary(self):
         self.enable_modules(ranking=True)
         self.upstream.users[1]["status"] = "disabled"
-        self.store.create("automations", {"type": "monthly_rewards", "enabled": True, "timezone": "Asia/Shanghai", "mode": "approval",
-                                       "rewards": [{"rank": 1, "amount": "30"}, {"rank": 2, "amount": "20"}, {"rank": 3, "amount": "10"}],
-                                       "enabled_at": "2026-01-01T00:00:00+00:00", "last_error": "private"})
+        self.monthly_rewards()
         body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
-        self.assertEqual([row["rank"] for row in body["ranking"]], [1])
+        self.assertEqual([(row["rank"], row["label"], row["reward"]) for row in body["ranking"]], [(1, "用户 #1", "30.00")])
         rewards = body["rewards"]
+        self.assertEqual(set(rewards), {"rewards", "timezone", "mode", "settlement_at"})
         self.assertEqual(rewards["rewards"], [{"rank": 1, "amount": "30"}, {"rank": 2, "amount": "20"}, {"rank": 3, "amount": "10"}])
         self.assertEqual((rewards["mode"], rewards["timezone"]), ("approval", "Asia/Shanghai"))
-        self.assertRegex(rewards["settlement_at"], r"^\d{4}-\d{2}-01T00:00:00\+08:00$")
+        # The last second of the ranking month is the statistics cutoff, never the first day of the next one.
+        self.assertRegex(rewards["settlement_at"], r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T23:59:59[+]08:00$")
+        cutoff = date.fromisoformat(rewards["settlement_at"][:10])
+        self.assertEqual((cutoff + timedelta(days=1)).day, 1, "cutoff must be the last day of the month")
+        self.assertEqual(cutoff.replace(day=1).isoformat(), body["start_date"])
+        self.assertEqual(self.upstream.breakdown_calls, [(body["start_date"], body["end_date"], "Asia/Shanghai")])
         self.assertNotIn("private", json_text(body))
         self.assertNotIn("enabled_at", json_text(body))
 
-    def test_admin_portal_ranking_shows_real_names(self):
+    def test_ranking_cutoff_is_the_last_second_of_the_window_month_in_the_rule_timezone(self):
+        self.enable_modules(ranking=True)
+        for zone in ("UTC", "America/New_York", "Pacific/Chatham"):
+            with self.subTest(zone=zone):
+                rule_id = self.monthly_rewards(zone)["id"]
+                body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+                self.store.delete("automations", rule_id)
+                self.assertEqual(self.upstream.breakdown_calls[-1], (body["start_date"], body["end_date"], zone))
+                settlement_at = body["rewards"]["settlement_at"]
+                self.assertRegex(settlement_at, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T23:59:59[+-][0-9]{2}:[0-9]{2}$")
+                cutoff = datetime.fromisoformat(settlement_at)
+                self.assertEqual(cutoff.strftime("%Y-%m"), body["start_date"][:7])
+                # The cutoff closes the month the window starts in: one second later is the next month's
+                # first midnight, the boundary the engine settles after.
+                self.assertEqual((cutoff + timedelta(seconds=1)).strftime("%dT%H:%M:%S"), "01T00:00:00")
+                self.assertTrue(date.fromisoformat(body["end_date"]) <= cutoff.date())
+
+    def test_ranking_without_enabled_rule_has_no_rewards_and_uses_the_configured_timezone(self):
+        self.enable_modules(ranking=True)
+        self.monthly_rewards(zone="Asia/Tokyo", enabled=False)
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertIsNone(body["rewards"])
+        self.assertEqual([row["rank"] for row in body["ranking"]], [1, 2])
+        self.assertTrue(all(row["reward"] is None for row in body["ranking"]))
+        self.assertEqual(body["timezone"], "Asia/Shanghai")
+        self.assertEqual(self.upstream.breakdown_calls[-1][2], "Asia/Shanghai")
+
+    def test_ranking_orders_like_the_settlement_and_marks_provisional_rewards(self):
+        self.enable_modules(ranking=True)
+        self.upstream.users += [{"id": user_id, "username": name, "email": name.lower() + "@example.test", "role": "user", "status": "active"}
+                                for user_id, name in ((9, "Carol"), (10, "Dave"), (11, "Erin"), (12, "Frank"))]
+
+        def usage(user_id, cost, tokens):
+            return {"user_id": user_id, "email": "", "requests": 7, "input_tokens": tokens - 15, "output_tokens": 10, "cache_tokens": 5,
+                    "total_tokens": tokens, "actual_cost": cost, "cost": cost * 2, "account_cost": 1.0}
+
+        # Returned in an order that disagrees with every tie-break. The cost leader has the fewest tokens;
+        # 9 and 8 tie on cost and split by tokens against their user ids; 10 and 11 tie on both and split
+        # by user id; 12 spent nothing.
+        self.upstream.usage = [usage(12, 0, 50), usage(11, 1, 9000), usage(10, 1, 9000), usage(9, 3, 9000), usage(8, 3, 500), usage(7, 5, 100)]
+        self.monthly_rewards(zone="Asia/Tokyo", rewards=("30", "20.5", "10.000000"))
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal("admin-jwt")).json()
+        self.assertEqual([(row["rank"], row["label"], row["user_id"], row["total_tokens"], row["is_me"], row["reward"]) for row in body["ranking"]], [
+            (1, "Alice", 7, 100, False, "30.00"), (2, "Carol", 9, 9000, False, "20.50"), (3, "Bob", 8, 500, False, "10.00"),
+            (4, "Dave", 10, 9000, False, None), (5, "Erin", 11, 9000, False, None), (6, "Frank", 12, 50, False, None)])
+        self.assertEqual(list(body["ranking"][0]), self.ROW_KEYS[:-1] + ["user_id", "reward"])
+        # Day boundaries use the rule timezone, the same zone the month window is computed in.
+        self.assertEqual(self.upstream.breakdown_calls, [(body["start_date"], body["end_date"], "Asia/Tokyo")])
+        self.assertEqual(body["timezone"], "Asia/Tokyo")
+        self.assertRegex(body["rewards"]["settlement_at"], r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T23:59:59[+]09:00$")
+        ordinary = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertEqual([(row["rank"], row["label"], row["is_me"], row["reward"]) for row in ordinary["ranking"]], [
+            (1, "用户 #1", True, "30.00"), (2, "用户 #2", False, "20.50"), (3, "用户 #3", False, "10.00"),
+            (4, "用户 #4", False, None), (5, "用户 #5", False, None), (6, "用户 #6", False, None)])
+        self.assertEqual([list(row) for row in ordinary["ranking"]], [self.ROW_KEYS] * 6)
+        for forbidden in ("Alice", "Bob", "Carol", "Dave", "Erin", "Frank", "@example.test", "user_id", "account_cost", "secret"):
+            self.assertNotIn(forbidden, json_text(ordinary))
+
+    def test_ranking_gives_zero_spend_rows_no_reward_even_in_the_top_three(self):
+        self.enable_modules(ranking=True)
+        self.upstream.usage = [{"user_id": 7, "requests": 9, "input_tokens": 90, "output_tokens": 10, "cache_tokens": 0, "total_tokens": 100, "actual_cost": 5},
+                               {"user_id": 8, "requests": 3, "input_tokens": 30, "output_tokens": 5, "cache_tokens": 0, "total_tokens": 35, "actual_cost": 0}]
+        self.monthly_rewards()
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertEqual([(row["rank"], row["is_me"], row["reward"]) for row in body["ranking"]], [(1, True, "30.00"), (2, False, None)])
+
+    def test_ranking_drops_usage_without_a_user_instead_of_failing(self):
+        self.enable_modules(ranking=True)
+        # Upstream reports usage that has no user as user_id 0 (COALESCE(ul.user_id, 0)). It spends the most,
+        # but it is nobody's reward: it must neither break the page nor take a rank.
+        self.upstream.usage = [{"user_id": 0, "email": "", "requests": 50, "input_tokens": 5000, "output_tokens": 500, "cache_tokens": 0, "total_tokens": 5500, "actual_cost": 99},
+                               {"user_id": 8, "requests": 3, "input_tokens": 30, "output_tokens": 5, "cache_tokens": 0, "total_tokens": 35, "actual_cost": 1},
+                               {"user_id": 7, "requests": 9, "input_tokens": 90, "output_tokens": 10, "cache_tokens": 0, "total_tokens": 100, "actual_cost": 5}]
+        self.monthly_rewards()
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal("admin-jwt")).json()
+        self.assertEqual([(row["rank"], row["user_id"], row["label"], row["reward"]) for row in body["ranking"]],
+                         [(1, 7, "Alice", "30.00"), (2, 8, "Bob", "20.00")])
+        self.assertIs(body["truncated"], False)
+
+    def test_ranking_gives_a_rank_without_amount_no_reward(self):
+        self.enable_modules(ranking=True)
+        self.upstream.users.append({"id": 9, "username": "Carol", "email": "carol@example.test", "role": "user", "status": "active"})
+        self.upstream.usage.append({"user_id": 9, "requests": 1, "input_tokens": 100, "output_tokens": 10, "cache_tokens": 0, "total_tokens": 110, "actual_cost": 1.0})
+        self.monthly_rewards(rewards=("30", "0", "10"))
+        # The engine skips a rank whose amount is zero instead of crediting it, so no reward is promised for it.
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertEqual([(row["rank"], row["reward"]) for row in body["ranking"]], [(1, "30.00"), (2, None), (3, "10.00")])
+        self.assertEqual(body["rewards"]["rewards"], [{"rank": 1, "amount": "30"}, {"rank": 2, "amount": "0"}, {"rank": 3, "amount": "10"}])
+
+    def test_ranking_reports_a_capped_upstream_list_even_after_ineligible_rows_are_dropped(self):
+        self.enable_modules(ranking=True)
+        self.upstream.users.append({"id": 1100, "username": "Zed", "email": "zed@example.test", "role": "user", "status": "active"})
+        self.upstream.usage = [{"user_id": user_id, "requests": 1, "input_tokens": 10, "output_tokens": 5, "cache_tokens": 0, "total_tokens": 15, "actual_cost": 0.5}
+                               for user_id in range(1000, 1200)]  # the cap; 199 of these ids belong to unlisted users
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertIs(body["truncated"], True)
+        self.assertEqual([row["label"] for row in body["ranking"]], ["用户 #1"])
+        self.upstream.usage.pop()
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertIs(body["truncated"], False)
+        self.assertEqual(len(body["ranking"]), 1)
+
+    def test_ranking_shows_the_rule_amount_without_rounding(self):
+        self.enable_modules(ranking=True)
+        self.upstream.users += [{"id": user_id, "username": name, "email": name.lower() + "@example.test", "role": "user", "status": "active"}
+                                for user_id, name in ((9, "Carol"), (10, "Dave"))]
+        self.upstream.usage = [{"user_id": user_id, "requests": 1, "input_tokens": 100, "output_tokens": 10, "cache_tokens": 0, "total_tokens": 110, "actual_cost": float(cost)}
+                               for user_id, cost in ((7, 5), (8, 3), (9, 2), (10, 1))]
+        self.monthly_rewards(rewards=("0.004", "12.345", "0.005"))
+        # The engine credits the exact amount, so a sub-cent prize must not read as $0.00.
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertEqual([row["reward"] for row in body["ranking"]], ["0.004", "12.345", "0.005", None])
+
+    def test_ranking_promises_no_reward_for_a_rank_the_capped_list_cannot_settle(self):
+        self.enable_modules(ranking=True)
+        self.upstream.users += [{"id": user_id, "username": f"user{user_id}", "email": f"user{user_id}@example.test", "role": "user", "status": "active"}
+                                for user_id in range(1000, 1200)]
+        self.upstream.usage = [{"user_id": user_id, "requests": 1, "input_tokens": 10, "output_tokens": 5, "cache_tokens": 0, "total_tokens": 15, "actual_cost": 1.0}
+                               for user_id in range(1000, 1200)]
+        self.monthly_rewards()
+        # Upstream cuts after ORDER BY actual_cost DESC without a tie-break. Every row shares the cut-off cost,
+        # so an omitted peer could take any of the top ranks: nothing is promised until the list is complete.
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal("admin-jwt")).json()
+        self.assertIs(body["truncated"], True)
+        self.assertEqual([row["rank"] for row in body["ranking"][:3]], [1, 2, 3])
+        self.assertTrue(all(row["reward"] is None and row["tentative"] is True for row in body["ranking"]))
+        # Only the rows sharing the cut-off cost are provisional; rows safely above the cut keep their reward.
+        for user_id, cost in ((1000, 5), (1001, 4), (1002, 3)):
+            next(row for row in self.upstream.usage if row["user_id"] == user_id)["actual_cost"] = float(cost)
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal("admin-jwt")).json()
+        self.assertEqual([(row["rank"], row["user_id"], row["reward"], row.get("tentative")) for row in body["ranking"][:4]],
+                         [(1, 1000, "30.00", None), (2, 1001, "20.00", None), (3, 1002, "10.00", None), (4, 1003, None, True)])
+        self.assertTrue(all(row.get("tentative") is True for row in body["ranking"][3:]))
+        self.assertEqual(list(body["ranking"][0]), self.ROW_KEYS[:-1] + ["user_id", "reward"])
+        self.assertEqual(list(body["ranking"][3]), self.ROW_KEYS[:-1] + ["user_id", "reward", "tentative"])
+        self.upstream.usage.pop()
+        body = self.client.get("/_helper/api/portal/ranking", headers=self.portal()).json()
+        self.assertIs(body["truncated"], False)
+        self.assertEqual([row["reward"] for row in body["ranking"][:3]], ["30.00", "20.00", "10.00"])
+        self.assertTrue(all("tentative" not in row for row in body["ranking"]))
+        self.assertEqual([list(row) for row in body["ranking"]], [self.ROW_KEYS] * 199)
+
+    def test_admin_portal_ranking_shows_real_names_and_ids_only(self):
         self.enable_modules(ranking=True)
         response = self.client.get("/_helper/api/portal/ranking", headers=self.portal("admin-jwt"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([row["label"] for row in response.json()["ranking"]], ["Bob", "Alice"])
-        self.assertNotIn("email", response.text)
+        rows = response.json()["ranking"]
+        self.assertEqual([(row["rank"], row["label"], row["user_id"], row["is_me"]) for row in rows],
+                         [(1, "Bob", 8, False), (2, "Alice", 7, False)])
+        self.assertEqual([list(row) for row in rows], [self.ROW_KEYS[:-1] + ["user_id", "reward"]] * 2)
+        self.assertEqual(rows[0], {"rank": 1, "label": "Bob", "requests": 200, "input_tokens": 5000, "output_tokens": 1000, "cache_tokens": 800,
+                                   "total_tokens": 6000, "actual_cost": 2.5, "is_me": False, "user_id": 8, "reward": None})
+        for forbidden in ("private_future_field", "account_cost", "Administrator", "admin@example.test", "removed@example.test", "secret"):
+            self.assertNotIn(forbidden, response.text)
+
+    def test_admin_ranking_label_falls_back_to_email_then_user_id(self):
+        self.enable_modules(ranking=True)
+        self.upstream.users[0].pop("username")
+        self.upstream.users[1].update(username="", email=None)
+        rows = self.client.get("/_helper/api/portal/ranking", headers=self.portal("admin-jwt")).json()["ranking"]
+        self.assertEqual([(row["label"], row["user_id"]) for row in rows], [("用户 #8", 8), ("alice@example.test", 7)])
+        self.assertEqual(all(list(row) == self.ROW_KEYS[:-1] + ["user_id", "reward"] for row in rows), True)
 
     def test_disabled_module_denies_portal_data_and_page(self):
         portal = self.portal()

@@ -3,6 +3,7 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
+from decimal import Decimal
 import hmac
 import hashlib
 import ipaddress
@@ -36,7 +37,7 @@ from .native_api import install_native_api
 from .pricing_catalog import PriceCatalog, model_row
 from .schemas import Automation, Benchmark, BenchmarkSelection, Connection, Email, EmailTemplate, Modules, Rule, Schedule, Session, Toggle, UserStatus
 from .store import Store
-from .upstream import Upstream, UpstreamError
+from .upstream import Upstream, UpstreamError, USER_BREAKDOWN_LIMIT
 
 BASELINE = json.loads((Path(__file__).resolve().parent.parent / "docs/upstream-baseline.json").read_text())["reviewed_commit"]
 STATIC = Path(__file__).parent / "static"
@@ -1043,23 +1044,33 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     async def portal_modules(identity=Depends(portal)):
         return Modules(**store.get_setting("modules", {})).model_dump()
 
-    def month_window(timezone_name):
-        today = datetime.now(ZoneInfo(timezone_name)).date()
+    def month_window(timezone_name, now=None):
+        # One shared instant keeps the window and the cutoff in the same month.
+        today = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(timezone_name)).date()
         return today.replace(day=1), today
 
-    def rewards_summary():
+    def reward_text(amount):
+        # The rule allows six decimals and the engine credits the exact amount, so nothing is rounded away:
+        # 30 -> "30.00", 0.5 -> "0.50", 0.004 -> "0.004".
+        whole, _, fraction = format(amount.normalize(), "f").partition(".")
+        return f"{whole}.{fraction.ljust(2, '0')}"
+
+    def rewards_summary(now=None):
         rule = next((item for item in store.list("automations") if item.get("enabled") and item.get("type") == "monthly_rewards"), None)
         if not rule:
             return None
         zone = rule.get("timezone") or config.timezone
-        now = datetime.now(ZoneInfo(zone))
+        now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(zone))
         boundary = (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + timedelta(days=32)).replace(day=1)
         amounts = {int(item["rank"]): item["amount"] for item in rule.get("rewards", []) if "rank" in item}
         return {
             "rewards": [{"rank": rank, "amount": str(amounts.get(rank, 0))} for rank in (1, 2, 3)],
             "timezone": zone,
             "mode": rule.get("mode", "automatic"),
-            "settlement_at": boundary.isoformat(),
+            # This is the statistics cutoff shown to users (统计至月末 23:59:59). The engine still
+            # settles the complete month on its first tick after the boundary (see
+            # automation.settlement_period), so UI copy must not promise a payout at that exact second.
+            "settlement_at": (boundary - timedelta(seconds=1)).isoformat(),
         }
 
     @portal_api.get("/models")
@@ -1092,27 +1103,49 @@ def create_app(config=None, upstream=None, store=None, mailer=None, background=T
     @portal_api.get("/ranking")
     async def portal_ranking(identity=Depends(portal)):
         enabled("ranking")
-        summary = rewards_summary()
+        now = datetime.now(timezone.utc)
+        summary = rewards_summary(now)
         zone = summary["timezone"] if summary else config.timezone
-        first, today = month_window(zone)
-        result = await upstream.ranking(first.isoformat(), today.isoformat())
+        first, today = month_window(zone, now)
+        result = await upstream.user_breakdown(first.isoformat(), today.isoformat(), timezone=zone)
         # Only ordinary active users are eligible for rewards, so the table lists exactly them.
-        eligible = {user["id"] for user in await upstream.list_users()
-                    if isinstance(user, dict) and user.get("role") == "user" and user.get("status") == "active"
-                    and type(user.get("id")) is int}
+        users = {user["id"]: user for user in await upstream.list_users()
+                 if isinstance(user, dict) and user.get("role") == "user" and user.get("status") == "active"
+                 and type(user.get("id")) is int}
         is_admin = identity["profile"].get("role") == "admin"
+        me = identity["profile"].get("id")
+        amounts = {item["rank"]: item["amount"] for item in summary["rewards"]} if summary else {}
+        # The rank is fixed here in the settlement order (automation._reward_plan); the browser may
+        # only re-sort the display. A capped upstream list can still hide eligible users: upstream cuts
+        # after ORDER BY actual_cost DESC with no tie-break, so rows sharing the cut-off cost may have
+        # omitted peers that the settlement ranks higher. Their reward cannot be promised yet.
+        truncated = len(result) >= USER_BREAKDOWN_LIMIT
+        cut_cost = result[-1]["actual_cost"] if truncated else None
+        ordered = sorted((item for item in result if item["user_id"] in users),
+                         key=lambda item: (-item["actual_cost"], -item["total_tokens"], item["user_id"]))
         rows = []
-        for item in result.get("ranking", []):
-            if item.get("user_id") not in eligible:
-                continue
-            rank = len(rows) + 1
+        for item in ordered:
+            rank, user_id = len(rows) + 1, item["user_id"]
             label = f"用户 #{rank}"
             if is_admin:
-                label = item.get("username") or item.get("email") or f"用户 {item.get('user_id')}"
-            rows.append({"rank": rank, "label": label, "requests": item.get("requests", 0), "tokens": item.get("tokens", 0),
-                         "actual_cost": item.get("actual_cost", 0), "is_me": item.get("user_id") == identity["profile"].get("id")})
+                user = users[user_id]
+                label = next((value for value in (user.get("username"), user.get("email")) if isinstance(value, str) and value.strip()), f"用户 #{user_id}")
+            row = {"rank": rank, "label": label, "requests": item["requests"], "input_tokens": item["input_tokens"],
+                   "output_tokens": item["output_tokens"], "cache_tokens": item["cache_tokens"], "total_tokens": item["total_tokens"],
+                   "actual_cost": item["actual_cost"], "is_me": user_id == me}
+            if is_admin:
+                row["user_id"] = user_id
+            # A provisional display value only: zero-spend rows and ranks without an amount are not settlement
+            # candidates (the engine skips a zero-amount rank instead of crediting it).
+            amount = Decimal(str(amounts.get(rank, 0)))
+            determined = not truncated or item["actual_cost"] != cut_cost
+            row["reward"] = reward_text(amount) if item["actual_cost"] > 0 and amount > 0 and determined else None
+            if not determined:
+                # The page shows these ranks as provisional: no medal, reward 暂定.
+                row["tentative"] = True
+            rows.append(row)
         return {"start_date": first.isoformat(), "end_date": today.isoformat(), "timezone": zone,
-                "ranking": rows, "rewards": summary}
+                "ranking": rows, "rewards": summary, "truncated": truncated}
 
     @portal_api.post("/benchmark")
     async def portal_benchmark(value: BenchmarkSelection, request: Request, identity=Depends(portal)):
